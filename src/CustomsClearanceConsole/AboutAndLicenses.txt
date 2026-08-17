@@ -1,0 +1,54 @@
+关单核验台
+
+本程序使用以下开源组件：
+
+1. Tesseract OCR 5.4.0
+   Copyright 2006 Google Inc. and contributors
+   License: Apache License 2.0
+   https://github.com/tesseract-ocr/tesseract
+
+2. tessdata_fast 简体中文与英文模型
+   License: Apache License 2.0
+   https://github.com/tesseract-ocr/tessdata_fast
+
+3. PDFium
+   Copyright The PDFium Authors
+   License: BSD 3-Clause
+   https://pdfium.googlesource.com/pdfium/
+
+4. .NET 8 Desktop Runtime
+   Copyright Microsoft Corporation
+   License: MIT
+   https://github.com/dotnet/runtime
+
+5. RapidOCR / RapidOCRCSharp（已按本程序的文档图像边界场景做稳定性修正）
+   Copyright RapidAI contributors
+   License: Apache License 2.0
+   https://github.com/RapidAI/RapidOCR
+   https://github.com/RapidAI/RapidOCRCSharp
+
+6. PP-OCRv5 中文/英文检测、方向分类、文字识别模型
+   Model copyright: Baidu / PaddleOCR contributors
+   License: Apache License 2.0
+   https://github.com/PaddlePaddle/PaddleOCR
+
+7. Microsoft ONNX Runtime
+   Copyright Microsoft Corporation
+   License: MIT
+   https://github.com/microsoft/onnxruntime
+
+8. Emgu CV 与所含 OpenCV Windows 运行组件
+   Emgu CV License: GNU GPL v3（或 Emgu 商业许可）
+   OpenCV License: Apache License 2.0
+   https://www.emgu.com/wiki/index.php/Licensing:
+   https://opencv.org/license/
+
+9. Clipper2
+   Copyright Angus Johnson
+   License: Boost Software License 1.0
+   https://github.com/AngusJohnson/Clipper2
+
+本分发包的 source 文件夹包含本次构建对应的应用源代码与 RapidOCR 接入修改；
+licenses 文件夹包含随包组件的许可文本。第三方组件的权利归各自作者所有。
+
+本软件不会尝试绕过中国国际贸易单一窗口的人工验证机制。在线核验步骤需要用户在浏览器中手动完成验证。
