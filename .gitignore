@@ -1,0 +1,20 @@
+bin/
+obj/
+.vs/
+.idea/
+*.user
+*.suo
+
+# 由 scripts/bootstrap-from-release.ps1 从便携发布包准备
+src/CustomsClearanceConsole/dual-ocr-bin/
+src/CustomsClearanceConsole/ocr-models/
+src/CustomsClearanceConsole/tools/
+
+# 发布物与本地业务数据
+artifacts/
+dist/
+*.zip
+关单核验台数据/
+Screenshots/
+*.log
+
