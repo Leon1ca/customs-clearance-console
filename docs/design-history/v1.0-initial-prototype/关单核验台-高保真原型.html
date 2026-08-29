@@ -1,0 +1,1550 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>关单核验台｜高保真交互原型</title>
+  <style>
+    :root {
+      --bg: #f3f6fa;
+      --surface: #ffffff;
+      --surface-subtle: #f8fafc;
+      --surface-blue: #eef5ff;
+      --text: #172033;
+      --text-2: #536177;
+      --text-3: #7b8799;
+      --navy: #0b2444;
+      --primary: #1769e0;
+      --primary-hover: #0f5cc9;
+      --primary-soft: #eaf2ff;
+      --border: #dce3ed;
+      --border-strong: #c8d2e1;
+      --danger: #cf2e2e;
+      --danger-soft: #fff0f0;
+      --danger-border: #efb6b6;
+      --warning: #a86400;
+      --warning-soft: #fff7e6;
+      --success: #117a55;
+      --success-soft: #e8f7f1;
+      --shadow: 0 14px 40px rgba(20, 39, 70, 0.12);
+      --radius-sm: 5px;
+      --radius: 8px;
+      --radius-lg: 12px;
+      --focus: 0 0 0 3px rgba(23, 105, 224, .22);
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body { height: 100%; }
+
+    body {
+      margin: 0;
+      min-width: 1024px;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Segoe UI", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    button, input, select { font: inherit; }
+
+    button, select { cursor: pointer; }
+
+    button:focus-visible,
+    input:focus-visible,
+    select:focus-visible {
+      outline: none;
+      box-shadow: var(--focus);
+    }
+
+    button:disabled {
+      cursor: not-allowed;
+      opacity: .48;
+    }
+
+    .app-shell {
+      display: grid;
+      grid-template-rows: 58px 1fr 30px;
+      height: 100vh;
+    }
+
+    .titlebar {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 0 22px;
+      background: var(--navy);
+      color: #fff;
+      border-bottom: 1px solid rgba(255,255,255,.08);
+    }
+
+    .brand-mark {
+      display: grid;
+      place-items: center;
+      width: 34px;
+      height: 34px;
+      border-radius: 7px;
+      background: #fff;
+      color: var(--navy);
+    }
+
+    .brand-mark svg { width: 22px; height: 22px; }
+
+    .brand-copy { min-width: 0; }
+
+    .brand-title {
+      margin: 0;
+      font-size: 17px;
+      font-weight: 700;
+      letter-spacing: .02em;
+    }
+
+    .brand-subtitle {
+      margin-top: 1px;
+      color: #adc3df;
+      font-size: 11px;
+    }
+
+    .titlebar-spacer { flex: 1; }
+
+    .sync-state {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      color: #d7e5f7;
+      font-size: 12px;
+    }
+
+    .sync-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #52d6a5;
+      box-shadow: 0 0 0 3px rgba(82,214,165,.13);
+    }
+
+    .window-controls {
+      display: flex;
+      gap: 2px;
+      margin-left: 12px;
+    }
+
+    .window-control {
+      width: 34px;
+      height: 30px;
+      padding: 0;
+      border: 0;
+      border-radius: 4px;
+      background: transparent;
+      color: #c9daef;
+    }
+
+    .window-control:hover { background: rgba(255,255,255,.1); }
+
+    .workspace {
+      min-height: 0;
+      padding: 18px 20px 14px;
+    }
+
+    .content {
+      display: grid;
+      grid-template-rows: auto auto auto minmax(0, 1fr);
+      gap: 12px;
+      height: 100%;
+      max-width: 1700px;
+      margin: 0 auto;
+    }
+
+    .page-head {
+      display: flex;
+      align-items: flex-start;
+      gap: 18px;
+    }
+
+    .page-head-copy { min-width: 0; }
+
+    .page-head h1 {
+      margin: 0;
+      font-size: 22px;
+      line-height: 1.25;
+      font-weight: 700;
+      letter-spacing: -.02em;
+    }
+
+    .page-description {
+      margin: 5px 0 0;
+      color: var(--text-2);
+      font-size: 13px;
+    }
+
+    .head-actions {
+      display: flex;
+      gap: 8px;
+      margin-left: auto;
+    }
+
+    .button {
+      display: inline-flex;
+      min-height: 36px;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      padding: 0 13px;
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-sm);
+      background: var(--surface);
+      color: var(--text);
+      font-weight: 600;
+      transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
+    }
+
+    .button svg { width: 16px; height: 16px; flex: 0 0 auto; }
+    .button:hover { background: #f5f7fa; border-color: #abb8ca; }
+    .button.primary { border-color: var(--primary); background: var(--primary); color: #fff; }
+    .button.primary:hover { border-color: var(--primary-hover); background: var(--primary-hover); }
+    .button.danger-ghost { color: var(--danger); }
+    .button.danger-ghost:hover { border-color: var(--danger-border); background: var(--danger-soft); }
+    .button.compact { min-height: 30px; padding: 0 10px; font-size: 12px; }
+    .button.ghost { border-color: transparent; background: transparent; color: var(--text-2); }
+    .button.ghost:hover { background: #edf1f6; color: var(--text); }
+
+    .scan-panel {
+      display: grid;
+      grid-template-columns: minmax(420px, 1fr) auto;
+      align-items: center;
+      gap: 16px;
+      padding: 12px 14px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
+    }
+
+    .folder-block {
+      display: flex;
+      min-width: 0;
+      align-items: center;
+      gap: 11px;
+    }
+
+    .folder-icon {
+      display: grid;
+      flex: 0 0 auto;
+      place-items: center;
+      width: 38px;
+      height: 38px;
+      border-radius: 7px;
+      background: var(--primary-soft);
+      color: var(--primary);
+    }
+
+    .folder-icon svg { width: 20px; height: 20px; }
+
+    .folder-copy { min-width: 0; }
+
+    .folder-label {
+      color: var(--text-3);
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .07em;
+    }
+
+    .folder-path {
+      overflow: hidden;
+      margin-top: 2px;
+      font-weight: 600;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .folder-meta {
+      margin-top: 2px;
+      color: var(--text-2);
+      font-size: 12px;
+    }
+
+    .scan-actions { display: flex; align-items: center; gap: 8px; }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(160px, 1fr)) minmax(280px, 1.5fr);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
+      overflow: hidden;
+    }
+
+    .metric {
+      min-width: 0;
+      padding: 12px 15px;
+      border-right: 1px solid var(--border);
+    }
+
+    .metric:last-child { border-right: 0; }
+
+    .metric-label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--text-2);
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .metric-value {
+      margin-top: 4px;
+      color: var(--navy);
+      font-size: 21px;
+      font-weight: 700;
+      line-height: 1.1;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .metric-hint { margin-left: 5px; color: var(--text-3); font-size: 11px; font-weight: 500; }
+    .metric.duplicate .metric-value { color: var(--danger); }
+
+    .currency-totals {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      gap: 8px 14px;
+      margin-top: 4px;
+    }
+
+    .currency-line {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .currency-code {
+      padding: 2px 5px;
+      border: 1px solid #bcd2f2;
+      border-radius: 4px;
+      background: var(--primary-soft);
+      color: #164d98;
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: .06em;
+    }
+
+    .currency-amount { color: var(--navy); font-size: 21px; font-weight: 700; }
+
+    .table-panel {
+      display: grid;
+      min-height: 0;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
+      overflow: hidden;
+    }
+
+    .table-toolbar {
+      display: flex;
+      min-height: 48px;
+      align-items: center;
+      gap: 10px;
+      padding: 7px 10px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .search-box {
+      position: relative;
+      width: min(340px, 30vw);
+    }
+
+    .search-box svg {
+      position: absolute;
+      top: 50%;
+      left: 10px;
+      width: 16px;
+      height: 16px;
+      color: var(--text-3);
+      transform: translateY(-50%);
+      pointer-events: none;
+    }
+
+    .search-input,
+    .select {
+      height: 32px;
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-sm);
+      background: var(--surface);
+      color: var(--text);
+    }
+
+    .search-input {
+      width: 100%;
+      padding: 0 10px 0 33px;
+    }
+
+    .search-input::placeholder { color: #8c97a8; }
+
+    .select { padding: 0 28px 0 9px; }
+
+    .toolbar-divider { width: 1px; height: 22px; background: var(--border); }
+    .toolbar-spacer { flex: 1; }
+
+    .legend {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      color: var(--text-2);
+      font-size: 11px;
+      white-space: nowrap;
+    }
+
+    .legend-item { display: flex; align-items: center; gap: 5px; }
+    .legend-swatch { width: 9px; height: 9px; border-radius: 2px; }
+    .legend-swatch.duplicate { background: #f5a4a4; }
+    .legend-swatch.verified { background: #69c5a3; }
+
+    .table-scroll {
+      min-height: 0;
+      overflow: auto;
+      scrollbar-color: #b9c5d5 #eef2f7;
+      scrollbar-width: thin;
+    }
+
+    table {
+      width: 100%;
+      min-width: 1160px;
+      border-collapse: separate;
+      border-spacing: 0;
+      table-layout: fixed;
+    }
+
+    thead { position: sticky; top: 0; z-index: 3; }
+
+    th {
+      height: 39px;
+      padding: 0 10px;
+      border-bottom: 1px solid var(--border-strong);
+      background: #f2f5f9;
+      color: #39475d;
+      font-size: 12px;
+      font-weight: 700;
+      text-align: left;
+      white-space: nowrap;
+    }
+
+    th.align-right,
+    td.align-right { text-align: right; }
+
+    th.center,
+    td.center { text-align: center; }
+
+    tbody tr { --row-bg: #fff; background: var(--row-bg); }
+    tbody tr:nth-child(even) { --row-bg: #fbfcfe; }
+    tbody tr:hover { --row-bg: #f2f7ff; }
+    tbody tr.duplicate-row { --row-bg: var(--danger-soft); }
+    tbody tr.duplicate-row:nth-child(even) { --row-bg: #ffebeb; }
+    tbody tr.duplicate-row:hover { --row-bg: #ffe2e2; }
+
+    td {
+      height: 42px;
+      padding: 6px 10px;
+      border-bottom: 1px solid #e7ecf3;
+      background: var(--row-bg);
+      color: #263247;
+      font-size: 12px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      transition: background 140ms ease;
+    }
+
+    tbody tr:last-child td { border-bottom: 0; }
+    .row-index { color: var(--text-3); font-variant-numeric: tabular-nums; }
+
+    .declaration-cell {
+      display: flex;
+      min-width: 0;
+      align-items: center;
+      gap: 7px;
+    }
+
+    .declaration-no {
+      overflow: hidden;
+      color: #183b6e;
+      font-family: "Cascadia Mono", Consolas, monospace;
+      font-size: 12px;
+      font-weight: 650;
+      text-overflow: ellipsis;
+    }
+
+    .duplicate-row .declaration-no { color: var(--danger); font-weight: 800; }
+
+    .tag {
+      display: inline-flex;
+      flex: 0 0 auto;
+      min-height: 20px;
+      align-items: center;
+      gap: 4px;
+      padding: 0 6px;
+      border: 1px solid transparent;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 700;
+      line-height: 1;
+      white-space: nowrap;
+    }
+
+    .tag.danger { border-color: var(--danger-border); background: #fff7f7; color: var(--danger); }
+    .tag.success { border-color: #acdcca; background: var(--success-soft); color: var(--success); }
+    .tag.neutral { border-color: var(--border); background: #f6f8fb; color: #647287; }
+    .tag.processing { border-color: #b7cff1; background: var(--primary-soft); color: #1a5db6; }
+
+    .status-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+    .price {
+      color: #16263d;
+      font-weight: 650;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .currency-inline { margin-left: 5px; color: var(--text-3); font-size: 10px; }
+
+    .verify-button {
+      min-width: 62px;
+      height: 28px;
+      padding: 0 9px;
+      border: 1px solid #b8c7db;
+      border-radius: 4px;
+      background: #fff;
+      color: #23518c;
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .verify-button:hover { border-color: #7ba5dc; background: var(--primary-soft); }
+    .duplicate-row .verify-button { border-color: var(--danger-border); color: #a82424; }
+
+    .table-footer {
+      display: flex;
+      min-height: 45px;
+      align-items: center;
+      gap: 10px;
+      padding: 6px 10px;
+      border-top: 1px solid var(--border);
+      background: var(--surface-subtle);
+      color: var(--text-2);
+      font-size: 12px;
+    }
+
+    .footer-summary { display: flex; align-items: center; gap: 9px; }
+    .footer-summary strong { color: var(--text); }
+    .footer-summary .dedup-note { color: var(--danger); font-weight: 700; }
+    .footer-spacer { flex: 1; }
+
+    .page-controls { display: flex; align-items: center; gap: 5px; }
+
+    .page-button {
+      display: grid;
+      width: 30px;
+      height: 30px;
+      place-items: center;
+      padding: 0;
+      border: 1px solid var(--border-strong);
+      border-radius: 4px;
+      background: #fff;
+      color: #3d4a60;
+      font-size: 12px;
+    }
+
+    .page-button:hover:not(:disabled) { border-color: #90add4; background: var(--primary-soft); color: var(--primary); }
+    .page-button.active { border-color: var(--primary); background: var(--primary); color: #fff; }
+
+    .statusbar {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 0 20px;
+      border-top: 1px solid var(--border);
+      background: #e9eef5;
+      color: #627087;
+      font-size: 11px;
+    }
+
+    .statusbar-spacer { flex: 1; }
+
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 20;
+      display: grid;
+      place-items: center;
+      padding: 28px;
+      background: rgba(6, 18, 36, .48);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 180ms ease;
+    }
+
+    .modal-backdrop.open { opacity: 1; pointer-events: auto; }
+
+    .modal {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      width: min(720px, 100%);
+      max-height: calc(100vh - 56px);
+      overflow: hidden;
+      border: 1px solid #bec9d8;
+      border-radius: var(--radius-lg);
+      background: var(--surface);
+      box-shadow: var(--shadow);
+      transform: translateY(8px) scale(.99);
+      transition: transform 180ms ease;
+    }
+
+    .modal-backdrop.open .modal { transform: translateY(0) scale(1); }
+    .modal.small { width: min(470px, 100%); }
+
+    .modal-head {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 18px 20px 15px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .modal-title-block { min-width: 0; }
+    .modal-title { margin: 0; color: var(--navy); font-size: 18px; line-height: 1.3; }
+    .modal-subtitle { margin-top: 4px; color: var(--text-2); font-size: 12px; }
+
+    .icon-button {
+      display: grid;
+      flex: 0 0 auto;
+      width: 32px;
+      height: 32px;
+      place-items: center;
+      margin-left: auto;
+      padding: 0;
+      border: 0;
+      border-radius: 5px;
+      background: transparent;
+      color: var(--text-2);
+    }
+
+    .icon-button:hover { background: #edf1f6; color: var(--text); }
+    .icon-button svg { width: 18px; height: 18px; }
+
+    .modal-body { overflow: auto; padding: 18px 20px; }
+
+    .field-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+
+    .field.full { grid-column: 1 / -1; }
+    .field-label { display: block; margin-bottom: 6px; color: #445168; font-size: 12px; font-weight: 700; }
+
+    .segmented {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      height: 38px;
+      padding: 3px;
+      border: 1px solid var(--border-strong);
+      border-radius: 6px;
+      background: #f2f5f8;
+    }
+
+    .segment {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      border: 0;
+      border-radius: 4px;
+      background: transparent;
+      color: var(--text-2);
+      font-weight: 650;
+    }
+
+    .segment.active { background: #fff; color: var(--text); box-shadow: 0 1px 3px rgba(20,39,70,.12); }
+
+    .browser-logo {
+      display: grid;
+      width: 18px;
+      height: 18px;
+      place-items: center;
+      border-radius: 50%;
+      color: #fff;
+      font-size: 9px;
+      font-weight: 800;
+    }
+
+    .browser-logo.edge { background: #147acb; }
+    .browser-logo.chrome { background: #d94a3a; }
+
+    .readonly-box {
+      min-height: 38px;
+      display: flex;
+      align-items: center;
+      padding: 0 10px;
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      background: #f7f9fc;
+      color: #31435d;
+      font-family: "Cascadia Mono", Consolas, monospace;
+      font-size: 12px;
+    }
+
+    .site-option {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 10px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: #fff;
+    }
+
+    .site-option + .site-option { margin-top: 8px; }
+    .site-option.selected { border-color: #8fb6ec; background: #f4f8ff; }
+    .site-radio { margin-top: 3px; accent-color: var(--primary); }
+    .site-copy { min-width: 0; }
+    .site-name { display: flex; align-items: center; gap: 7px; font-weight: 700; }
+    .site-url { overflow: hidden; margin-top: 3px; color: var(--text-3); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+
+    .workflow {
+      margin-top: 17px;
+      padding: 14px;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      background: var(--surface-subtle);
+    }
+
+    .workflow-title { margin-bottom: 11px; font-size: 12px; font-weight: 800; }
+
+    .steps {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 0;
+    }
+
+    .step { position: relative; min-width: 0; text-align: center; }
+    .step:not(:last-child)::after {
+      content: "";
+      position: absolute;
+      top: 12px;
+      left: calc(50% + 14px);
+      width: calc(100% - 28px);
+      height: 2px;
+      background: #d2dae6;
+    }
+
+    .step.done:not(:last-child)::after { background: #72b99e; }
+    .step-circle {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      width: 26px;
+      height: 26px;
+      place-items: center;
+      margin: 0 auto;
+      border: 2px solid #c6cfdd;
+      border-radius: 50%;
+      background: #fff;
+      color: #728096;
+      font-size: 10px;
+      font-weight: 800;
+    }
+
+    .step.active .step-circle { border-color: var(--primary); color: var(--primary); box-shadow: 0 0 0 3px #dceaff; }
+    .step.done .step-circle { border-color: var(--success); background: var(--success); color: #fff; }
+    .step-label { margin-top: 6px; color: var(--text-3); font-size: 10px; font-weight: 650; }
+    .step.active .step-label, .step.done .step-label { color: #37455b; }
+
+    .callout {
+      display: flex;
+      align-items: flex-start;
+      gap: 9px;
+      margin-top: 14px;
+      padding: 10px 11px;
+      border: 1px solid #bad0ec;
+      border-radius: 6px;
+      background: #f0f6ff;
+      color: #335273;
+      font-size: 12px;
+    }
+
+    .callout svg { flex: 0 0 auto; width: 16px; height: 16px; margin-top: 1px; color: var(--primary); }
+    .callout.warning { border-color: #ecd2a0; background: var(--warning-soft); color: #71501a; }
+
+    .screenshot-options {
+      display: grid;
+      gap: 7px;
+      margin-top: 14px;
+    }
+
+    .check-row { display: flex; align-items: flex-start; gap: 8px; color: #3d4a60; font-size: 12px; }
+    .check-row input { margin-top: 2px; accent-color: var(--primary); }
+
+    .modal-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 13px 20px;
+      border-top: 1px solid var(--border);
+      background: #f8fafc;
+    }
+
+    .action-spacer { flex: 1; }
+
+    .rule-list {
+      display: grid;
+      gap: 10px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .rule-item {
+      display: grid;
+      grid-template-columns: 30px 1fr;
+      gap: 10px;
+      padding: 10px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+    }
+
+    .rule-number {
+      display: grid;
+      width: 27px;
+      height: 27px;
+      place-items: center;
+      border-radius: 5px;
+      background: var(--primary-soft);
+      color: var(--primary);
+      font-size: 11px;
+      font-weight: 800;
+    }
+
+    .rule-title { font-weight: 750; }
+    .rule-copy { margin-top: 2px; color: var(--text-2); font-size: 12px; }
+
+    .empty-state {
+      display: none;
+      min-height: 300px;
+      place-items: center;
+      text-align: center;
+      color: var(--text-2);
+    }
+
+    .empty-state.visible { display: grid; }
+    .empty-icon { margin: 0 auto 12px; color: #8fa0b6; }
+    .empty-icon svg { width: 48px; height: 48px; }
+    .empty-title { color: var(--text); font-size: 16px; font-weight: 750; }
+    .empty-copy { margin-top: 4px; font-size: 12px; }
+
+    .toast-stack {
+      position: fixed;
+      right: 20px;
+      bottom: 44px;
+      z-index: 50;
+      display: grid;
+      gap: 8px;
+      width: 360px;
+    }
+
+    .toast {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 11px 12px;
+      border: 1px solid #b8c6d8;
+      border-radius: 7px;
+      background: #fff;
+      box-shadow: 0 10px 30px rgba(20,39,70,.18);
+      animation: toast-in 180ms ease both;
+    }
+
+    .toast-icon {
+      display: grid;
+      flex: 0 0 auto;
+      width: 22px;
+      height: 22px;
+      place-items: center;
+      border-radius: 50%;
+      background: var(--success-soft);
+      color: var(--success);
+    }
+
+    .toast-title { font-size: 12px; font-weight: 750; }
+    .toast-copy { margin-top: 2px; color: var(--text-2); font-size: 11px; }
+
+    .scan-progress {
+      position: fixed;
+      top: 58px;
+      left: 0;
+      z-index: 10;
+      width: 100%;
+      height: 3px;
+      background: transparent;
+      pointer-events: none;
+    }
+
+    .scan-progress::after {
+      content: "";
+      display: block;
+      width: 0;
+      height: 100%;
+      background: var(--primary);
+    }
+
+    .scan-progress.running::after { animation: scan 1500ms ease-in-out both; }
+
+    @keyframes scan { 0% { width: 0; } 62% { width: 82%; } 100% { width: 100%; } }
+    @keyframes toast-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: 1ms !important; transition-duration: 1ms !important; }
+    }
+
+    @media (max-height: 760px) {
+      .workspace { padding-top: 12px; }
+      .content { gap: 9px; }
+      .metric { padding-top: 9px; padding-bottom: 9px; }
+      .metric-value, .currency-amount { font-size: 18px; }
+      .scan-panel { padding-top: 9px; padding-bottom: 9px; }
+    }
+  </style>
+</head>
+<body>
+  <!--
+    设计假设：Win10/11 x64，日常高频处理，20-200份/批；PDF可能多页但每文件一份关单。
+    识别口径：报关单号=“海关编号”18位数字；同批次相同单号为重复；金额按商品总价逐页累加、按币制分组。
+    校验口径：优先中国国际贸易单一窗口公共查询页，失败自动建议备用站；Edge/Chrome均由应用启动并接管截图。
+  -->
+  <div class="app-shell" data-screen-label="关单列表主界面">
+    <header class="titlebar">
+      <div class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M7 3.5h7l3 3V20H7z"></path><path d="M14 3.5V7h3"></path><path d="M9.5 11h5M9.5 14h5M9.5 17h3"></path><path d="M4 7v13h9"></path>
+        </svg>
+      </div>
+      <div class="brand-copy">
+        <div class="brand-title">关单核验台</div>
+        <div class="brand-subtitle">报关单识别 · 去重汇总 · 通关校验</div>
+      </div>
+      <div class="titlebar-spacer"></div>
+      <div class="sync-state"><span class="sync-dot"></span><span>本地数据已保存</span></div>
+      <div class="window-controls" aria-hidden="true">
+        <button class="window-control" tabindex="-1" aria-label="最小化">—</button>
+        <button class="window-control" tabindex="-1" aria-label="最大化">□</button>
+        <button class="window-control" tabindex="-1" aria-label="关闭">×</button>
+      </div>
+    </header>
+
+    <div class="scan-progress" id="scanProgress"></div>
+
+    <main class="workspace">
+      <div class="content">
+        <section class="page-head" aria-labelledby="pageTitle">
+          <div class="page-head-copy">
+            <h1 id="pageTitle">本批关单</h1>
+            <p class="page-description">从指定文件夹提取六项信息，相同报关单号自动置顶并标红。</p>
+          </div>
+          <div class="head-actions">
+            <button class="button ghost" id="rulesButton">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5M12 8h.01"></path></svg>
+              处理规则
+            </button>
+            <button class="button danger-ghost" id="clearHistoryButton">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13"></path></svg>
+              清空历史
+            </button>
+          </div>
+        </section>
+
+        <section class="scan-panel" aria-label="扫描文件夹">
+          <div class="folder-block">
+            <div class="folder-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5h7l2 2h9v9.5H3z"></path><path d="M3 7.5V5h7l2 2"></path></svg>
+            </div>
+            <div class="folder-copy">
+              <div class="folder-label">当前文件夹</div>
+              <div class="folder-path">D:\关单\2026-08-13\出口关单</div>
+              <div class="folder-meta">20 个 PDF · 共 22 页 · 文字层优先，OCR 作为回退 · 上限 200 份</div>
+            </div>
+          </div>
+          <div class="scan-actions">
+            <button class="button" id="screenshotFolderButton">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h5l2 2h9v10H4z"></path><path d="M12 11v4M10 13h4"></path></svg>
+              截图位置
+            </button>
+            <button class="button" id="chooseFolderButton">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5h7l2 2h9v9.5H3z"></path><path d="M12 13v4M10 15h4"></path></svg>
+              选择文件夹
+            </button>
+            <button class="button primary" id="rescanButton">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6v5h-5"></path><path d="M18.4 15A7 7 0 1 1 19 9l1 2"></path></svg>
+              重新识别
+            </button>
+          </div>
+        </section>
+
+        <section class="metrics" aria-label="本批汇总">
+          <article class="metric">
+            <div class="metric-label">文件总数</div>
+            <div class="metric-value" id="metricFiles">20 <span class="metric-hint">份</span></div>
+          </article>
+          <article class="metric">
+            <div class="metric-label">有效关单</div>
+            <div class="metric-value" id="metricUnique">19 <span class="metric-hint">去重后</span></div>
+          </article>
+          <article class="metric duplicate">
+            <div class="metric-label">重复关单</div>
+            <div class="metric-value" id="metricDuplicates">1 <span class="metric-hint">组 / 2份</span></div>
+          </article>
+          <article class="metric">
+            <div class="metric-label">去重合计 <span class="metric-hint">按币种分别统计</span></div>
+            <div class="currency-totals" id="currencyTotals">
+              <div class="currency-line"><span class="currency-code">USD</span><span class="currency-amount">22,080.94</span></div>
+            </div>
+          </article>
+        </section>
+
+        <section class="table-panel" aria-label="识别结果表格">
+          <div class="table-toolbar">
+            <label class="search-box">
+              <span class="sr-only"></span>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-4-4"></path></svg>
+              <input class="search-input" id="searchInput" type="search" placeholder="搜索报关单号、收货人或合同号" aria-label="搜索识别结果">
+            </label>
+            <select class="select" id="filterSelect" aria-label="筛选状态">
+              <option value="all">全部状态</option>
+              <option value="duplicate">仅看重复</option>
+              <option value="verified">已校验</option>
+              <option value="unverified">未校验</option>
+            </select>
+            <div class="toolbar-divider"></div>
+            <div class="legend" aria-label="颜色说明">
+              <span class="legend-item"><span class="legend-swatch duplicate"></span>同号重复</span>
+              <span class="legend-item"><span class="legend-swatch verified"></span>已截图</span>
+            </div>
+            <div class="toolbar-spacer"></div>
+            <span>每页</span>
+            <select class="select" id="pageSizeSelect" aria-label="每页数量">
+              <option value="10">10 条</option>
+              <option value="20">20 条</option>
+              <option value="50">50 条</option>
+            </select>
+          </div>
+
+          <div class="table-scroll" id="tableScroll">
+            <table aria-describedby="tableSummary">
+              <colgroup>
+                <col style="width:46px">
+                <col style="width:224px">
+                <col style="width:220px">
+                <col style="width:112px">
+                <col style="width:142px">
+                <col style="width:110px">
+                <col style="width:150px">
+                <col style="width:112px">
+                <col style="width:88px">
+              </colgroup>
+              <thead>
+                <tr>
+                  <th class="center">序号</th>
+                  <th>报关单号</th>
+                  <th>境外收货人</th>
+                  <th>合同协议号</th>
+                  <th>出境关别</th>
+                  <th>目的国</th>
+                  <th class="align-right">关单总货值</th>
+                  <th class="center">校验状态</th>
+                  <th class="center">操作</th>
+                </tr>
+              </thead>
+              <tbody id="tableBody"></tbody>
+            </table>
+            <div class="empty-state" id="emptyState">
+              <div>
+                <div class="empty-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v14H4z"></path><path d="M8 9h8M8 13h5"></path></svg>
+                </div>
+                <div class="empty-title">暂无识别记录</div>
+                <div class="empty-copy">选择一个包含关单 PDF 或图片的文件夹开始识别。</div>
+                <button class="button primary" style="margin-top:14px" id="emptyChooseButton">选择文件夹</button>
+              </div>
+            </div>
+          </div>
+
+          <footer class="table-footer" id="tableFooter">
+            <div class="footer-summary" id="tableSummary">
+              <span>当前 <strong id="visibleCount">20</strong> 份</span>
+              <span>·</span>
+              <span class="dedup-note">已排除重复金额 USD 261.90</span>
+            </div>
+            <div class="footer-spacer"></div>
+            <span id="pageRange">1-10 / 20</span>
+            <nav class="page-controls" id="pageControls" aria-label="分页"></nav>
+          </footer>
+        </section>
+      </div>
+    </main>
+
+    <footer class="statusbar">
+      <span>识别引擎：PDF文字层 + PaddleOCR 回退</span>
+      <span>数据库：本地 SQLite</span>
+      <span class="statusbar-spacer"></span>
+      <span>最后识别：今天 22:56</span>
+      <span>版本原型 0.1</span>
+    </footer>
+  </div>
+
+  <div class="modal-backdrop" id="verifyModal" role="dialog" aria-modal="true" aria-labelledby="verifyTitle">
+    <section class="modal" data-screen-label="浏览器校验流程">
+      <header class="modal-head">
+        <div class="modal-title-block">
+          <h2 class="modal-title" id="verifyTitle">校验通关流程</h2>
+          <div class="modal-subtitle">报关单号 <strong id="verifyDeclarationNo">—</strong> · 同号重复文件只需校验一次</div>
+        </div>
+        <button class="icon-button" data-close="verifyModal" aria-label="关闭校验窗口">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 6 12 12M18 6 6 18"></path></svg>
+        </button>
+      </header>
+      <div class="modal-body">
+        <div class="field-grid">
+          <div class="field">
+            <span class="field-label">使用浏览器</span>
+            <div class="segmented" id="browserSegments">
+              <button class="segment active" data-browser="edge"><span class="browser-logo edge">e</span>Microsoft Edge</button>
+              <button class="segment" data-browser="chrome"><span class="browser-logo chrome">C</span>Google Chrome</button>
+            </div>
+          </div>
+          <div class="field">
+            <span class="field-label">将自动填入</span>
+            <div class="readonly-box" id="autofillNumber">—</div>
+          </div>
+          <div class="field full">
+            <span class="field-label">校验网站</span>
+            <label class="site-option selected">
+              <input class="site-radio" type="radio" name="site" value="primary" checked>
+              <span class="site-copy">
+                <span class="site-name">中国国际贸易单一窗口 · 通关全流程状态 <span class="tag processing">优先</span></span>
+                <span class="site-url">https://www.singlewindow.cn/#/publicInquiryDetail?id=pi5</span>
+              </span>
+            </label>
+            <label class="site-option">
+              <input class="site-radio" type="radio" name="site" value="fallback">
+              <span class="site-copy">
+                <span class="site-name">单一窗口查询服务 <span class="tag neutral">备用</span></span>
+                <span class="site-url">https://swapp.singlewindow.cn/qspserver/sw/qsp/query/view/export</span>
+              </span>
+            </label>
+          </div>
+        </div>
+
+        <div class="workflow">
+          <div class="workflow-title">校验进度</div>
+          <div class="steps">
+            <div class="step active" data-step="1"><div class="step-circle">1</div><div class="step-label">启动并填入</div></div>
+            <div class="step" data-step="2"><div class="step-circle">2</div><div class="step-label">人工验证</div></div>
+            <div class="step" data-step="3"><div class="step-circle">3</div><div class="step-label">查询完成</div></div>
+            <div class="step" data-step="4"><div class="step-circle">4</div><div class="step-label">长截图保存</div></div>
+          </div>
+          <div class="callout" id="verifyCallout">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5M12 8h.01"></path></svg>
+            <span>应用将打开可见浏览器，自动选择“出口 / 水运”并填入报关单号。验证码由你在网页中手动完成。</span>
+          </div>
+          <div class="screenshot-options">
+            <label class="check-row"><input type="checkbox" checked disabled><span>截取“通关全流程状态”完整内容区域（自动滚动拼接长图）</span></label>
+            <label class="check-row"><input type="checkbox" checked><span>保存后打开截图所在文件夹</span></label>
+            <div class="readonly-box" style="margin-top:4px;font-family:'Segoe UI','Microsoft YaHei UI',sans-serif">截图位置：D:\关单截图（已从关单扫描范围中排除）</div>
+          </div>
+        </div>
+
+        <div class="callout warning">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3 2.8 20h18.4z"></path><path d="M12 9v5M12 17h.01"></path></svg>
+          <span>网页结构变化或主站不可用时，程序会停止自动操作并提示切换备用站，不会尝试绕过人工验证。</span>
+        </div>
+      </div>
+      <footer class="modal-actions">
+        <button class="button" data-close="verifyModal">取消</button>
+        <div class="action-spacer"></div>
+        <button class="button primary" id="launchBrowserButton">启动 Edge 并自动填入</button>
+        <button class="button" id="manualVerifiedButton" disabled>我已完成人工验证</button>
+        <button class="button primary" id="captureButton" disabled>长截图并保存</button>
+      </footer>
+    </section>
+  </div>
+
+  <div class="modal-backdrop" id="rulesModal" role="dialog" aria-modal="true" aria-labelledby="rulesTitle">
+    <section class="modal" data-screen-label="识别与边界规则">
+      <header class="modal-head">
+        <div class="modal-title-block">
+          <h2 class="modal-title" id="rulesTitle">识别与边界规则</h2>
+          <div class="modal-subtitle">系统自动处理，不要求用户修改 OCR 结果。</div>
+        </div>
+        <button class="icon-button" data-close="rulesModal" aria-label="关闭规则窗口">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 6 12 12M18 6 6 18"></path></svg>
+        </button>
+      </header>
+      <div class="modal-body">
+        <ol class="rule-list">
+          <li class="rule-item"><span class="rule-number">01</span><div><div class="rule-title">报关单号</div><div class="rule-copy">读取表头“海关编号”的18位数字；文件名不参与判断。同一批次相同单号即为同一份关单。</div></div></li>
+          <li class="rule-item"><span class="rule-number">02</span><div><div class="rule-title">双通道识别</div><div class="rule-copy">电子 PDF 优先读取文字层；无文字、图片或低质量页再使用 PaddleOCR，并进行旋转、放大和字段位置复核。</div></div></li>
+          <li class="rule-item"><span class="rule-number">03</span><div><div class="rule-title">多页与金额</div><div class="rule-copy">同一 PDF 的多页合并为一份关单；只累加“单价/总价/币制”列中的商品总价，不把单价、运费、保费或杂费混入。</div></div></li>
+          <li class="rule-item"><span class="rule-number">04</span><div><div class="rule-title">多币种合计</div><div class="rule-copy">不进行汇率换算。先按报关单号去重，再分别显示 USD、CNY、EUR 等币种合计。</div></div></li>
+          <li class="rule-item"><span class="rule-number">05</span><div><div class="rule-title">自动复核失败</div><div class="rule-copy">关键字段不一致时自动切换解析策略重试；仍失败的文件进入“识别失败”清单，不计入合计，并保留原因日志。</div></div></li>
+          <li class="rule-item"><span class="rule-number">06</span><div><div class="rule-title">文件与截图边界</div><div class="rule-copy">超过200份时整批停止并提示；损坏/加密 PDF 单独报错。截图目录自动排除扫描，同号截图复用，重新截图加时间后缀。</div></div></li>
+        </ol>
+      </div>
+      <footer class="modal-actions"><div class="action-spacer"></div><button class="button primary" data-close="rulesModal">知道了</button></footer>
+    </section>
+  </div>
+
+  <div class="modal-backdrop" id="clearModal" role="alertdialog" aria-modal="true" aria-labelledby="clearTitle">
+    <section class="modal small" data-screen-label="清空历史确认">
+      <header class="modal-head">
+        <div class="modal-title-block">
+          <h2 class="modal-title" id="clearTitle">清空全部历史？</h2>
+          <div class="modal-subtitle">此操作无法在应用内撤销。</div>
+        </div>
+        <button class="icon-button" data-close="clearModal" aria-label="关闭确认窗口">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 6 12 12M18 6 6 18"></path></svg>
+        </button>
+      </header>
+      <div class="modal-body">
+        <p style="margin:0;color:var(--text-2)">将删除本机保存的识别记录、重复标记和校验状态。</p>
+        <div class="callout" style="margin-top:12px">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5M12 8h.01"></path></svg>
+          <span>原始 PDF 和已保存的通关截图不会被删除。</span>
+        </div>
+      </div>
+      <footer class="modal-actions">
+        <div class="action-spacer"></div>
+        <button class="button" data-close="clearModal">取消</button>
+        <button class="button danger-ghost" id="confirmClearButton">确认清空</button>
+      </footer>
+    </section>
+  </div>
+
+  <div class="toast-stack" id="toastStack" aria-live="polite"></div>
+
+  <script>
+    const declarationRows = [
+      { id: 1, no: "310120260000454783", consignee: "Amazon.com Services, Inc", contract: "GS501", customs: "海曙/北仑", country: "加拿大", amount: 115.20, currency: "USD" },
+      { id: 2, no: "531620260002926172", consignee: "Amazon.com Services, Inc", contract: "GS501", customs: "大鹏/盐田", country: "美国", amount: 2135.98, currency: "USD" },
+      { id: 3, no: "292120260001476464", consignee: "Amazon.com Services, Inc", contract: "GS500", customs: "义乌/北仑", country: "美国", amount: 261.90, currency: "USD" },
+      { id: 4, no: "292120260001530879", consignee: "Amazon.com Services, Inc", contract: "GS499", customs: "义乌/北仑", country: "美国", amount: 806.82, currency: "USD" },
+      { id: 5, no: "531620260002942012", consignee: "Amazon.com Services, Inc", contract: "GS501", customs: "大鹏/盐田", country: "美国", amount: 2099.28, currency: "USD" },
+      { id: 6, no: "223120260003172303", consignee: "Amazon.com Services, Inc", contract: "GS502", customs: "洋山港区", country: "美国", amount: 1533.24, currency: "USD" },
+      { id: 7, no: "222920260003080972", consignee: "Amazon.com Services, Inc", contract: "GS505", customs: "航交办/外高桥", country: "美国", amount: 1188.80, currency: "USD" },
+      { id: 8, no: "223120260003172374", consignee: "Amazon.com Services, Inc", contract: "GS502", customs: "洋山港区", country: "美国", amount: 1313.52, currency: "USD" },
+      { id: 9, no: "531620260002942070", consignee: "Amazon.com Services, Inc", contract: "GS501", customs: "大鹏/盐田", country: "美国", amount: 2074.32, currency: "USD" },
+      { id: 10, no: "292120260001500232", consignee: "Amazon.com Services, Inc", contract: "GS500", customs: "义乌/北仑", country: "美国", amount: 880.92, currency: "USD" },
+      { id: 11, no: "531620260002942032", consignee: "Amazon.com Services, Inc", contract: "GS501", customs: "大鹏/盐田", country: "美国", amount: 833.28, currency: "USD" },
+      { id: 12, no: "292120260001476464", consignee: "Amazon.com Services, Inc", contract: "GS500", customs: "义乌/北仑", country: "美国", amount: 261.90, currency: "USD" },
+      { id: 13, no: "310120260516469234", consignee: "Amazon.com Services, Inc", contract: "GS501", customs: "海曙/北仑", country: "加拿大", amount: 732.60, currency: "USD" },
+      { id: 14, no: "222920260002973182", consignee: "Amazon.com Services, Inc", contract: "GS501", customs: "航交办/外高桥", country: "美国", amount: 633.60, currency: "USD" },
+      { id: 15, no: "292120260001496198", consignee: "Amazon.com Services, Inc", contract: "GS500", customs: "义乌/北仑", country: "美国", amount: 635.58, currency: "USD" },
+      { id: 16, no: "223120260003239009", consignee: "Amazon.com Services, Inc", contract: "GS505", customs: "洋山港区", country: "美国", amount: 1370.37, currency: "USD" },
+      { id: 17, no: "223120260003254631", consignee: "Amazon.com Services, Inc", contract: "GS502", customs: "洋山港区", country: "美国", amount: 294.84, currency: "USD" },
+      { id: 18, no: "531620260003062848", consignee: "Amazon.com Services, Inc", contract: "GS496", customs: "大鹏/盐田", country: "美国", amount: 497.37, currency: "USD" },
+      { id: 19, no: "223120260003172375", consignee: "Amazon.com Services, Inc", contract: "GS501", customs: "洋山港区", country: "美国", amount: 2026.42, currency: "USD" },
+      { id: 20, no: "292120260001505545", consignee: "Amazon.com Services, Inc", contract: "GS500", customs: "义乌/北仑", country: "美国", amount: 2646.90, currency: "USD" }
+    ];
+
+    const state = {
+      rows: declarationRows.map(row => ({ ...row, verified: false })),
+      query: "",
+      filter: "all",
+      page: 1,
+      pageSize: 10,
+      selectedNo: null,
+      browser: "edge",
+      verifyStep: 1,
+      cleared: false
+    };
+
+    const tableBody = document.getElementById("tableBody");
+    const pageControls = document.getElementById("pageControls");
+    const pageRange = document.getElementById("pageRange");
+    const visibleCount = document.getElementById("visibleCount");
+    const emptyState = document.getElementById("emptyState");
+    const tableFooter = document.getElementById("tableFooter");
+
+    function getCounts(rows = state.rows) {
+      const counts = new Map();
+      rows.forEach(row => counts.set(row.no, (counts.get(row.no) || 0) + 1));
+      return counts;
+    }
+
+    function isDuplicate(row, counts = getCounts()) {
+      return (counts.get(row.no) || 0) > 1;
+    }
+
+    function sortedRows() {
+      const counts = getCounts();
+      return [...state.rows].sort((a, b) => {
+        const duplicateDifference = Number(isDuplicate(b, counts)) - Number(isDuplicate(a, counts));
+        return duplicateDifference || a.id - b.id;
+      });
+    }
+
+    function filteredRows() {
+      const counts = getCounts();
+      const query = state.query.trim().toLowerCase();
+      return sortedRows().filter(row => {
+        const matchesQuery = !query || [row.no, row.consignee, row.contract, row.customs, row.country].some(value => String(value).toLowerCase().includes(query));
+        const duplicate = isDuplicate(row, counts);
+        const matchesFilter = state.filter === "all"
+          || (state.filter === "duplicate" && duplicate)
+          || (state.filter === "verified" && row.verified)
+          || (state.filter === "unverified" && !row.verified);
+        return matchesQuery && matchesFilter;
+      });
+    }
+
+    function escapeHtml(value) {
+      return String(value).replace(/[&<>'"]/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", "\"": "&quot;" }[char]));
+    }
+
+    function formatMoney(amount) {
+      return new Intl.NumberFormat("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(amount);
+    }
+
+    function renderTable() {
+      if (state.cleared) {
+        tableBody.innerHTML = "";
+        emptyState.classList.add("visible");
+        tableFooter.style.display = "none";
+        return;
+      }
+
+      emptyState.classList.remove("visible");
+      tableFooter.style.display = "flex";
+      const rows = filteredRows();
+      const counts = getCounts();
+      const pageCount = Math.max(1, Math.ceil(rows.length / state.pageSize));
+      state.page = Math.min(state.page, pageCount);
+      const start = (state.page - 1) * state.pageSize;
+      const pageRows = rows.slice(start, start + state.pageSize);
+
+      tableBody.innerHTML = pageRows.map((row, index) => {
+        const duplicate = isDuplicate(row, counts);
+        const status = row.verified
+          ? '<span class="tag success"><span class="status-dot"></span>已截图</span>'
+          : '<span class="tag neutral"><span class="status-dot"></span>未校验</span>';
+        return `
+          <tr class="${duplicate ? "duplicate-row" : ""}">
+            <td class="center row-index">${start + index + 1}</td>
+            <td title="${escapeHtml(row.no)}">
+              <div class="declaration-cell">
+                <span class="declaration-no">${escapeHtml(row.no)}</span>
+                ${duplicate ? '<span class="tag danger">同号重复</span>' : ""}
+              </div>
+            </td>
+            <td title="${escapeHtml(row.consignee)}">${escapeHtml(row.consignee)}</td>
+            <td>${escapeHtml(row.contract)}</td>
+            <td>${escapeHtml(row.customs)}</td>
+            <td>${escapeHtml(row.country)}</td>
+            <td class="align-right"><span class="price">${formatMoney(row.amount)}</span><span class="currency-inline">${row.currency}</span></td>
+            <td class="center">${status}</td>
+            <td class="center"><button class="verify-button" data-verify="${escapeHtml(row.no)}">${row.verified ? "查看截图" : "校验"}</button></td>
+          </tr>`;
+      }).join("");
+
+      visibleCount.textContent = rows.length;
+      pageRange.textContent = rows.length ? `${start + 1}-${Math.min(start + state.pageSize, rows.length)} / ${rows.length}` : "0 / 0";
+      renderPagination(pageCount);
+
+      tableBody.querySelectorAll("[data-verify]").forEach(button => {
+        button.addEventListener("click", () => openVerify(button.dataset.verify));
+      });
+    }
+
+    function renderPagination(pageCount) {
+      const buttons = [];
+      buttons.push(`<button class="page-button" data-page="prev" aria-label="上一页" ${state.page === 1 ? "disabled" : ""}>‹</button>`);
+      for (let page = 1; page <= pageCount; page += 1) {
+        buttons.push(`<button class="page-button ${page === state.page ? "active" : ""}" data-page="${page}" aria-label="第${page}页">${page}</button>`);
+      }
+      buttons.push(`<button class="page-button" data-page="next" aria-label="下一页" ${state.page === pageCount ? "disabled" : ""}>›</button>`);
+      pageControls.innerHTML = buttons.join("");
+      pageControls.querySelectorAll("[data-page]").forEach(button => {
+        button.addEventListener("click", () => {
+          const value = button.dataset.page;
+          if (value === "prev") state.page = Math.max(1, state.page - 1);
+          else if (value === "next") state.page = Math.min(pageCount, state.page + 1);
+          else state.page = Number(value);
+          document.getElementById("tableScroll").scrollTop = 0;
+          renderTable();
+        });
+      });
+    }
+
+    function openModal(id) {
+      document.getElementById(id).classList.add("open");
+      const focusable = document.getElementById(id).querySelector("button, input, select");
+      if (focusable) window.setTimeout(() => focusable.focus(), 30);
+    }
+
+    function closeModal(id) {
+      document.getElementById(id).classList.remove("open");
+    }
+
+    function openVerify(no) {
+      state.selectedNo = no;
+      state.verifyStep = 1;
+      document.getElementById("verifyDeclarationNo").textContent = no;
+      document.getElementById("autofillNumber").textContent = no;
+      document.getElementById("manualVerifiedButton").disabled = true;
+      document.getElementById("captureButton").disabled = true;
+      document.getElementById("launchBrowserButton").disabled = false;
+      document.getElementById("verifyCallout").innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5M12 8h.01"></path></svg><span>应用将打开可见浏览器，自动选择“出口 / 水运”并填入报关单号。验证码由你在网页中手动完成。</span>';
+      updateVerifySteps();
+      updateBrowserButton();
+      openModal("verifyModal");
+    }
+
+    function updateVerifySteps() {
+      document.querySelectorAll(".step").forEach(step => {
+        const value = Number(step.dataset.step);
+        step.classList.toggle("done", value < state.verifyStep);
+        step.classList.toggle("active", value === state.verifyStep);
+      });
+    }
+
+    function updateBrowserButton() {
+      const browserName = state.browser === "edge" ? "Edge" : "Chrome";
+      document.getElementById("launchBrowserButton").textContent = `启动 ${browserName} 并自动填入`;
+    }
+
+    function showToast(title, copy) {
+      const toast = document.createElement("div");
+      toast.className = "toast";
+      toast.innerHTML = `<div class="toast-icon">✓</div><div><div class="toast-title">${escapeHtml(title)}</div><div class="toast-copy">${escapeHtml(copy)}</div></div>`;
+      document.getElementById("toastStack").appendChild(toast);
+      window.setTimeout(() => toast.remove(), 3600);
+    }
+
+    document.getElementById("searchInput").addEventListener("input", event => {
+      state.query = event.target.value;
+      state.page = 1;
+      renderTable();
+    });
+
+    document.getElementById("filterSelect").addEventListener("change", event => {
+      state.filter = event.target.value;
+      state.page = 1;
+      renderTable();
+    });
+
+    document.getElementById("pageSizeSelect").addEventListener("change", event => {
+      state.pageSize = Number(event.target.value);
+      state.page = 1;
+      renderTable();
+    });
+
+    document.querySelectorAll("[data-close]").forEach(button => {
+      button.addEventListener("click", () => closeModal(button.dataset.close));
+    });
+
+    document.querySelectorAll(".modal-backdrop").forEach(backdrop => {
+      backdrop.addEventListener("mousedown", event => {
+        if (event.target === backdrop) closeModal(backdrop.id);
+      });
+    });
+
+    document.addEventListener("keydown", event => {
+      if (event.key === "Escape") {
+        document.querySelectorAll(".modal-backdrop.open").forEach(modal => closeModal(modal.id));
+      }
+    });
+
+    document.getElementById("rulesButton").addEventListener("click", () => openModal("rulesModal"));
+    document.getElementById("clearHistoryButton").addEventListener("click", () => openModal("clearModal"));
+
+    document.getElementById("confirmClearButton").addEventListener("click", () => {
+      state.cleared = true;
+      closeModal("clearModal");
+      renderTable();
+      document.getElementById("metricFiles").innerHTML = '0 <span class="metric-hint">份</span>';
+      document.getElementById("metricUnique").innerHTML = '0 <span class="metric-hint">去重后</span>';
+      document.getElementById("metricDuplicates").innerHTML = '0 <span class="metric-hint">组</span>';
+      document.getElementById("currencyTotals").innerHTML = '<span class="metric-hint">暂无金额</span>';
+      showToast("历史已清空", "原始 PDF 与已保存截图未被删除。");
+    });
+
+    document.querySelectorAll("[data-browser]").forEach(button => {
+      button.addEventListener("click", () => {
+        state.browser = button.dataset.browser;
+        document.querySelectorAll("[data-browser]").forEach(item => item.classList.toggle("active", item === button));
+        updateBrowserButton();
+      });
+    });
+
+    document.querySelectorAll(".site-option input").forEach(input => {
+      input.addEventListener("change", () => {
+        document.querySelectorAll(".site-option").forEach(option => option.classList.toggle("selected", option.contains(input)));
+      });
+    });
+
+    document.getElementById("launchBrowserButton").addEventListener("click", () => {
+      state.verifyStep = 2;
+      updateVerifySteps();
+      document.getElementById("launchBrowserButton").disabled = true;
+      document.getElementById("manualVerifiedButton").disabled = false;
+      const browserName = state.browser === "edge" ? "Edge" : "Chrome";
+      document.getElementById("verifyCallout").innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5M12 8h.01"></path></svg><span>${browserName} 已启动并填入 ${state.selectedNo}。请在浏览器中完成人工验证和查询。</span>`;
+      showToast(`${browserName} 已启动`, `已自动填入报关单号 ${state.selectedNo}`);
+    });
+
+    document.getElementById("manualVerifiedButton").addEventListener("click", () => {
+      state.verifyStep = 3;
+      updateVerifySteps();
+      document.getElementById("manualVerifiedButton").disabled = true;
+      document.getElementById("captureButton").disabled = false;
+      document.getElementById("verifyCallout").innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5M12 8h.01"></path></svg><span>已检测到“通关全流程状态”结果区域。现在可以自动滚动并生成完整长截图。</span>';
+    });
+
+    document.getElementById("captureButton").addEventListener("click", () => {
+      state.verifyStep = 4;
+      updateVerifySteps();
+      state.rows.forEach(row => { if (row.no === state.selectedNo) row.verified = true; });
+      const filename = `${state.selectedNo}.png`;
+      document.getElementById("captureButton").disabled = true;
+      window.setTimeout(() => {
+        closeModal("verifyModal");
+        renderTable();
+        showToast("长截图已保存", `D:\\关单截图\\${filename}；同号记录已同步校验状态。`);
+      }, 350);
+    });
+
+    function simulateScan() {
+      const progress = document.getElementById("scanProgress");
+      progress.classList.remove("running");
+      void progress.offsetWidth;
+      progress.classList.add("running");
+      state.cleared = false;
+      window.setTimeout(() => {
+        document.getElementById("metricFiles").innerHTML = '20 <span class="metric-hint">份</span>';
+        document.getElementById("metricUnique").innerHTML = '19 <span class="metric-hint">去重后</span>';
+        document.getElementById("metricDuplicates").innerHTML = '1 <span class="metric-hint">组 / 2份</span>';
+        document.getElementById("currencyTotals").innerHTML = '<div class="currency-line"><span class="currency-code">USD</span><span class="currency-amount">22,080.94</span></div>';
+        renderTable();
+        showToast("识别完成", "20 个 PDF 已处理；发现 1 组同号重复，已自动置顶。");
+      }, 1500);
+    }
+
+    document.getElementById("rescanButton").addEventListener("click", simulateScan);
+    document.getElementById("screenshotFolderButton").addEventListener("click", () => showToast("设置截图位置", "当前保存到 D:\\关单截图；正式软件中将打开系统文件夹选择窗口。"));
+    document.getElementById("chooseFolderButton").addEventListener("click", () => showToast("选择文件夹", "原型中使用已提供的20份关单样本进行演示。"));
+    document.getElementById("emptyChooseButton").addEventListener("click", simulateScan);
+
+    renderTable();
+  </script>
+</body>
+</html>

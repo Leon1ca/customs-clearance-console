@@ -2,6 +2,8 @@ bin/
 obj/
 .vs/
 .idea/
+.devtools/
+.nuget/
 *.user
 *.suo
 
@@ -14,7 +16,7 @@ src/CustomsClearanceConsole/tools/
 artifacts/
 dist/
 *.zip
+!docs/design-sources/**/*.zip
 关单核验台数据/
 Screenshots/
 *.log
-
