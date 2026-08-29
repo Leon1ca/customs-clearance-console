@@ -5,17 +5,20 @@ using System.Net.Sockets;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Win32;
 
 namespace CustomsClearanceConsole;
 
 internal sealed class BrowserValidation : IAsyncDisposable
 {
-    public const string PrimaryUrl = "https://www.singlewindow.cn/#/publicInquiryDetail?id=pi5";
+    public const string PrimaryUrl = "https://www.singlewindow.cn/#/publicInquiryDetail?id=pi4";
     public const string FallbackUrl = "https://swapp.singlewindow.cn/qspserver/sw/qsp/query/view/export?ngBasePath=https://swapp.singlewindow.cn:443/qspserver/";
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(5) };
     private DevToolsClient? _devTools;
     private Process? _process;
     private int _debugPort;
+
+    internal sealed record BrowserChoice(string Path, string DisplayName, bool UsedFallback);
 
     public static string? FindBrowser(string preference)
     {
@@ -35,9 +38,60 @@ internal sealed class BrowserValidation : IAsyncDisposable
         return preferred.Concat(fallback).FirstOrDefault(File.Exists);
     }
 
+    public static BrowserChoice ResolveBrowser()
+    {
+        var defaultPath = GetDefaultBrowserExecutable();
+        if (!string.IsNullOrWhiteSpace(defaultPath) && File.Exists(defaultPath))
+        {
+            var fileName = Path.GetFileName(defaultPath);
+            if (fileName.Equals("msedge.exe", StringComparison.OrdinalIgnoreCase))
+                return new BrowserChoice(defaultPath, "系统默认浏览器（Edge）", false);
+            if (fileName.Equals("chrome.exe", StringComparison.OrdinalIgnoreCase))
+                return new BrowserChoice(defaultPath, "系统默认浏览器（Chrome）", false);
+        }
+
+        var fallback = FindBrowser("Edge") ?? throw new FileNotFoundException("系统默认浏览器不支持自动填写，且未找到 Microsoft Edge 或 Google Chrome。请至少安装其中一种浏览器。");
+        var name = Path.GetFileName(fallback).Equals("msedge.exe", StringComparison.OrdinalIgnoreCase) ? "Microsoft Edge" : "Google Chrome";
+        return new BrowserChoice(fallback, name, true);
+    }
+
+    private static string? GetDefaultBrowserExecutable()
+    {
+        try
+        {
+            using var choice = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice");
+            var progId = choice?.GetValue("ProgId") as string;
+            if (string.IsNullOrWhiteSpace(progId)) return null;
+            using var commandKey = Registry.ClassesRoot.OpenSubKey($@"{progId}\shell\open\command");
+            var command = commandKey?.GetValue(null) as string;
+            if (string.IsNullOrWhiteSpace(command)) return null;
+            command = Environment.ExpandEnvironmentVariables(command.Trim());
+            if (command.StartsWith('"'))
+            {
+                var end = command.IndexOf('"', 1);
+                return end > 1 ? command[1..end] : null;
+            }
+            var exeEnd = command.IndexOf(".exe", StringComparison.OrdinalIgnoreCase);
+            return exeEnd >= 0 ? command[..(exeEnd + 4)].Trim() : null;
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write($"读取系统默认浏览器失败：{ex.Message}");
+            return null;
+        }
+    }
+
+    public Task<string> StartAsync(string declarationNo, CancellationToken cancellationToken) =>
+        StartCoreAsync(declarationNo, ResolveBrowser(), cancellationToken);
+
     public async Task<string> StartAsync(string declarationNo, string browserPreference, CancellationToken cancellationToken)
     {
-        var browser = FindBrowser(browserPreference) ?? throw new FileNotFoundException("未找到 Microsoft Edge 或 Google Chrome。请至少安装其中一种浏览器。");
+        return await StartCoreAsync(declarationNo, ResolveBrowser(), cancellationToken);
+    }
+
+    private async Task<string> StartCoreAsync(string declarationNo, BrowserChoice choice, CancellationToken cancellationToken)
+    {
+        var browser = choice.Path;
         var port = GetFreePort(); _debugPort = port;
         var profile = Path.Combine(AppLog.Folder, "BrowserProfiles", $"{Path.GetFileNameWithoutExtension(browser)}-{port}");
         Directory.CreateDirectory(profile);
@@ -63,7 +117,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
         {
             await Task.Delay(500, cancellationToken);
             string result;
-            try { result = await EvaluateAsync(BuildAutofillScript(declarationNo), cancellationToken); }
+            try { result = await EvaluateInAllFramesAsync(BuildAutofillScript(declarationNo), cancellationToken); }
             catch (Exception ex) when (IsConnectionFailure(ex))
             {
                 try { await ReconnectAsync(cancellationToken); } catch { return "核验网站已打开，但自动填写连接中断。请手动输入报关单号并查询；若自动长截图不可用，请使用浏览器的网页捕获功能，截图名保存为报关单号。"; }
@@ -71,9 +125,12 @@ internal sealed class BrowserValidation : IAsyncDisposable
             }
             filled = result.Contains("filled", StringComparison.OrdinalIgnoreCase);
         }
+        var browserNote = choice.UsedFallback
+            ? $"系统默认浏览器不支持自动填写，已自动使用 {choice.DisplayName}。"
+            : $"已使用{choice.DisplayName}。";
         return filled
-            ? "已自动填写报关单号并尝试点击查询。请在浏览器中完成人工验证，确认流程信息完整显示后回到本窗口截图。"
-            : "核验网站已打开，但网页结构可能已更新。请手动输入报关单号并查询，完成人工验证后回到本窗口截图。";
+            ? $"{browserNote} 已在正文的“报关单号”栏填入单号。请在浏览器中输入验证码并点击查询，确认信息完整后回到本窗口截图。"
+            : $"{browserNote} 核验网站已打开，但网页结构可能已更新。请手动输入报关单号并查询，完成人工验证后回到本窗口截图。";
     }
 
     private async Task ConnectDevToolsAsync(string websocket, CancellationToken token)
@@ -123,7 +180,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
         for (var i = 0; i < 24; i++)
         {
             await Task.Delay(500, cancellationToken);
-            var result = await EvaluateAsync(BuildAutofillScript(declarationNo), cancellationToken);
+            var result = await EvaluateInAllFramesAsync(BuildAutofillScript(declarationNo), cancellationToken);
             if (result.Contains("filled", StringComparison.OrdinalIgnoreCase)) break;
         }
     }
@@ -196,6 +253,52 @@ internal sealed class BrowserValidation : IAsyncDisposable
         catch { return ""; }
     }
 
+    private async Task<string> EvaluateInAllFramesAsync(string expression, CancellationToken token)
+    {
+        if (_devTools is null) return "";
+        var main = await EvaluateAsync(expression, token);
+        if (main.Contains("filled", StringComparison.OrdinalIgnoreCase)) return main;
+
+        JsonElement frameTree;
+        try { frameTree = await _devTools.CommandAsync("Page.getFrameTree", null, token); }
+        catch { return main; }
+
+        foreach (var frameId in EnumerateFrameIds(frameTree.GetProperty("result").GetProperty("frameTree")))
+        {
+            try
+            {
+                var world = await _devTools.CommandAsync("Page.createIsolatedWorld", new
+                {
+                    frameId,
+                    worldName = "customs-console-autofill",
+                    grantUniveralAccess = true
+                }, token);
+                var contextId = world.GetProperty("result").GetProperty("executionContextId").GetInt32();
+                var response = await _devTools.CommandAsync("Runtime.evaluate", new
+                {
+                    expression,
+                    contextId,
+                    returnByValue = true,
+                    awaitPromise = true
+                }, token);
+                var value = response.GetProperty("result").GetProperty("result").TryGetProperty("value", out var resultValue)
+                    ? resultValue.ToString() : "";
+                if (value.Contains("filled", StringComparison.OrdinalIgnoreCase)) return value;
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or KeyNotFoundException) { }
+        }
+        return main;
+    }
+
+    private static IEnumerable<string> EnumerateFrameIds(JsonElement tree)
+    {
+        if (tree.TryGetProperty("frame", out var frame) && frame.TryGetProperty("id", out var id) && id.GetString() is { Length: > 0 } frameId)
+            yield return frameId;
+        if (!tree.TryGetProperty("childFrames", out var children) || children.ValueKind != JsonValueKind.Array) yield break;
+        foreach (var child in children.EnumerateArray())
+            foreach (var childId in EnumerateFrameIds(child)) yield return childId;
+    }
+
     private async Task<string> WaitForPageAsync(int port, CancellationToken cancellationToken)
     {
         Exception? last = null;
@@ -245,15 +348,42 @@ internal sealed class BrowserValidation : IAsyncDisposable
         return $@"(() => {{
           const no = {encoded};
           const visible = e => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
-          const inputs = [...document.querySelectorAll('input')].filter(i => visible(i) && (!i.type || ['text','search','tel'].includes(i.type)));
-          const target = inputs.find(i => /报关单号|海关编号/.test((i.closest('div,td,li,form')?.innerText || '') + (i.placeholder || ''))) || inputs[0];
+          const normalize = s => (s || '').replace(/[\s：:＊*]/g, '');
+          const roots = [document];
+          for (let n = 0; n < roots.length; n++)
+            for (const e of roots[n].querySelectorAll('*')) if (e.shadowRoot && !roots.includes(e.shadowRoot)) roots.push(e.shadowRoot);
+          const queryAll = selector => roots.flatMap(root => [...root.querySelectorAll(selector)]);
+          const labels = queryAll('label,span,td,div')
+            .filter(e => visible(e) && e.children.length <= 3 && normalize(e.innerText) === '报关单号');
+          const inputs = queryAll('input')
+            .filter(i => visible(i) && (!i.type || ['text','tel'].includes(i.type)));
+          const distance = (label, input) => {{
+            const a = label.getBoundingClientRect(), b = input.getBoundingClientRect();
+            const vertical = Math.abs((a.top + a.bottom) / 2 - (b.top + b.bottom) / 2);
+            const horizontal = b.left >= a.right ? b.left - a.right : Math.abs(b.left - a.left) + 300;
+            return vertical * 5 + horizontal;
+          }};
+          let target = null;
+          target = inputs.find(i => /报关单号|declaration|customs/i.test([i.placeholder,i.name,i.id,i.getAttribute('aria-label')].filter(Boolean).join(' '))) || null;
+          for (const label of labels) {{
+            if (target && visible(target)) break;
+            if (label.htmlFor) target = queryAll('#' + CSS.escape(label.htmlFor))[0] || null;
+            if (!target) {{
+              const row = label.closest('tr,.form-group,.el-form-item,.ant-form-item,.layui-form-item') || label.parentElement;
+              target = row?.querySelector('input:not([type=hidden])') || null;
+            }}
+            if (target && visible(target)) break;
+          }}
+          if ((!target || !visible(target)) && labels.length && inputs.length)
+            target = inputs.slice().sort((a,b) => distance(labels[0], a) - distance(labels[0], b))[0];
           if (!target) return 'waiting';
-          const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
-          setter.call(target, no); target.dispatchEvent(new Event('input', {{bubbles:true}})); target.dispatchEvent(new Event('change', {{bubbles:true}}));
-          for (const word of ['出口','水运']) {{ const el=[...document.querySelectorAll('label,span,div')].find(e=>visible(e)&&e.children.length<4&&e.innerText?.trim()===word); el?.click(); }}
-          const button=[...document.querySelectorAll('button,a,input[type=button]')].find(e=>visible(e)&&/查\s*询/.test(e.innerText||e.value||''));
-          if (button && !button.disabled) button.click();
-          target.focus(); return button ? 'filled-clicked' : 'filled';
+          target.focus();
+          const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+          if (setter) setter.call(target, no); else target.value = no;
+          target.setAttribute('value', no);
+          for (const type of ['input','change','keyup','blur']) target.dispatchEvent(new Event(type, {{bubbles:true, composed:true}}));
+          target.focus();
+          return target.value === no ? 'filled' : 'waiting';
         }})()";
     }
 

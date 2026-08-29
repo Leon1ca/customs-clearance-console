@@ -3,7 +3,6 @@ namespace CustomsClearanceConsole;
 internal sealed class VerificationForm : Form
 {
     private readonly DeclarationRecord _record;
-    private readonly string _browserPreference;
     private readonly string _targetFolder;
     private BrowserValidation? _browser;
     private readonly Label _status;
@@ -11,10 +10,9 @@ internal sealed class VerificationForm : Form
 
     public string? SavedScreenshot { get; private set; }
 
-    public VerificationForm(DeclarationRecord record, string browserPreference, string targetFolder)
+    public VerificationForm(DeclarationRecord record, string targetFolder)
     {
         _record = record;
-        _browserPreference = browserPreference;
         _targetFolder = targetFolder;
         Text = $"核验 · {record.DeclarationNo}";
         Size = new Size(620, 310);
@@ -55,7 +53,7 @@ internal sealed class VerificationForm : Form
         try
         {
             _browser = new BrowserValidation();
-            _status.Text = await _browser.StartAsync(_record.DeclarationNo, _browserPreference, CancellationToken.None);
+            _status.Text = await _browser.StartAsync(_record.DeclarationNo, CancellationToken.None);
             _capture.Enabled = true;
         }
         catch (Exception ex)

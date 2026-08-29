@@ -22,7 +22,15 @@ internal sealed partial class DeclarationParser
         primary.DestinationCountry = SelectValue("目的国", primary.DestinationCountry, secondary.DestinationCountry,
             IsPlausibleText, true, conflicts, recovered, autoResolved, ref agreements);
 
-        primary.Totals = ReconcileTotals(primary.Totals, secondary.Totals, conflicts, recovered, ref agreements);
+        if (primary.LineTotals.Count > 0 || secondary.LineTotals.Count > 0)
+        {
+            primary.LineTotals = ReconcileLineTotals(primary.LineTotals, secondary.LineTotals, conflicts, recovered, ref agreements);
+            primary.Totals = SumReliableLineTotals(primary.LineTotals);
+        }
+        else
+        {
+            primary.Totals = ReconcileTotals(primary.Totals, secondary.Totals, conflicts, recovered, ref agreements);
+        }
         var missing = MissingFields(primary);
         if (conflicts.Count > 0 || missing.Count > 0)
         {
@@ -66,7 +74,6 @@ internal sealed partial class DeclarationParser
             else if (hasPrimary && hasSecondary)
             {
                 conflicts.Add($"关单总值 {currency}（主引擎 {primaryAmount:N2}；复核引擎 {secondaryAmount:N2}）");
-                totals[currency] = secondaryAmount;
             }
             else if (hasPrimary)
             {
@@ -80,6 +87,125 @@ internal sealed partial class DeclarationParser
         }
         return totals;
     }
+
+    private static List<DeclarationLineTotal> ReconcileLineTotals(
+        IReadOnlyList<DeclarationLineTotal> primary,
+        IReadOnlyList<DeclarationLineTotal> secondary,
+        List<string> conflicts,
+        List<string> recovered,
+        ref int agreements)
+    {
+        if (HasCompleteTableAdvantage(secondary, primary))
+        {
+            recovered.Add("逐项总价（第二引擎完整表格）");
+            agreements++;
+            return MarkStructurallyVerified(secondary, "第二引擎完整读取，已通过表格结构校验");
+        }
+        if (HasCompleteTableAdvantage(primary, secondary))
+        {
+            recovered.Add("逐项总价（主引擎完整表格）");
+            agreements++;
+            return MarkStructurallyVerified(primary, "主引擎完整读取，已通过表格结构校验");
+        }
+
+        var result = new List<DeclarationLineTotal>();
+        var remaining = secondary.Select(CloneLine).ToList();
+        foreach (var primaryLine in primary)
+        {
+            var match = FindMatchingLine(primaryLine, remaining);
+            if (match is null)
+            {
+                var missing = CloneLine(primaryLine);
+                missing.IsReliable = false;
+                missing.Note = "复核引擎未识别到对应金额，未计入合计";
+                result.Add(missing);
+                conflicts.Add($"第{primaryLine.PageNumber}页项{DisplayItem(primaryLine)}金额仅主引擎识别");
+                continue;
+            }
+
+            remaining.Remove(match);
+            var reconciled = CloneLine(primaryLine);
+            reconciled.VerificationAmount = match.Amount;
+            if (primaryLine.Currency.Equals(match.Currency, StringComparison.OrdinalIgnoreCase) && primaryLine.Amount == match.Amount)
+            {
+                reconciled.IsReliable = true;
+                reconciled.Note = "双引擎一致";
+                agreements++;
+            }
+            else
+            {
+                reconciled.IsReliable = false;
+                reconciled.Note = $"双引擎不一致：主 {primaryLine.Currency} {primaryLine.Amount:N2}；复核 {match.Currency} {match.Amount:N2}，未计入合计";
+                conflicts.Add($"第{primaryLine.PageNumber}页项{DisplayItem(primaryLine)}金额（主 {primaryLine.Amount:N2}；复核 {match.Amount:N2}）");
+            }
+            result.Add(reconciled);
+        }
+
+        foreach (var secondaryLine in remaining)
+        {
+            var recoveredLine = CloneLine(secondaryLine);
+            recoveredLine.VerificationAmount = secondaryLine.Amount;
+            recoveredLine.IsReliable = false;
+            recoveredLine.Note = "仅复核引擎识别到，未计入合计";
+            result.Add(recoveredLine);
+            conflicts.Add($"第{secondaryLine.PageNumber}页项{DisplayItem(secondaryLine)}金额仅复核引擎识别");
+        }
+
+        if (result.Count > primary.Count) recovered.Add("金额明细");
+        result = result.OrderBy(x => x.PageNumber).ThenBy(x => ParseItemNumber(x.ItemNo)).ThenBy(x => x.Sequence).ToList();
+        for (var i = 0; i < result.Count; i++) result[i].Sequence = i + 1;
+        return result;
+    }
+
+    private static bool HasCompleteTableAdvantage(IReadOnlyList<DeclarationLineTotal> stronger, IReadOnlyList<DeclarationLineTotal> weaker)
+    {
+        if (stronger.Count < 3 || stronger.Count < weaker.Count + 3 || stronger.Count < Math.Max(3, weaker.Count * 2)) return false;
+        if (stronger.Any(x => x.Amount <= 0 || string.IsNullOrWhiteSpace(x.Currency) || x.PageNumber <= 0)) return false;
+        var pages = stronger.GroupBy(x => x.PageNumber).OrderBy(x => x.Key).ToList();
+        if (pages.Count == 0 || pages.Select(x => x.Key).Zip(pages.Select(x => x.Key).Skip(1), (a, b) => b - a).Any(gap => gap > 1)) return false;
+        return pages.All(page => page.Count() > 0 && page.Select(x => x.Currency).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 1);
+    }
+
+    private static List<DeclarationLineTotal> MarkStructurallyVerified(IReadOnlyList<DeclarationLineTotal> source, string note)
+    {
+        var result = source.OrderBy(x => x.PageNumber).ThenBy(x => x.Sequence).Select(CloneLine).ToList();
+        for (var i = 0; i < result.Count; i++)
+        {
+            result[i].Sequence = i + 1;
+            result[i].VerificationAmount = result[i].Amount;
+            result[i].IsReliable = true;
+            result[i].Note = note;
+        }
+        return result;
+    }
+
+    private static DeclarationLineTotal? FindMatchingLine(DeclarationLineTotal target, IReadOnlyList<DeclarationLineTotal> candidates)
+    {
+        var samePageCurrency = candidates
+            .Where(x => x.PageNumber == target.PageNumber && x.Currency.Equals(target.Currency, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (!string.IsNullOrWhiteSpace(target.ItemNo))
+        {
+            var exact = samePageCurrency.FirstOrDefault(x => x.ItemNo == target.ItemNo);
+            if (exact is not null) return exact;
+        }
+        return samePageCurrency.OrderBy(x => Math.Abs(x.Sequence - target.Sequence)).FirstOrDefault();
+    }
+
+    private static DeclarationLineTotal CloneLine(DeclarationLineTotal source) => new()
+    {
+        Sequence = source.Sequence,
+        PageNumber = source.PageNumber,
+        ItemNo = source.ItemNo,
+        Currency = source.Currency,
+        Amount = source.Amount,
+        VerificationAmount = source.VerificationAmount,
+        IsReliable = source.IsReliable,
+        Note = source.Note
+    };
+
+    private static int ParseItemNumber(string value) => int.TryParse(value, out var item) ? item : int.MaxValue;
+    private static string DisplayItem(DeclarationLineTotal line) => string.IsNullOrWhiteSpace(line.ItemNo) ? line.Sequence.ToString() : line.ItemNo;
 
     private static string SelectValue(
         string field,
@@ -133,6 +259,14 @@ internal sealed partial class DeclarationParser
     {
         var a = NormalizeComparable(first);
         var b = NormalizeComparable(second);
+        if (field == "境外收货人")
+        {
+            var firstCompany = first.Any(char.IsLetter) && first.Count(char.IsLetter) >= 6;
+            var secondCompany = second.Any(char.IsLetter) && second.Count(char.IsLetter) >= 6;
+            var firstRegistrationOnly = first.Count(char.IsDigit) >= 10 && first.Count(char.IsLetter) < 3;
+            var secondRegistrationOnly = second.Count(char.IsDigit) >= 10 && second.Count(char.IsLetter) < 3;
+            if ((firstCompany && secondRegistrationOnly) || (secondCompany && firstRegistrationOnly)) return true;
+        }
         if (field == "境外收货人" && a.Length >= 12 && b.Length >= 12 &&
             a.All(x => x is >= 'A' and <= 'Z' or >= '0' and <= '9') &&
             b.All(x => x is >= 'A' and <= 'Z' or >= '0' and <= '9'))

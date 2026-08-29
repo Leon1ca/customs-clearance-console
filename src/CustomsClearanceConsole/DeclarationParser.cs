@@ -69,7 +69,8 @@ internal sealed partial class DeclarationParser
             record.DestinationCountry = ReadRegion(first, .47, .64, .295, .335);
 
         record.ExitCustoms = ReadExitCustoms(first, record.DeclarationNo);
-        record.Totals = ReadTotals(document.Pages);
+        record.LineTotals = ReadLineTotals(document.Pages);
+        record.Totals = SumReliableLineTotals(record.LineTotals);
 
         if (document.UsedOcr)
         {
@@ -248,12 +249,12 @@ internal sealed partial class DeclarationParser
         };
     }
 
-    private static Dictionary<string, decimal> ReadTotals(IEnumerable<TextPage> pages)
+    private static List<DeclarationLineTotal> ReadLineTotals(IEnumerable<TextPage> pages)
     {
-        var result = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
+        var result = new List<DeclarationLineTotal>();
         foreach (var page in pages)
         {
-            var pageTotals = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
+            var pageTotals = new List<DeclarationLineTotal>();
             var header = FindPriceHeader(page);
             if (header is not null && header.Top >= page.Height * .07 && header.Top <= page.Height * .76)
             {
@@ -264,7 +265,7 @@ internal sealed partial class DeclarationParser
                     ? originHeader.Left - 1
                     : Math.Min(page.Width, header.Right + page.Width * .10);
                 var footer = FindAnchor(page, "特殊关系确认", "支付特许权使用费确认", "价格影响确认");
-                var bottom = footer?.Top ?? page.Height * .89;
+                var bottom = footer?.Top ?? page.Height * .985;
 
                 var column = page.Tokens
                     .Where(t => t.CenterX >= left && t.CenterX <= right)
@@ -273,7 +274,7 @@ internal sealed partial class DeclarationParser
                 var lines = Lines(column, Math.Max(2.5, page.Height * .0048)).ToList();
                 for (var i = 0; i < lines.Count; i++)
                 {
-                    var currency = CurrencyNames.Normalize(Join(lines[i]));
+                    var currency = NormalizeCurrencyInPriceColumn(page, lines[i], header);
                     if (currency is null) continue;
 
                     decimal? total = TryAmountFromLine(lines[i], out var sameLineAmount) && sameLineAmount != 0
@@ -288,35 +289,55 @@ internal sealed partial class DeclarationParser
                         if (TryAmountFromLine(lines[j], out var value)) total = value;
                     }
                     if (total is null) continue;
-                    pageTotals[currency] = pageTotals.GetValueOrDefault(currency) + total.Value;
+                    pageTotals.Add(new DeclarationLineTotal
+                    {
+                        PageNumber = page.PageNumber,
+                        ItemNo = FindItemNo(page, header.Bottom, currencyY),
+                        Currency = currency,
+                        Amount = total.Value
+                    });
                 }
             }
 
             // Some screenshots preserve every amount and currency but blur the compound
             // "单价/总价/币制" header. In that case, anchor each item at its currency row
             // and select the closest numeric line immediately above it.
-            if (pageTotals.Count == 0)
-                pageTotals = ReadTotalsFromCurrencyRows(page);
-
-            foreach (var total in pageTotals)
-                result[total.Key] = result.GetValueOrDefault(total.Key) + total.Value;
+            if (pageTotals.Count == 0) pageTotals = ReadLineTotalsFromCurrencyRows(page);
+            result.AddRange(pageTotals);
         }
+        for (var i = 0; i < result.Count; i++) result[i].Sequence = i + 1;
+        NormalizeItemNumbers(result);
         return result;
     }
 
-    private static Dictionary<string, decimal> ReadTotalsFromCurrencyRows(TextPage page)
+    private static void NormalizeItemNumbers(IReadOnlyList<DeclarationLineTotal> lines)
     {
-        var result = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
+        if (lines.Count == 0) return;
+        var parsed = lines.Select(x => int.TryParse(x.ItemNo, out var item) ? item : 0).ToList();
+        var distinctValid = parsed.Where(x => x > 0).Distinct().Count();
+        var strictlyIncreasing = parsed.Where(x => x > 0).Zip(parsed.Where(x => x > 0).Skip(1), (a, b) => b > a).All(x => x);
+        if (distinctValid >= Math.Ceiling(lines.Count * .7) && strictlyIncreasing)
+        {
+            for (var i = 0; i < lines.Count; i++)
+                if (parsed[i] == 0) lines[i].ItemNo = (i + 1).ToString(CultureInfo.InvariantCulture);
+            return;
+        }
+        for (var i = 0; i < lines.Count; i++) lines[i].ItemNo = (i + 1).ToString(CultureInfo.InvariantCulture);
+    }
+
+    private static List<DeclarationLineTotal> ReadLineTotalsFromCurrencyRows(TextPage page)
+    {
+        var result = new List<DeclarationLineTotal>();
         var footer = FindAnchor(page, "特殊关系确认", "支付特许权使用费确认", "价格影响确认");
-        var bottom = footer?.Top ?? page.Height * .89;
+        var bottom = footer?.Top ?? page.Height * .985;
         var currencyTokens = page.Tokens
             .Where(t => t.Top >= page.Height * .32 && t.Top < bottom)
-            .Where(t => CurrencyNames.Normalize(t.Text) is not null)
+            .Where(t => NormalizeCurrencyInPriceColumn(page, [t], null) is not null)
             .ToList();
 
         foreach (var currencyLine in Lines(currencyTokens, Math.Max(2.5, page.Height * .0048)))
         {
-            var currency = CurrencyNames.Normalize(Join(currencyLine));
+            var currency = NormalizeCurrencyInPriceColumn(page, currencyLine, null);
             if (currency is null) continue;
 
             var currencyY = currencyLine.Average(x => x.CenterY);
@@ -331,11 +352,69 @@ internal sealed partial class DeclarationParser
             foreach (var amountLine in amountLines)
             {
                 if (!TryAmountFromLine(amountLine, out var total) || total <= 0) continue;
-                result[currency] = result.GetValueOrDefault(currency) + total;
+                result.Add(new DeclarationLineTotal
+                {
+                    PageNumber = page.PageNumber,
+                    ItemNo = FindItemNo(page, page.Height * .30, currencyY),
+                    Currency = currency,
+                    Amount = total
+                });
                 break;
             }
         }
         return result;
+    }
+
+    private static string FindItemNo(TextPage page, double tableTop, double currencyY)
+    {
+        var candidate = page.Tokens
+            .Where(t => t.CenterX <= page.Width * .085 && t.CenterY > tableTop)
+            .Where(t => t.CenterY <= currencyY + page.Height * .012 && currencyY - t.CenterY <= page.Height * .12)
+            .Select(t => (Token: t, Match: Regex.Match(t.Text.Trim(), @"^(\d{1,3})$")))
+            .Where(x => x.Match.Success)
+            .OrderBy(x => Math.Abs(x.Token.CenterY - currencyY))
+            .ThenByDescending(x => x.Token.CenterY)
+            .FirstOrDefault();
+        return candidate.Match?.Groups[1].Value ?? "";
+    }
+
+    internal static Dictionary<string, decimal> SumReliableLineTotals(IEnumerable<DeclarationLineTotal> lines)
+    {
+        var result = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
+        foreach (var line in lines.Where(x => x.IsReliable && x.Amount > 0 && !string.IsNullOrWhiteSpace(x.Currency)))
+            result[line.Currency] = result.GetValueOrDefault(line.Currency) + line.Amount;
+        return result;
+    }
+
+    private static string? NormalizeCurrencyInPriceColumn(
+        TextPage page,
+        IReadOnlyCollection<TextToken> tokens,
+        TextToken? priceHeader)
+    {
+        var joined = Join(tokens);
+        var exact = CurrencyNames.Normalize(joined);
+        if (exact is not null) return exact;
+
+        // Low-resolution scans can reduce “美元” to a single “美” (primary OCR)
+        // or confuse both characters as “上米” (verification OCR). Only accept
+        // those aliases inside the normalized price column and item-table band,
+        // so an isolated character elsewhere in the declaration cannot create a total.
+        var compact = NormalizeLabel(joined);
+        if (compact is not ("美" or "上米")) return null;
+
+        var centerX = tokens.Average(x => x.CenterX);
+        var centerY = tokens.Average(x => x.CenterY);
+        if (centerX < page.Width * .45 || centerX > page.Width * .68 ||
+            centerY < page.Height * .34 || centerY > page.Height * .78)
+            return null;
+
+        if (priceHeader is not null &&
+            (centerY <= priceHeader.Bottom ||
+             centerX < priceHeader.Left - page.Width * .035 ||
+             centerX > priceHeader.Right + page.Width * .08))
+            return null;
+
+        return "USD";
     }
 
     private static bool TryAmountFromLine(IEnumerable<TextToken> line, out decimal value)
@@ -501,19 +580,21 @@ internal sealed partial class DeclarationParser
 
     private static string FindCountryCandidate(TextPage page, string current)
     {
-        string[] knownCountries = ["哈萨克斯坦", "澳大利亚", "新加坡", "加拿大", "意大利", "西班牙", "阿联酋", "越南", "美国", "英国", "德国", "法国", "日本", "韩国", "墨西哥", "巴西", "印度", "荷兰", "波兰"];
+        string[] knownCountries = ["印度尼西亚", "哈萨克斯坦", "澳大利亚", "新加坡", "加拿大", "意大利", "西班牙", "阿联酋", "越南", "泰国", "美国", "英国", "德国", "法国", "日本", "韩国", "墨西哥", "巴西", "印度", "荷兰", "波兰"];
         foreach (var country in knownCountries)
             if (current.Contains(country)) return country;
 
-        var joined = current + " " + string.Join(" ", page.Tokens.Select(t => t.Text));
-        var code = Regex.Match(joined, @"\b(USA|CAN|GBR|DEU|FRA|ITA|ESP|JPN|KOR|AUS|SGP|MEX|BRA|IND|NLD|POL|ARE|VNM|KAZ)\b", RegexOptions.IgnoreCase).Value.ToUpperInvariant();
+        const string codePattern = @"\b(USA|CAN|GBR|DEU|FRA|ITA|ESP|JPN|KOR|AUS|SGP|MEX|BRA|IDN|IND|NLD|POL|ARE|VNM|KAZ|THA)\b";
+        var code = Regex.Match(current, codePattern, RegexOptions.IgnoreCase).Value.ToUpperInvariant();
         var byCode = code switch
         {
             "USA" => "美国", "CAN" => "加拿大", "GBR" => "英国", "DEU" => "德国", "FRA" => "法国", "ITA" => "意大利", "ESP" => "西班牙",
             "JPN" => "日本", "KOR" => "韩国", "AUS" => "澳大利亚", "SGP" => "新加坡", "MEX" => "墨西哥", "BRA" => "巴西", "IND" => "印度",
-            "NLD" => "荷兰", "POL" => "波兰", "ARE" => "阿联酋", "VNM" => "越南", "KAZ" => "哈萨克斯坦", _ => ""
+            "IDN" => "印度尼西亚", "NLD" => "荷兰", "POL" => "波兰", "ARE" => "阿联酋", "VNM" => "越南", "KAZ" => "哈萨克斯坦",
+            "THA" => "泰国", _ => ""
         };
         if (!string.IsNullOrWhiteSpace(byCode)) return byCode;
+        var joined = current + " " + string.Join(" ", page.Tokens.Select(t => t.Text));
         foreach (var country in knownCountries)
             if (joined.Contains(country)) return country;
         return current;

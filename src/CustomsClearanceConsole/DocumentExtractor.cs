@@ -20,8 +20,8 @@ internal sealed partial class DocumentExtractor
             return new DocumentText
             {
                 UsedOcr = true,
-                Pages = [result.Primary],
-                VerificationPages = result.Secondary is null ? [] : [result.Secondary],
+                Pages = [WithPageNumber(result.Primary, 1)],
+                VerificationPages = result.Secondary is null ? [] : [WithPageNumber(result.Secondary, 1)],
                 SecondaryOcrAttempted = true,
                 SecondaryOcrError = result.SecondaryError
             };
@@ -43,7 +43,7 @@ internal sealed partial class DocumentExtractor
                 var page = document.LoadPage(i);
                 try
                 {
-                    var textPage = ExtractPdfText(page);
+                    var textPage = ExtractPdfText(page, i + 1);
                     pages.Add(textPage);
                     if (textPage.Tokens.Count < 30)
                         rendered.Add((i, PdfiumNative.RenderPageToPng(page, i, temp)));
@@ -58,11 +58,17 @@ internal sealed partial class DocumentExtractor
         foreach (var item in rendered)
         {
             var result = await OcrImageAsync(item.Path, cancellationToken);
-            pages[item.Index] = result.Primary;
-            verificationPages[item.Index] = result.Secondary ?? result.Primary;
+            pages[item.Index] = WithPageNumber(result.Primary, item.Index + 1);
+            verificationPages[item.Index] = WithPageNumber(result.Secondary ?? result.Primary, item.Index + 1);
             if (!string.IsNullOrWhiteSpace(result.SecondaryError)) secondaryErrors.Add(result.SecondaryError);
         }
         try { if (Directory.Exists(temp)) Directory.Delete(temp, true); } catch { }
+        var declarationIndexes = SelectDeclarationPageIndexes(pages, verificationPages);
+        if (declarationIndexes.Count > 0)
+        {
+            pages = declarationIndexes.Select(index => pages[index]).ToList();
+            verificationPages = declarationIndexes.Select(index => verificationPages[index]).ToList();
+        }
         return new DocumentText
         {
             Pages = pages,
@@ -73,7 +79,7 @@ internal sealed partial class DocumentExtractor
         };
     }
 
-    private static TextPage ExtractPdfText(IntPtr page)
+    private static TextPage ExtractPdfText(IntPtr page, int pageNumber)
     {
         var width = PdfiumNative.FPDF_GetPageWidth(page);
         var height = PdfiumNative.FPDF_GetPageHeight(page);
@@ -81,7 +87,7 @@ internal sealed partial class DocumentExtractor
         var rawWidth = rotation is 1 or 3 ? height : width;
         var rawHeight = rotation is 1 or 3 ? width : height;
         var textPage = PdfiumNative.FPDFText_LoadPage(page);
-        if (textPage == IntPtr.Zero) return new TextPage { Width = width, Height = height };
+        if (textPage == IntPtr.Zero) return new TextPage { PageNumber = pageNumber, Width = width, Height = height };
         try
         {
             var chars = new List<(char Ch, double L, double T, double R, double B)>();
@@ -100,7 +106,7 @@ internal sealed partial class DocumentExtractor
                     _ => (ch, left, rawHeight - top, right, rawHeight - bottom)
                 });
             }
-            return new TextPage { Width = width, Height = height, Tokens = GroupCharacters(chars) };
+            return new TextPage { PageNumber = pageNumber, Width = width, Height = height, Tokens = GroupCharacters(chars) };
         }
         finally { PdfiumNative.FPDFText_ClosePage(textPage); }
     }
@@ -139,25 +145,29 @@ internal sealed partial class DocumentExtractor
         if (!File.Exists(AppPaths.TesseractExe))
             throw new FileNotFoundException("该文件需要 OCR，但程序包中的 Tesseract 组件缺失。", AppPaths.TesseractExe);
 
-        using var source = Image.FromFile(path);
         var temp = Path.Combine(AppPaths.TempRoot, Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(temp);
-        var ocrInput = path;
-        var longEdge = Math.Max(source.Width, source.Height);
-        if (longEdge < 2400 || longEdge > 3000)
+        using var source = Image.FromFile(path);
+        var rotation = await DetectOrientationAsync(path, cancellationToken);
+        using var prepared = new Bitmap(source);
+        prepared.RotateFlip(rotation switch
         {
-            var factor = Math.Clamp(2800d / longEdge, .25, 6d);
-            var enlarged = Path.Combine(temp, "input.png");
-            using var bitmap = new Bitmap(Math.Max(1, (int)(source.Width * factor)), Math.Max(1, (int)(source.Height * factor)));
-            using (var graphics = Graphics.FromImage(bitmap))
-            {
-                graphics.Clear(Color.White);
-                graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
-                graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
-                graphics.DrawImage(source, new Rectangle(0, 0, bitmap.Width, bitmap.Height));
-            }
-            bitmap.Save(enlarged, System.Drawing.Imaging.ImageFormat.Png);
-            ocrInput = enlarged;
+            90 => RotateFlipType.Rotate90FlipNone,
+            180 => RotateFlipType.Rotate180FlipNone,
+            270 => RotateFlipType.Rotate270FlipNone,
+            _ => RotateFlipType.RotateNoneFlipNone
+        });
+        var longEdge = Math.Max(prepared.Width, prepared.Height);
+        var factor = longEdge < 2400 || longEdge > 3000 ? Math.Clamp(2800d / longEdge, .25, 6d) : 1d;
+        var ocrInput = Path.Combine(temp, "input.png");
+        using (var bitmap = new Bitmap(Math.Max(1, (int)(prepared.Width * factor)), Math.Max(1, (int)(prepared.Height * factor))))
+        {
+            using var graphics = Graphics.FromImage(bitmap);
+            graphics.Clear(Color.White);
+            graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+            graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+            graphics.DrawImage(prepared, new Rectangle(0, 0, bitmap.Width, bitmap.Height));
+            bitmap.Save(ocrInput, System.Drawing.Imaging.ImageFormat.Png);
         }
         var tokens = await RunTesseractPassAsync(ocrInput, temp, 3, cancellationToken);
         var compactOcrText = string.Concat(tokens.OrderBy(t => t.Top).ThenBy(t => t.Left).Select(t => t.Text));
@@ -174,12 +184,12 @@ internal sealed partial class DocumentExtractor
             }
         }
 
-        var resultWidth = source.Width;
-        var resultHeight = source.Height;
-        if (!ocrInput.Equals(path, StringComparison.OrdinalIgnoreCase))
+        int resultWidth;
+        int resultHeight;
+        using (var ocrSource = Image.FromFile(ocrInput))
         {
-            using var ocrSource = Image.FromFile(ocrInput);
-            resultWidth = ocrSource.Width; resultHeight = ocrSource.Height;
+            resultWidth = ocrSource.Width;
+            resultHeight = ocrSource.Height;
         }
         var primary = new TextPage { Width = resultWidth, Height = resultHeight, Tokens = tokens };
         TextPage? secondary = null;
@@ -200,6 +210,76 @@ internal sealed partial class DocumentExtractor
     }
 
     private sealed record OcrPageResult(TextPage Primary, TextPage? Secondary, string SecondaryError);
+
+    private static TextPage WithPageNumber(TextPage page, int pageNumber) => new()
+    {
+        PageNumber = pageNumber,
+        Width = page.Width,
+        Height = page.Height,
+        Tokens = page.Tokens
+    };
+
+    private static async Task<int> DetectOrientationAsync(string input, CancellationToken cancellationToken)
+    {
+        var start = new ProcessStartInfo
+        {
+            FileName = AppPaths.TesseractExe,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardError = true,
+            RedirectStandardOutput = true,
+            WorkingDirectory = Path.GetDirectoryName(AppPaths.TesseractExe)!
+        };
+        start.ArgumentList.Add(input);
+        start.ArgumentList.Add("stdout");
+        start.ArgumentList.Add("-l"); start.ArgumentList.Add("osd");
+        start.ArgumentList.Add("--psm"); start.ArgumentList.Add("0");
+        start.ArgumentList.Add("--tessdata-dir"); start.ArgumentList.Add(AppPaths.Tessdata);
+        try
+        {
+            using var process = Process.Start(start);
+            if (process is null) return 0;
+            var outputTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
+            var errorTask = process.StandardError.ReadToEndAsync(cancellationToken);
+            await process.WaitForExitAsync(cancellationToken);
+            var text = (await outputTask) + Environment.NewLine + (await errorTask);
+            var rotate = System.Text.RegularExpressions.Regex.Match(text, @"Rotate:\s*(0|90|180|270)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            var confidence = System.Text.RegularExpressions.Regex.Match(text, @"Orientation confidence:\s*([0-9.]+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            if (!rotate.Success || !double.TryParse(confidence.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var score) || score < 1.5)
+                return 0;
+            return int.Parse(rotate.Groups[1].Value, CultureInfo.InvariantCulture);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch { return 0; }
+    }
+
+    private static List<int> SelectDeclarationPageIndexes(IReadOnlyList<TextPage> primary, IReadOnlyList<TextPage> secondary)
+    {
+        var selected = new List<int>();
+        for (var i = 0; i < primary.Count; i++)
+        {
+            var score = Math.Max(DeclarationPageScore(primary[i]), i < secondary.Count ? DeclarationPageScore(secondary[i]) : 0);
+            if (score >= 8) selected.Add(i);
+        }
+        return selected;
+    }
+
+    private static int DeclarationPageScore(TextPage page)
+    {
+        var compact = string.Concat(page.Tokens.OrderBy(x => x.CenterY).ThenBy(x => x.Left).Select(x => x.Text))
+            .Replace(" ", "", StringComparison.Ordinal).ToLowerInvariant();
+        var score = 0;
+        if (compact.Contains("中华人民共和国海关出口货物报关单") || compact.Contains("出口货物报关单")) score += 8;
+        if (compact.Contains("海关编号")) score += 4;
+        if (compact.Contains("境外收货人")) score += 3;
+        if (compact.Contains("项号") && (compact.Contains("总价") || compact.Contains("币制"))) score += 4;
+        if (DeclarationNumberPattern().IsMatch(compact)) score += 3;
+        if (compact.Contains("页码/页数") || compact.Contains("页码页数")) score += 2;
+        if (compact.Contains("通关无纸化出口放行通知书")) score -= 14;
+        if (compact.Contains("装货单") || compact.Contains("shippingorder")) score -= 14;
+        if (compact.Contains("委托报关协议")) score -= 14;
+        return score;
+    }
 
     [System.Text.RegularExpressions.GeneratedRegex(@"(?<!\d)\d{18}(?!\d)")]
     private static partial System.Text.RegularExpressions.Regex DeclarationNumberPattern();

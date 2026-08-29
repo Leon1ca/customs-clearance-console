@@ -12,6 +12,7 @@ public sealed class DeclarationRecord
     public string ExitCustoms { get; set; } = "";
     public string DestinationCountry { get; set; } = "";
     public Dictionary<string, decimal> Totals { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public List<DeclarationLineTotal> LineTotals { get; set; } = [];
     public int Confidence { get; set; }
     public string Status { get; set; } = "待识别";
     public string Warning { get; set; } = "";
@@ -29,12 +30,33 @@ public sealed class DeclarationRecord
     public string SourceName => Path.GetFileName(SourcePath);
 }
 
+public sealed class DeclarationLineTotal
+{
+    public int Sequence { get; set; }
+    public int PageNumber { get; set; }
+    public string ItemNo { get; set; } = "";
+    public string Currency { get; set; } = "";
+    public decimal Amount { get; set; }
+    public decimal? VerificationAmount { get; set; }
+    public bool IsReliable { get; set; } = true;
+    public string Note { get; set; } = "";
+
+    [JsonIgnore]
+    public string DisplayAmount => $"{Currency} {Amount:N2}";
+
+    [JsonIgnore]
+    public string DisplayVerification => VerificationAmount is null
+        ? "—"
+        : $"{Currency} {VerificationAmount.Value:N2}";
+}
+
 public sealed class AppState
 {
+    public int UiSchemaVersion { get; set; } = 3;
     public string LastFolder { get; set; } = "";
     public string ScreenshotFolder { get; set; } = "";
     public string BrowserPreference { get; set; } = "Edge";
-    public int PageSize { get; set; } = 20;
+    public int PageSize { get; set; } = 50;
     public List<DeclarationRecord> Records { get; set; } = [];
 }
 
@@ -46,6 +68,7 @@ public sealed record TextToken(string Text, double Left, double Top, double Righ
 
 public sealed class TextPage
 {
+    public int PageNumber { get; init; } = 1;
     public double Width { get; init; }
     public double Height { get; init; }
     public List<TextToken> Tokens { get; init; } = [];
@@ -88,6 +111,10 @@ internal static class Formatters
     public static string MoneyTotals(Dictionary<string, decimal> values) => values.Count == 0
         ? "—"
         : string.Join("  /  ", values.OrderBy(x => x.Key).Select(x => $"{x.Key} {x.Value.ToString("N2", CultureInfo.CurrentCulture)}"));
+
+    public static string MoneyTotalsLines(Dictionary<string, decimal> values) => values.Count == 0
+        ? "—"
+        : string.Join(Environment.NewLine, values.OrderBy(x => x.Key).Select(x => $"{x.Key} {x.Value.ToString("N2", CultureInfo.CurrentCulture)}"));
 
     public static string MoneyTotalsCompact(Dictionary<string, decimal> values) => values.Count == 0
         ? "—"

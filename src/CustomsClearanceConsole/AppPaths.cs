@@ -21,6 +21,13 @@ internal static class AppPaths
     {
         get
         {
+            var configured = Environment.GetEnvironmentVariable("CUSTOMS_CONSOLE_DATA");
+            if (!string.IsNullOrWhiteSpace(configured))
+            {
+                var configuredFolder = Path.Combine(configured, "关单核验台数据");
+                Directory.CreateDirectory(configuredFolder);
+                return configuredFolder;
+            }
             var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
             var folder = Path.Combine(local, "关单核验台");
             try { Directory.CreateDirectory(folder); return folder; }

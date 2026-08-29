@@ -21,6 +21,11 @@ internal static class Program
             SelfTest.RunAsync(args[1]).GetAwaiter().GetResult();
             return;
         }
+        if (args.Length >= 2 && args[0].Equals("--regression-test", StringComparison.OrdinalIgnoreCase))
+        {
+            SelfTest.RunKnownRegressionAsync(args[1]).GetAwaiter().GetResult();
+            return;
+        }
         if (args.Length >= 2 && args[0].Equals("--ocr-debug", StringComparison.OrdinalIgnoreCase))
         {
             SelfTest.DumpOcrAsync(args[1]).GetAwaiter().GetResult();
@@ -31,6 +36,11 @@ internal static class Program
             var width = args.Length >= 3 && int.TryParse(args[2], out var parsedWidth) ? parsedWidth : 1365;
             var height = args.Length >= 4 && int.TryParse(args[3], out var parsedHeight) ? parsedHeight : 768;
             SelfTest.CaptureUi(args[1], width, height);
+            return;
+        }
+        if (args.Length >= 3 && args[0].Equals("--ui-dialog-snapshot", StringComparison.OrdinalIgnoreCase))
+        {
+            SelfTest.CaptureDialog(args[1], args[2]);
             return;
         }
         if (args.Length >= 1 && args[0].Equals("--ui-contract-self-test", StringComparison.OrdinalIgnoreCase))

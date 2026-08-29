@@ -7,15 +7,36 @@ internal sealed class BatchScanner
     private readonly DocumentExtractor _extractor = new();
     private readonly DeclarationParser _parser = new();
 
-    public async Task<List<DeclarationRecord>> ScanAsync(string folder, IProgress<(int Done, int Total, string File)> progress, CancellationToken cancellationToken)
+    public async Task<List<DeclarationRecord>> ScanAsync(
+        string folder,
+        IProgress<(int Done, int Total, string File)> progress,
+        CancellationToken cancellationToken,
+        IProgress<DeclarationRecord>? itemProgress = null)
     {
         var extensions = new HashSet<string>(SupportedExtensions, StringComparer.OrdinalIgnoreCase);
         var files = Directory.EnumerateFiles(folder, "*", SearchOption.TopDirectoryOnly)
             .Where(x => extensions.Contains(Path.GetExtension(x)))
             .OrderBy(x => Path.GetFileName(x), StringComparer.CurrentCultureIgnoreCase)
             .ToList();
-        if (files.Count == 0) throw new InvalidOperationException("所选文件夹中没有支持的关单文件。支持 PDF、PNG、JPG、BMP、TIF/TIFF。 ");
-        if (files.Count > MaximumFiles) throw new InvalidOperationException($"当前文件夹有 {files.Count} 个支持的文件，超过每批 {MaximumFiles} 个的上限。请拆分文件夹后再识别。");
+        return await ScanFilesAsync(files, progress, cancellationToken, itemProgress);
+    }
+
+    public async Task<List<DeclarationRecord>> ScanFilesAsync(
+        IEnumerable<string> paths,
+        IProgress<(int Done, int Total, string File)> progress,
+        CancellationToken cancellationToken,
+        IProgress<DeclarationRecord>? itemProgress = null)
+    {
+        var extensions = new HashSet<string>(SupportedExtensions, StringComparer.OrdinalIgnoreCase);
+        var files = paths
+            .Where(File.Exists)
+            .Where(x => extensions.Contains(Path.GetExtension(x)))
+            .Select(Path.GetFullPath)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(x => Path.GetFileName(x), StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+        if (files.Count == 0) throw new InvalidOperationException("没有可识别的关单文件。支持 PDF、PNG、JPG、BMP、TIF/TIFF。");
+        if (files.Count > MaximumFiles) throw new InvalidOperationException($"本批有 {files.Count} 个支持的文件，超过每批 {MaximumFiles} 个的上限。请分批识别。");
 
         var result = new List<DeclarationRecord>();
         for (var i = 0; i < files.Count; i++)
@@ -25,16 +46,20 @@ internal sealed class BatchScanner
             try
             {
                 var text = await _extractor.ExtractAsync(files[i], cancellationToken);
-                result.Add(_parser.Parse(files[i], text));
+                var record = _parser.Parse(files[i], text);
+                result.Add(record);
+                itemProgress?.Report(record);
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex)
             {
                 AppLog.Write($"识别失败：{files[i]}\n{ex}");
-                result.Add(new DeclarationRecord
+                var record = new DeclarationRecord
                 {
                     SourcePath = files[i], Status = "识别失败", Warning = ex.Message, Confidence = 0
-                });
+                };
+                result.Add(record);
+                itemProgress?.Report(record);
             }
         }
         MarkDuplicates(result);
