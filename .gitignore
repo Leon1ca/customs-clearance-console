@@ -19,4 +19,6 @@ dist/
 !docs/design-sources/**/*.zip
 关单核验台数据/
 Screenshots/
+!designs/**/screenshots/
+!designs/**/screenshots/**
 *.log

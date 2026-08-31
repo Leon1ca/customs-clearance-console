@@ -517,8 +517,9 @@ internal sealed partial class DeclarationParser
         return Regex.Replace(result, @"\s+", " ");
     }
 
-    private static string NormalizeConsigneeIdentifiers(string value)
+    internal static string NormalizeConsigneeIdentifiers(string value)
     {
+        value = ReconnectDetachedIdentifierSeparators(value);
         return string.Join(" ", value.Split(' ', StringSplitOptions.RemoveEmptyEntries).Select(part =>
         {
             var match = Regex.Match(part, @"^([A-Z]{2}-[A-Z]{3})([0-9OIL]{2})$", RegexOptions.IgnoreCase);
@@ -527,6 +528,23 @@ internal sealed partial class DeclarationParser
                 .Replace('O', '0').Replace('I', '1').Replace('L', '1');
             return match.Groups[1].Value.ToUpperInvariant() + suffix;
         }));
+    }
+
+    private static string ReconnectDetachedIdentifierSeparators(string value)
+    {
+        var parts = value.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length < 3) return value;
+        var segments = parts.Where(x => Regex.IsMatch(x, @"^[A-Z0-9]{1,16}$", RegexOptions.IgnoreCase)).ToArray();
+        var separatorTokens = parts.Where(x => Regex.IsMatch(x, @"^[_./-]+$")).ToArray();
+        var separators = string.Concat(separatorTokens).ToCharArray();
+        if (segments.Length < 2 || separators.Length != segments.Length - 1 ||
+            parts.Length != segments.Length + separatorTokens.Length ||
+            segments.Any(x => !x.Any(char.IsLetter))) return value;
+
+        var rebuilt = new StringBuilder(segments[0].ToUpperInvariant());
+        for (var i = 1; i < segments.Length; i++)
+            rebuilt.Append(separators[i - 1]).Append(segments[i].ToUpperInvariant());
+        return rebuilt.ToString();
     }
 
     private static string NormalizeContractOcr(string value)
@@ -636,7 +654,8 @@ internal sealed partial class DeclarationParser
             var current = ordered[i];
             var gap = current.Left - previous.Right;
             var englishBoundary = previous.Text.LastOrDefault() <= 127 && current.Text.FirstOrDefault() <= 127;
-            if (englishBoundary && gap > 1.5) result.Append(' ');
+            var separatorBoundary = Regex.IsMatch(previous.Text.Trim(), @"^[_./-]$") || Regex.IsMatch(current.Text.Trim(), @"^[_./-]$");
+            if (englishBoundary && !separatorBoundary && gap > 1.5) result.Append(' ');
             result.Append(current.Text);
         }
         return result.ToString();

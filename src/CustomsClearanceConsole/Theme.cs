@@ -43,13 +43,16 @@ internal static class Theme
     public static Button IconButton(string text, UiIcon icon, bool danger = false, bool primary = false, bool tonal = false)
     {
         var button = primary ? PrimaryButton(text) : danger ? DangerButton(text) : tonal ? TonalButton(text) : SecondaryButton(text);
-        button.Image = UiIcons.Create(icon, danger ? ColorTranslator.FromHtml("#A9231F") : primary ? Color.White : ColorTranslator.FromHtml("#1766D1"), 24);
+        button.Image = ButtonIcon(icon, primary);
         button.ImageAlign = ContentAlignment.MiddleCenter;
         button.TextAlign = ContentAlignment.MiddleCenter;
         button.TextImageRelation = TextImageRelation.ImageBeforeText;
         button.Padding = new Padding(0);
         return button;
     }
+
+    public static Bitmap ButtonIcon(UiIcon icon, bool primary = false) =>
+        UiIcons.LoadButton(icon, primary, UiDpi);
 
     private static Button Button(string text, Color back, Color fore, Color border, Color hover)
     {
@@ -536,6 +539,33 @@ internal enum MetricIcon { File, Duplicate, Gross, Deduplicated }
 
 internal static class UiIcons
 {
+    public static Bitmap LoadButton(UiIcon icon, bool primary, float dpi)
+    {
+        var size = dpi >= 168F ? 48 : dpi >= 120F ? 32 : 24;
+        var stem = icon switch
+        {
+            UiIcon.Directory => "directory-settings",
+            UiIcon.DeclarationClean => "declaration-clean",
+            UiIcon.ScreenshotClean => "screenshot-clean",
+            UiIcon.Start => primary ? "start-recognition-white" : "start-recognition-blue",
+            UiIcon.ListClean => "list-clean",
+            _ => ""
+        };
+        if (stem.Length > 0)
+        {
+            var path = Path.Combine(AppContext.BaseDirectory, "assets", "button-icons", $"{stem}-{size}.png");
+            if (File.Exists(path))
+            {
+                using var source = new Bitmap(path);
+                return new Bitmap(source);
+            }
+        }
+        var color = primary ? Color.White : icon is UiIcon.DeclarationClean or UiIcon.ScreenshotClean or UiIcon.ListClean
+            ? ColorTranslator.FromHtml("#A9231F")
+            : ColorTranslator.FromHtml("#1766D1");
+        return Create(icon, color, size);
+    }
+
     public static Bitmap Create(UiIcon icon, Color color, int size = 24)
     {
         var bitmap = new Bitmap(size, size);
@@ -641,7 +671,7 @@ internal sealed class MetricCard : Panel
         heading.Controls.Add(new PictureBox { Image = UiIcons.CreateMetric(icon), SizeMode = PictureBoxSizeMode.CenterImage, Dock = DockStyle.Fill, Margin = new Padding(0), AccessibleName = title + "图标" }, 0, 0);
         var titleLabel = new Label
         {
-            Text = title, ForeColor = Theme.FieldText, Font = Theme.UiFont(19F, FontStyle.Bold),
+            Text = title, ForeColor = Theme.FieldText, Font = Theme.UiFont(17F, FontStyle.Bold),
             Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(0)
         };
         heading.Controls.Add(titleLabel, 1, 0);
@@ -668,7 +698,7 @@ internal sealed class MetricCard : Panel
         var lines = value.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).DefaultIfEmpty("").ToArray();
         var longestLine = lines.Max(x => x.Length);
         var valueSize = emptyMoney ? 32F : _money
-            ? lines.Length >= 4 ? 13F : lines.Length == 3 ? 16F : longestLine > 22 ? 18F : _defaultValueFontSize
+            ? lines.Length >= 4 ? 12F : lines.Length == 3 ? 13F : longestLine > 22 ? 14F : _defaultValueFontSize
             : _defaultValueFontSize;
         _value.Font = Theme.UiFont(valueSize, _money && !emptyMoney ? FontStyle.Regular : FontStyle.Bold);
         _value.AccessibleDescription = value;

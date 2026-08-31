@@ -4,9 +4,11 @@ internal sealed class VerificationForm : Form
 {
     private readonly DeclarationRecord _record;
     private readonly string _targetFolder;
+    private readonly CancellationTokenSource _lifetime = new();
     private BrowserValidation? _browser;
     private readonly Label _status;
     private readonly Button _capture;
+    private bool _captureInProgress;
 
     public string? SavedScreenshot { get; private set; }
 
@@ -15,82 +17,155 @@ internal sealed class VerificationForm : Form
         _record = record;
         _targetFolder = targetFolder;
         Text = $"核验 · {record.DeclarationNo}";
-        Size = new Size(620, 310);
-        MinimumSize = Size;
-        MaximumSize = Size;
+        ClientSize = new Size(640, 300);
         StartPosition = FormStartPosition.CenterParent;
         BackColor = Color.White;
-        Font = new Font("Microsoft YaHei UI", 10F);
-        FormBorderStyle = FormBorderStyle.FixedDialog;
-        MaximizeBox = MinimizeBox = false;
+        FormBorderStyle = FormBorderStyle.None;
+        ShowInTaskbar = false;
+        AutoScaleMode = AutoScaleMode.Dpi;
+        AutoScaleDimensions = new SizeF(96F, 96F);
 
-        var title = new Label { Text = "在线核验与长截图", Font = new Font(Font.FontFamily, 16F, FontStyle.Bold), ForeColor = Theme.Navy, AutoSize = true, Location = new Point(28, 24) };
-        var no = new Label { Text = $"报关单号  {record.DeclarationNo}", AutoSize = true, Location = new Point(30, 63), ForeColor = Theme.Text };
+        var frame = new RoundedPanel
+        {
+            Dock = DockStyle.Fill,
+            Radius = 12,
+            BorderColor = ColorTranslator.FromHtml("#AEBED1"),
+            BackColor = Color.White
+        };
+        var title = new Label
+        {
+            Text = "等待网页核验结果",
+            Font = Theme.UiFont(24F, FontStyle.Bold),
+            ForeColor = Theme.Navy,
+            Location = new Point(32, 25),
+            Size = new Size(500, 38),
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+        var closeGlyph = new CircleCloseButton { Location = new Point(564, 20), AccessibleName = "关闭核验窗口" };
+        closeGlyph.Click += (_, _) => Close();
+        var no = new Label
+        {
+            Text = $"报关单号  {record.DeclarationNo}",
+            Location = new Point(34, 72),
+            Size = new Size(560, 26),
+            ForeColor = Theme.FieldText,
+            Font = Theme.UiFont(16F)
+        };
+        var statusSurface = new RoundedPanel
+        {
+            Location = new Point(32, 111),
+            Size = new Size(576, 76),
+            Radius = 8,
+            BorderColor = ColorTranslator.FromHtml("#D8E3F1"),
+            BackColor = ColorTranslator.FromHtml("#F4F8FD")
+        };
         _status = new Label
         {
-            Text = "正在打开中国国际贸易单一窗口……", Location = new Point(30, 98), Size = new Size(550, 62),
-            ForeColor = Theme.Muted
+            Text = "正在打开中国国际贸易单一窗口……",
+            Dock = DockStyle.Fill,
+            Padding = new Padding(18, 0, 18, 0),
+            ForeColor = Theme.Muted,
+            Font = Theme.UiFont(15F),
+            TextAlign = ContentAlignment.MiddleLeft,
+            AutoEllipsis = true
         };
-        var fallback = Theme.SecondaryButton("备用网站");
-        fallback.Location = new Point(30, 184); fallback.Size = new Size(112, 38); fallback.Click += async (_, _) => await OpenFallbackAsync();
-        _capture = Theme.PrimaryButton("已完成人工验证，保存长截图");
-        _capture.Location = new Point(154, 184); _capture.Size = new Size(275, 38); _capture.Enabled = false;
+        statusSurface.Controls.Add(_status);
+
+        var hint = new Label
+        {
+            Text = "只需在网页输入验证码并点击查询；检测到结果后将自动保存长截图。",
+            Location = new Point(34, 198),
+            Size = new Size(574, 24),
+            ForeColor = Theme.Muted,
+            Font = Theme.UiFont(13F),
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+        var close = Theme.SecondaryButton("关闭");
+        close.Location = new Point(374, 235);
+        close.Size = new Size(108, 44);
+        close.Click += (_, _) => Close();
+        _capture = Theme.PrimaryButton("立即截图");
+        _capture.Location = new Point(494, 235);
+        _capture.Size = new Size(114, 44);
+        _capture.Enabled = false;
         _capture.Click += async (_, _) => await CaptureAsync();
-        var close = Theme.SecondaryButton("关闭"); close.Location = new Point(441, 184); close.Size = new Size(110, 38); close.Click += (_, _) => Close();
-        var hint = new Label { Text = "边界处理：同名单据不会覆盖旧截图，将自动追加时间戳。", AutoSize = true, Location = new Point(30, 239), ForeColor = Theme.Muted, Font = new Font(Font.FontFamily, 8.5F) };
-        Controls.AddRange([title, no, _status, fallback, _capture, close, hint]);
-        Shown += async (_, _) => await StartAsync();
+
+        frame.Controls.AddRange([title, closeGlyph, no, statusSurface, hint, close, _capture]);
+        Controls.Add(frame);
+        CancelButton = close;
+        Shown += async (_, _) => await StartAndMonitorAsync();
         FormClosed += (_, _) =>
         {
+            _lifetime.Cancel();
             var browser = _browser;
             _browser = null;
             if (browser is not null) _ = DisposeBrowserSafelyAsync(browser);
         };
     }
 
-    private async Task StartAsync()
+    private async Task StartAndMonitorAsync()
     {
         try
         {
             _browser = new BrowserValidation();
-            _status.Text = await _browser.StartAsync(_record.DeclarationNo, CancellationToken.None);
-            _capture.Enabled = true;
+            _status.Text = await _browser.StartAsync(_record.DeclarationNo, _lifetime.Token);
+            var updates = new Progress<string>(message => _status.Text = message);
+            var ready = await _browser.WaitForStableResultAsync(TimeSpan.FromSeconds(90), updates, _lifetime.Token);
+            if (ready) await CaptureAsync();
+            else _capture.Enabled = true;
         }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
         catch (Exception ex)
         {
             AppLog.Write(ex);
-            _status.Text = "网站已尝试打开，但自动控制连接不可用。请在浏览器中手动输入并查询；可使用 Edge/Chrome 的网页捕获保存长截图。";
+            _status.Text = "自动检测连接不可用。请保留已打开的网页，必要时使用浏览器网页捕获功能。";
             _status.ForeColor = Theme.Warning;
-            _capture.Enabled = false;
+            _capture.Enabled = _browser is not null;
         }
-    }
-
-    private async Task OpenFallbackAsync()
-    {
-        try
-        {
-            if (_browser is null) return;
-            await _browser.NavigateFallbackAsync(_record.DeclarationNo, CancellationToken.None);
-            _status.Text = "已切换到备用核验网站并尝试自动填写。请完成人工验证并等待流程信息完整显示。";
-        }
-        catch (Exception ex) { MessageBox.Show(ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning); }
     }
 
     private async Task CaptureAsync()
     {
+        if (_browser is null || _captureInProgress) return;
         try
         {
-            _capture.Enabled = false; _status.Text = "正在展开页面中的滚动区域并生成长截图……";
-            SavedScreenshot = await _browser!.CaptureLongScreenshotAsync(_record.DeclarationNo, _targetFolder, CancellationToken.None);
-            _status.Text = $"截图已保存：{SavedScreenshot}";
+            _captureInProgress = true;
+            _capture.Enabled = false;
+            _status.ForeColor = Theme.Muted;
+            _status.Text = "正在展开网页滚动区域并生成长截图……";
+            SavedScreenshot = await _browser.CaptureLongScreenshotAsync(_record.DeclarationNo, _targetFolder, _lifetime.Token);
+            _status.Text = "长截图已保存。";
             _status.ForeColor = Theme.Success;
             DialogResult = DialogResult.OK;
             Close();
         }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
         catch (Exception ex)
         {
-            AppLog.Write(ex); _capture.Enabled = true;
-            MessageBox.Show($"截图未保存：{ex.Message}", Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
+            AppLog.Write(ex);
+            _capture.Enabled = true;
+            _status.Text = $"截图未保存：{ex.Message}";
+            _status.ForeColor = Theme.Warning;
+        }
+        finally { _captureInProgress = false; }
+    }
+
+    protected override void OnResize(EventArgs e)
+    {
+        base.OnResize(e);
+        if (Width <= 0 || Height <= 0) return;
+        using var path = Theme.RoundedPath(new RectangleF(0, 0, Width, Height), 12F);
+        Region = new Region(path);
+    }
+
+    protected override CreateParams CreateParams
+    {
+        get
+        {
+            const int csDropShadow = 0x00020000;
+            var parameters = base.CreateParams;
+            parameters.ClassStyle |= csDropShadow;
+            return parameters;
         }
     }
 

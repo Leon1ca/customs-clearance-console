@@ -15,6 +15,10 @@ $buildOutput = Join-Path $repoRoot "src\CustomsClearanceConsole\bin\$Configurati
 $localApp = Join-Path $localRoot "app"
 $runtime = Join-Path $localRoot "runtime\dotnet.exe"
 $appDll = Join-Path $localApp "关单核验台.dll"
+$launcherBuildScript = Join-Path $repoRoot "scripts\build-launcher.ps1"
+$launcherOutput = Join-Path $repoRoot "artifacts\launcher\关单核验台.exe"
+$usageGuide = Join-Path $repoRoot "src\CustomsClearanceConsole\使用说明.txt"
+$releaseNotes = Join-Path $repoRoot "docs\release-notes-v1.7.0.md"
 
 if (-not $sdk) {
     throw "未找到 .NET 8 SDK。请安装 .NET 8 SDK，或放到仓库 .devtools\dotnet-sdk。"
@@ -61,6 +65,17 @@ try {
 
     & $runtime $appDll --ui-contract-self-test
     if ($LASTEXITCODE -ne 0) { throw "本地回归测试失败，退出代码：$LASTEXITCODE" }
+
+    & $launcherBuildScript
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $launcherOutput)) {
+        throw "启动器构建失败，退出代码：$LASTEXITCODE"
+    }
+    Copy-Item -LiteralPath $launcherOutput -Destination (Join-Path $localRoot "关单核验台.exe") -Force
+    Copy-Item -LiteralPath $usageGuide -Destination (Join-Path $localRoot "使用说明.txt") -Force
+    Copy-Item -LiteralPath $releaseNotes -Destination (Join-Path $localRoot "更新说明-v1.7.0.md") -Force
+    Get-ChildItem -LiteralPath $localRoot -Filter "更新说明-v*.md" -File |
+        Where-Object { $_.Name -ne "更新说明-v1.7.0.md" } |
+        Remove-Item -Force
 
     Write-Host "仓库内本地运行版已更新：$localRoot"
     Write-Host "本次迭代未创建 ZIP，也未复制 OCR 模型或 .NET 运行时。"

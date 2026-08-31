@@ -150,8 +150,8 @@ internal sealed class MainForm : Form
         for (var i = 0; i < 4; i++) layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
         file = new MetricCard("本批关单", "0", "份", "", MetricIcon.File, 40F) { Dock = DockStyle.Fill, Margin = new Padding(0) };
         duplicate = new MetricCard("重复单号", "0", "组", "", MetricIcon.Duplicate, 40F) { Dock = DockStyle.Fill, Margin = new Padding(0) };
-        gross = new MetricCard("去重前总价", "—", "", "", MetricIcon.Gross, 22F, money: true) { Dock = DockStyle.Fill, Margin = new Padding(0) };
-        deduplicated = new MetricCard("去重后总价", "—", "", "", MetricIcon.Deduplicated, 22F, money: true) { Dock = DockStyle.Fill, Margin = new Padding(0) };
+        gross = new MetricCard("去重前总价", "—", "", "", MetricIcon.Gross, 15F, money: true) { Dock = DockStyle.Fill, Margin = new Padding(0) };
+        deduplicated = new MetricCard("去重后总价", "—", "", "", MetricIcon.Deduplicated, 15F, money: true) { Dock = DockStyle.Fill, Margin = new Padding(0) };
         layout.Controls.Add(file, 0, 0); layout.Controls.Add(duplicate, 1, 0); layout.Controls.Add(gross, 2, 0); layout.Controls.Add(deduplicated, 3, 0);
         layout.CellPaint += (_, e) => { if (e.Column > 0 && e.Row == 0) e.Graphics.DrawLine(new Pen(Theme.Border), e.CellBounds.Left, e.CellBounds.Top + 18, e.CellBounds.Left, e.CellBounds.Bottom - 18); };
         frame.Controls.Add(layout); return frame;
@@ -212,9 +212,30 @@ internal sealed class MainForm : Form
         AddTextColumn(grid, "Index", "序号", 7, 48, DataGridViewContentAlignment.MiddleCenter); AddTextColumn(grid, "No", "报关单编号", 14, 128); AddTextColumn(grid, "Consignee", "境外收货人", 15, 128); AddTextColumn(grid, "Contract", "合同协议号", 13, 108); AddTextColumn(grid, "Customs", "出境关别", 11, 84); AddTextColumn(grid, "Country", "目的国", 10, 70); AddTextColumn(grid, "Total", "关单总货值", 13, 112, DataGridViewContentAlignment.MiddleRight); AddTextColumn(grid, "Status", "状态", 8, 72, DataGridViewContentAlignment.MiddleCenter);
         grid.Columns.Add(new DataGridViewButtonColumn { Name = "Verify", HeaderText = "校验", Text = "校验", UseColumnTextForButtonValue = true, FillWeight = 8, MinimumWidth = 70, Resizable = DataGridViewTriState.True, FlatStyle = FlatStyle.Flat });
         grid.Columns.Add(new DataGridViewButtonColumn { Name = "Details", HeaderText = "详情", Text = "详情", UseColumnTextForButtonValue = true, FillWeight = 8, MinimumWidth = 70, Resizable = DataGridViewTriState.True, FlatStyle = FlatStyle.Flat });
-        var menu = new ContextMenuStrip(); var copy = new ToolStripMenuItem("复制选中内容") { ShortcutKeyDisplayString = "Ctrl+C" }; copy.Click += (_, _) => CopySelectedCells(); menu.Items.Add(copy);
-        menu.Opening += (_, _) => copy.Enabled = grid.SelectedCells.Count > 0; grid.ContextMenuStrip = menu; grid.CellMouseDown += (_, e) => SelectCellForContextMenu(e);
-        grid.KeyDown += (_, e) => { if (e.Control && e.KeyCode == Keys.C) { CopySelectedCells(); e.Handled = true; e.SuppressKeyPress = true; } };
+        var menu = new CopyContextMenu(CopySelectedCells);
+        grid.Disposed += (_, _) => menu.Dispose();
+        grid.CellMouseDown += (_, e) =>
+        {
+            SelectCellForContextMenu(e);
+            if (e.Button == MouseButtons.Right && e.RowIndex >= 0 && e.ColumnIndex >= 0)
+                menu.ShowAt(Cursor.Position, grid.SelectedCells.Count > 0);
+        };
+        grid.KeyDown += (_, e) =>
+        {
+            if (e.Control && e.KeyCode == Keys.C)
+            {
+                CopySelectedCells(); e.Handled = true; e.SuppressKeyPress = true;
+            }
+            else if ((e.Shift && e.KeyCode == Keys.F10) || e.KeyCode == Keys.Apps)
+            {
+                var cell = grid.CurrentCell;
+                var point = cell is null ? new Point(20, 20) : new Point(
+                    grid.GetCellDisplayRectangle(cell.ColumnIndex, cell.RowIndex, true).Left + 16,
+                    grid.GetCellDisplayRectangle(cell.ColumnIndex, cell.RowIndex, true).Bottom - 4);
+                menu.ShowAt(grid.PointToScreen(point), grid.SelectedCells.Count > 0);
+                e.Handled = true; e.SuppressKeyPress = true;
+            }
+        };
         return grid;
     }
 
@@ -275,7 +296,7 @@ internal sealed class MainForm : Form
         try { _state.Records = await scanAction(new BatchScanner(), progress, _scanCancellation.Token, items); SaveState(); RefreshGrid(); }
         catch (OperationCanceledException) { BatchScanner.MarkDuplicates(_state.Records); SaveState(); RefreshGrid(); MessageBox.Show($"识别已取消，已保留完成的 {_state.Records.Count} 条结果。", Text, MessageBoxButtons.OK, MessageBoxIcon.Information); }
         catch (Exception ex) { AppLog.Write(ex); SaveState(); RefreshGrid(); MessageBox.Show(ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning); }
-        finally { _scanCancellation.Dispose(); _scanCancellation = null; _scan.Text = "开始识别"; _scan.Image = UiIcons.Create(UiIcon.Start, Color.White); }
+        finally { _scanCancellation.Dispose(); _scanCancellation = null; _scan.Text = "开始识别"; _scan.Image = Theme.ButtonIcon(UiIcon.Start, primary: true); }
     }
 
     private static string[] DroppedSupportedFiles(DragEventArgs e)
@@ -358,13 +379,60 @@ internal sealed class MainForm : Form
         if (_grid.Columns[e.ColumnIndex].Name != "Verify" || record.DeclarationNo.Length != 18) return;
         if (!Directory.Exists(_state.ScreenshotFolder)) ShowDirectorySettings(); if (!Directory.Exists(_state.ScreenshotFolder)) return;
         using var dialog = new VerificationForm(record, _state.ScreenshotFolder);
-        if (dialog.ShowDialog(this) == DialogResult.OK && dialog.SavedScreenshot is not null)
+        if (ModalPresenter.Show(dialog, this) == DialogResult.OK && dialog.SavedScreenshot is not null)
         {
             foreach (var matching in _state.Records.Where(x => x.DeclarationNo == record.DeclarationNo)) matching.ScreenshotPath = dialog.SavedScreenshot;
             SaveState(); RefreshGrid();
-            if (MessageBox.Show("长截图已保存。是否打开所在文件夹？", Text, MessageBoxButtons.YesNo, MessageBoxIcon.Information) == DialogResult.Yes) Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{dialog.SavedScreenshot}\"") { UseShellExecute = true });
+            ShowScreenshotSavedToast(dialog.SavedScreenshot);
         }
         await Task.CompletedTask;
+    }
+
+    private void ShowScreenshotSavedToast(string screenshotPath)
+    {
+        var toast = new RoundedPanel
+        {
+            Size = new Size(392, 70),
+            Anchor = AnchorStyles.Right | AnchorStyles.Bottom,
+            BackColor = ColorTranslator.FromHtml("#F1FBF5"),
+            BorderColor = ColorTranslator.FromHtml("#9ECBB0"),
+            Radius = 9,
+            AccessibleName = "截图保存成功提示"
+        };
+        toast.Location = new Point(Math.Max(20, ClientSize.Width - toast.Width - 30), Math.Max(20, ClientSize.Height - toast.Height - 30));
+        var text = new Label
+        {
+            Text = "核验结果长截图已保存",
+            Location = new Point(18, 0),
+            Size = new Size(225, toast.Height),
+            Font = Theme.UiFont(14F),
+            ForeColor = Theme.Success,
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+        var open = Theme.SecondaryButton("打开位置");
+        open.Location = new Point(268, 15);
+        open.Size = new Size(106, 40);
+        open.Font = Theme.UiFont(14F);
+        open.Click += (_, _) =>
+        {
+            try { Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{screenshotPath}\"") { UseShellExecute = true }); }
+            catch (Exception ex) { AppLog.Write(ex); }
+            Controls.Remove(toast);
+            toast.Dispose();
+        };
+        toast.Controls.AddRange([text, open]);
+        Controls.Add(toast);
+        toast.BringToFront();
+
+        var timer = new System.Windows.Forms.Timer { Interval = 6000 };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            if (!toast.IsDisposed) { Controls.Remove(toast); toast.Dispose(); }
+            timer.Dispose();
+        };
+        toast.Disposed += (_, _) => { timer.Stop(); timer.Dispose(); };
+        timer.Start();
     }
 
     private void GridCellDoubleClick(object? sender, DataGridViewCellEventArgs e) { if (e.RowIndex < 0 || _grid.Rows[e.RowIndex].Tag is not DeclarationRecord record || !File.Exists(record.SourcePath)) return; try { Process.Start(new ProcessStartInfo(record.SourcePath) { UseShellExecute = true }); } catch (Exception ex) { AppLog.Write(ex); } }

@@ -111,6 +111,9 @@ internal sealed class BrowserValidation : IAsyncDisposable
 
         var websocket = await WaitForPageAsync(port, cancellationToken);
         await ConnectDevToolsAsync(websocket, cancellationToken);
+        var monitorInstall = BuildResultMonitorInstallScript(declarationNo);
+        await _devTools!.CommandAsync("Page.addScriptToEvaluateOnNewDocument", new { source = monitorInstall }, cancellationToken);
+        await EvaluateInAllFramesAsync(monitorInstall, cancellationToken);
 
         var filled = false;
         for (var i = 0; i < 30 && !filled; i++)
@@ -129,8 +132,8 @@ internal sealed class BrowserValidation : IAsyncDisposable
             ? $"系统默认浏览器不支持自动填写，已自动使用 {choice.DisplayName}。"
             : $"已使用{choice.DisplayName}。";
         return filled
-            ? $"{browserNote} 已在正文的“报关单号”栏填入单号。请在浏览器中输入验证码并点击查询，确认信息完整后回到本窗口截图。"
-            : $"{browserNote} 核验网站已打开，但网页结构可能已更新。请手动输入报关单号并查询，完成人工验证后回到本窗口截图。";
+            ? $"{browserNote} 已在正文的“报关单号”栏填入单号。请在浏览器中输入验证码并点击查询，程序将自动检测结果并保存长截图。"
+            : $"{browserNote} 核验网站已打开，但网页结构可能已更新。请手动输入报关单号并查询；程序仍会尝试自动检测结果并截图。";
     }
 
     private async Task ConnectDevToolsAsync(string websocket, CancellationToken token)
@@ -171,6 +174,63 @@ internal sealed class BrowserValidation : IAsyncDisposable
             await ReconnectAsync(cancellationToken);
             return await CaptureLongScreenshotCoreAsync(declarationNo, targetFolder, cancellationToken);
         }
+    }
+
+    public async Task<bool> WaitForStableResultAsync(
+        TimeSpan timeout,
+        IProgress<string>? progress,
+        CancellationToken cancellationToken)
+    {
+        var started = DateTime.UtcNow;
+        string lastFingerprint = "";
+        string lastStage = "";
+        var stableHits = 0;
+        while (DateTime.UtcNow - started < timeout)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            string probe;
+            try
+            {
+                probe = await EvaluateInAllFramesAsync(BuildResultProbeScript(), cancellationToken,
+                    "ready|", "loading|", "error|");
+            }
+            catch (Exception ex) when (IsConnectionFailure(ex))
+            {
+                await ReconnectAsync(cancellationToken);
+                probe = "query|reconnected";
+            }
+
+            var separator = probe.IndexOf('|');
+            var stage = separator < 0 ? probe : probe[..separator];
+            var fingerprint = separator < 0 ? "" : probe[(separator + 1)..];
+            if (!string.Equals(stage, lastStage, StringComparison.Ordinal))
+            {
+                progress?.Report(stage switch
+                {
+                    "query" => "已检测到网页查询，正在等待结果……",
+                    "loading" => "网页正在加载查询结果……",
+                    "ready" => "已检测到查询结果，正在确认页面内容稳定……",
+                    "error" => "网页提示验证码或查询条件有误，请重新输入后再次查询。",
+                    _ => "等待在网页中输入验证码并点击“查询”……"
+                });
+                lastStage = stage;
+            }
+
+            if (stage == "ready")
+            {
+                stableHits = fingerprint == lastFingerprint ? stableHits + 1 : 0;
+                lastFingerprint = fingerprint;
+                if (stableHits >= 3) return true;
+            }
+            else
+            {
+                stableHits = 0;
+                lastFingerprint = "";
+            }
+            await Task.Delay(400, cancellationToken);
+        }
+        progress?.Report("90 秒内未自动确认查询结果，可检查网页后点击“立即截图”。");
+        return false;
     }
 
     private async Task NavigateFallbackCoreAsync(string declarationNo, CancellationToken cancellationToken)
@@ -253,11 +313,14 @@ internal sealed class BrowserValidation : IAsyncDisposable
         catch { return ""; }
     }
 
-    private async Task<string> EvaluateInAllFramesAsync(string expression, CancellationToken token)
+    private async Task<string> EvaluateInAllFramesAsync(string expression, CancellationToken token, params string[] acceptedMarkers)
     {
         if (_devTools is null) return "";
+        if (acceptedMarkers.Length == 0) acceptedMarkers = ["filled"];
+        static bool Accepted(string value, IReadOnlyCollection<string> markers) =>
+            markers.Any(marker => value.Contains(marker, StringComparison.OrdinalIgnoreCase));
         var main = await EvaluateAsync(expression, token);
-        if (main.Contains("filled", StringComparison.OrdinalIgnoreCase)) return main;
+        if (Accepted(main, acceptedMarkers)) return main;
 
         JsonElement frameTree;
         try { frameTree = await _devTools.CommandAsync("Page.getFrameTree", null, token); }
@@ -283,7 +346,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
                 }, token);
                 var value = response.GetProperty("result").GetProperty("result").TryGetProperty("value", out var resultValue)
                     ? resultValue.ToString() : "";
-                if (value.Contains("filled", StringComparison.OrdinalIgnoreCase)) return value;
+                if (Accepted(value, acceptedMarkers)) return value;
             }
             catch (Exception ex) when (ex is InvalidOperationException or KeyNotFoundException) { }
         }
@@ -386,6 +449,53 @@ internal sealed class BrowserValidation : IAsyncDisposable
           return target.value === no ? 'filled' : 'waiting';
         }})()";
     }
+
+    private static string BuildResultMonitorInstallScript(string declarationNo)
+    {
+        var encoded = JsonSerializer.Serialize(declarationNo);
+        return $@"(() => {{
+          const no = {encoded};
+          if (window.__customsConsoleMonitor?.declarationNo === no) return 'monitoring';
+          const visible = e => !!e && !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
+          const text = () => (document.body?.innerText || '').replace(/\s+/g, ' ').trim();
+          const hash = value => {{ let h = 2166136261; for (let i = 0; i < value.length; i++) h = Math.imul(h ^ value.charCodeAt(i), 16777619); return (h >>> 0).toString(16); }};
+          const signature = () => {{ const value = text(); return {{ length:value.length, height:document.documentElement.scrollHeight, hash:hash(value.slice(-3000)) }}; }};
+          const state = window.__customsConsoleMonitor = {{ declarationNo:no, queryAt:0, baseline:signature() }};
+          const isQueryControl = target => {{
+            const control = target?.closest?.('button,input[type=button],input[type=submit],a,[role=button]');
+            if (!visible(control)) return false;
+            const label = (control.innerText || control.value || control.getAttribute('aria-label') || '').replace(/\s+/g, '');
+            return /^查询$/.test(label) || /查询报关单|开始查询/.test(label);
+          }};
+          document.addEventListener('pointerdown', event => {{ if (isQueryControl(event.target)) {{ state.baseline = signature(); state.queryAt = Date.now(); }} }}, true);
+          document.addEventListener('submit', () => {{ state.baseline = signature(); state.queryAt = Date.now(); }}, true);
+          return 'monitoring';
+        }})()";
+    }
+
+    private static string BuildResultProbeScript() => @"(() => {
+          const state = window.__customsConsoleMonitor;
+          if (!state || !state.queryAt) return 'waiting|not-started';
+          const visible = e => !!e && !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
+          const bodyText = (document.body?.innerText || '').replace(/\s+/g, ' ').trim();
+          const compact = bodyText.replace(/\s+/g, '');
+          const errors = ['验证码错误','验证码不正确','请输入验证码','查询失败','未查询到','没有查询到','暂无数据','请求失败'];
+          if (errors.some(value => compact.includes(value))) return 'error|' + errors.find(value => compact.includes(value));
+          const loading = [...document.querySelectorAll('[aria-busy=true],.loading,.is-loading,.el-loading-mask,.ant-spin-spinning,.layui-layer-loading')].some(visible);
+          if (loading) return 'loading|' + document.documentElement.scrollHeight;
+          const hash = value => { let h = 2166136261; for (let i = 0; i < value.length; i++) h = Math.imul(h ^ value.charCodeAt(i), 16777619); return (h >>> 0).toString(16); };
+          const current = { length:bodyText.length, height:document.documentElement.scrollHeight, hash:hash(bodyText.slice(-3000)) };
+          const changed = current.hash !== state.baseline.hash &&
+            (Math.abs(current.length - state.baseline.length) >= 24 || Math.abs(current.height - state.baseline.height) >= 60);
+          const resultMarkers = ['申报日期','放行日期','结关日期','海关状态','通关状态','查验状态','申报海关','放行','结关'];
+          const markerCount = resultMarkers.filter(value => compact.includes(value)).length;
+          const resultRows = [...document.querySelectorAll('table tbody tr,.timeline li,.el-timeline-item,.ant-timeline-item,.query-result tr,.result-list li')]
+            .filter(visible).filter(el => (el.innerText || '').trim().length >= 8).length;
+          const elapsed = Date.now() - state.queryAt;
+          const fingerprint = `${current.length}:${current.height}:${current.hash}:${resultRows}`;
+          if (elapsed >= 900 && changed && (markerCount >= 2 || resultRows >= 1)) return 'ready|' + fingerprint;
+          return 'query|' + fingerprint;
+        })()";
 
     public async ValueTask DisposeAsync()
     {

@@ -32,6 +32,22 @@ internal static class SelfTest
         if (!File.Exists(browser.Path)) throw new InvalidOperationException("未能解析可用于自动核验的浏览器。");
         if (!BrowserValidation.PrimaryUrl.EndsWith("id=pi4", StringComparison.Ordinal))
             throw new InvalidOperationException("核验页面未指向报关单状态查询 pi4。");
+        if (DeclarationParser.NormalizeConsigneeIdentifiers("HNB TX US _ _") != "HNB_TX_US")
+            throw new InvalidOperationException("低位下划线未按结构化标识符顺序回接。");
+        if (DeclarationParser.NormalizeConsigneeIdentifiers("HNB TX US __") != "HNB_TX_US")
+            throw new InvalidOperationException("合并后的低位下划线未按结构化标识符顺序回接。");
+        if (DeclarationParser.NormalizeConsigneeIdentifiers("Vietnam Gold Star Investment Company Limited") != "Vietnam Gold Star Investment Company Limited")
+            throw new InvalidOperationException("普通境外收货人名称被错误重组。");
+        using (var copyMenu = new CopyContextMenu(() => { }))
+            if (copyMenu.Items.Count != 1)
+                throw new InvalidOperationException("右键复制菜单未保持为单一操作项。");
+        using (var icon24 = UiIcons.LoadButton(UiIcon.Directory, primary: false, dpi: 96F))
+        using (var icon32 = UiIcons.LoadButton(UiIcon.Directory, primary: false, dpi: 144F))
+        using (var icon48 = UiIcons.LoadButton(UiIcon.Directory, primary: false, dpi: 192F))
+            if (icon24.Size != new Size(24, 24) || icon32.Size != new Size(32, 32) || icon48.Size != new Size(48, 48))
+                throw new InvalidOperationException("按钮 PNG 图标未按 DPI 选择正确分辨率。");
+        if (new[] { 24, 32, 48 }.Any(size => !File.Exists(Path.Combine(AppContext.BaseDirectory, "assets", "button-icons", $"directory-settings-{size}.png"))))
+            throw new InvalidOperationException("按钮 PNG 图标资源未复制到程序目录。");
         RunSplitAmountAndFuzzyCurrencyRegression();
         RunLineTotalSafetyRegression();
         RunDropDownLifecycleRegression();
