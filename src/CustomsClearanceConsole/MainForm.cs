@@ -19,6 +19,7 @@ internal sealed class MainForm : Form
     private readonly Button _previous;
     private readonly Button _next;
     private readonly Button _scan;
+    private Button _export = null!;
     private readonly MetricCard _fileMetric;
     private readonly MetricCard _duplicateMetric;
     private readonly MetricCard _grossMetric;
@@ -162,14 +163,20 @@ internal sealed class MainForm : Form
         var frame = new RoundedPanel { Dock = DockStyle.Fill, BackColor = Theme.Surface, Margin = new Padding(0), Radius = 8, BorderColor = Theme.Border };
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, BackColor = Theme.Surface, ColumnCount = 1, RowCount = 4, Padding = new Padding(1) };
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 74)); layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 108)); layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 80));
-        var heading = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 5, Padding = new Padding(24, 14, 24, 14) };
+        var heading = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 6, Padding = new Padding(24, 14, 24, 14) };
         heading.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize)); heading.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 140)); heading.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); heading.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 169)); heading.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 165));
+        heading.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 165));
         heading.Controls.Add(new Label { Text = "关单记录", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, ForeColor = Theme.Text, Font = Theme.UiFont(24F, FontStyle.Bold), AutoSize = true }, 0, 0);
         recordCount = new Label { Text = "共 0 条记录", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, ForeColor = Theme.Muted, Font = Theme.UiFont(19F), Padding = new Padding(18, 0, 0, 0) };
         heading.Controls.Add(recordCount, 1, 0);
         scan = Theme.IconButton("开始识别", UiIcon.Start, primary: true); scan.Dock = DockStyle.Fill; scan.Margin = new Padding(0, 0, 12, 0);
+        _export = Theme.SecondaryButton("列表导出");
+        _export.Dock = DockStyle.Fill;
+        _export.Margin = new Padding(0, 0, 12, 0);
+        _export.AccessibleName = "列表导出";
+        _export.Click += (_, _) => ExportList();
         var clear = Theme.IconButton("列表清理", UiIcon.ListClean, danger: true); clear.Dock = DockStyle.Fill; clear.Click += (_, _) => ClearList();
-        heading.Controls.Add(scan, 3, 0); heading.Controls.Add(clear, 4, 0);
+        heading.Controls.Add(scan, 3, 0); heading.Controls.Add(_export, 4, 0); heading.Controls.Add(clear, 5, 0);
 
         var toolbar = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 6, RowCount = 2, Padding = new Padding(24, 6, 24, 10), BackColor = ColorTranslator.FromHtml("#F7F9FC") };
         toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 412)); toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 34));
@@ -211,7 +218,6 @@ internal sealed class MainForm : Form
         grid.AlternatingRowsDefaultCellStyle.BackColor = ColorTranslator.FromHtml("#F8FAFD"); grid.GridColor = Theme.Border;
         AddTextColumn(grid, "Index", "序号", 7, 48, DataGridViewContentAlignment.MiddleCenter); AddTextColumn(grid, "No", "报关单编号", 14, 128); AddTextColumn(grid, "Consignee", "境外收货人", 15, 128); AddTextColumn(grid, "Contract", "合同协议号", 13, 108); AddTextColumn(grid, "Customs", "出境关别", 11, 84); AddTextColumn(grid, "Country", "目的国", 10, 70); AddTextColumn(grid, "Total", "关单总货值", 13, 112, DataGridViewContentAlignment.MiddleRight); AddTextColumn(grid, "Status", "状态", 8, 72, DataGridViewContentAlignment.MiddleCenter);
         grid.Columns.Add(new DataGridViewButtonColumn { Name = "Verify", HeaderText = "校验", Text = "校验", UseColumnTextForButtonValue = true, FillWeight = 8, MinimumWidth = 70, Resizable = DataGridViewTriState.True, FlatStyle = FlatStyle.Flat });
-        grid.Columns.Add(new DataGridViewButtonColumn { Name = "Details", HeaderText = "详情", Text = "详情", UseColumnTextForButtonValue = true, FillWeight = 8, MinimumWidth = 70, Resizable = DataGridViewTriState.True, FlatStyle = FlatStyle.Flat });
         var menu = new CopyContextMenu(CopySelectedCells);
         grid.Disposed += (_, _) => menu.Dispose();
         grid.CellMouseDown += (_, e) =>
@@ -296,7 +302,7 @@ internal sealed class MainForm : Form
         try { _state.Records = await scanAction(new BatchScanner(), progress, _scanCancellation.Token, items); SaveState(); RefreshGrid(); }
         catch (OperationCanceledException) { BatchScanner.MarkDuplicates(_state.Records); SaveState(); RefreshGrid(); MessageBox.Show($"识别已取消，已保留完成的 {_state.Records.Count} 条结果。", Text, MessageBoxButtons.OK, MessageBoxIcon.Information); }
         catch (Exception ex) { AppLog.Write(ex); SaveState(); RefreshGrid(); MessageBox.Show(ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning); }
-        finally { _scanCancellation.Dispose(); _scanCancellation = null; _scan.Text = "开始识别"; _scan.Image = Theme.ButtonIcon(UiIcon.Start, primary: true); }
+        finally { _scanCancellation.Dispose(); _scanCancellation = null; _scan.Text = "开始识别"; _scan.Image = Theme.ButtonIcon(UiIcon.Start, primary: true); UpdateSummary(); }
     }
 
     private static string[] DroppedSupportedFiles(DragEventArgs e)
@@ -337,11 +343,10 @@ internal sealed class MainForm : Form
         _visible = FilteredRecords().ToList(); _page = Math.Clamp(_page, 1, PageCount()); var size = CurrentPageSize(); var items = _visible.Skip((_page - 1) * size).Take(size).ToList(); _grid.Rows.Clear();
         for (var i = 0; i < items.Count; i++)
         {
-            var item = items[i]; var rowIndex = _grid.Rows.Add((_page - 1) * size + i + 1, item.DeclarationNo.Length > 0 ? item.DeclarationNo : "未识别", EmptyAsDash(item.Consignee), EmptyAsDash(item.ContractNo), EmptyAsDash(item.ExitCustoms), EmptyAsDash(item.DestinationCountry), item.DisplayTotal, item.ScreenshotPath.Length > 0 ? "已核验" : item.Status, "校验", "详情");
+            var item = items[i]; var rowIndex = _grid.Rows.Add((_page - 1) * size + i + 1, item.DeclarationNo.Length > 0 ? item.DeclarationNo : "未识别", EmptyAsDash(item.Consignee), EmptyAsDash(item.ContractNo), EmptyAsDash(item.ExitCustoms), EmptyAsDash(item.DestinationCountry), item.DisplayTotal, item.ScreenshotPath.Length > 0 ? "已核验" : item.Status, "校验");
             var row = _grid.Rows[rowIndex]; row.Height = 56; row.Tag = item; row.Cells["Verify"].ReadOnly = item.DeclarationNo.Length != 18;
             foreach (DataGridViewCell cell in row.Cells) cell.ToolTipText = Convert.ToString(cell.FormattedValue) ?? "";
             row.Cells["Verify"].ToolTipText = item.DeclarationNo.Length == 18 ? "打开核验网站；人工验证后保存长截图" : "未识别出有效报关单号，无法在线核验";
-            row.Cells["Details"].ToolTipText = $"查看识别出的 {item.LineTotals.Count} 条逐项总价";
             if (item.IsDuplicate) { row.DefaultCellStyle.BackColor = Theme.DangerSoft; row.DefaultCellStyle.ForeColor = Theme.Danger; row.DefaultCellStyle.SelectionBackColor = ColorTranslator.FromHtml("#FFDAD6"); row.DefaultCellStyle.SelectionForeColor = Theme.Danger; row.Cells["No"].Style.Font = Theme.UiFont(17F, FontStyle.Bold); }
             if (item.Status is "需关注" or "识别失败") row.Cells["Status"].Style.ForeColor = Theme.Warning;
             row.Cells["Status"].ToolTipText = item.Warning; row.Cells["No"].ToolTipText = $"{item.DeclarationNo}\n源文件：{item.SourceName}";
@@ -361,6 +366,7 @@ internal sealed class MainForm : Form
         _pageLabel.Text = $"第 {_page} / {PageCount()} 页"; _previous.Enabled = _page > 1; _next.Enabled = _page < PageCount();
         _footer.Text = $"共 {_visible.Count} 条";
         _recordCount.Text = $"共 {_state.Records.Count} 条记录";
+        _export.Enabled = _state.Records.Count > 0 && _scanCancellation is null;
     }
 
     private void SelectCellForContextMenu(DataGridViewCellMouseEventArgs e) { if (e.Button != MouseButtons.Right || e.RowIndex < 0 || e.ColumnIndex < 0) return; var cell = _grid[e.ColumnIndex, e.RowIndex]; if (cell.Selected) return; _grid.ClearSelection(); cell.Selected = true; _grid.CurrentCell = cell; }
@@ -370,12 +376,6 @@ internal sealed class MainForm : Form
     private async void GridCellContentClick(object? sender, DataGridViewCellEventArgs e)
     {
         if (e.RowIndex < 0 || e.ColumnIndex < 0 || _grid.Rows[e.RowIndex].Tag is not DeclarationRecord record) return;
-        if (_grid.Columns[e.ColumnIndex].Name == "Details")
-        {
-            using var details = new DeclarationDetailsForm(record);
-            ModalPresenter.Show(details, this);
-            return;
-        }
         if (_grid.Columns[e.ColumnIndex].Name != "Verify" || record.DeclarationNo.Length != 18) return;
         if (!Directory.Exists(_state.ScreenshotFolder)) ShowDirectorySettings(); if (!Directory.Exists(_state.ScreenshotFolder)) return;
         using var dialog = new VerificationForm(record, _state.ScreenshotFolder);
@@ -383,12 +383,38 @@ internal sealed class MainForm : Form
         {
             foreach (var matching in _state.Records.Where(x => x.DeclarationNo == record.DeclarationNo)) matching.ScreenshotPath = dialog.SavedScreenshot;
             SaveState(); RefreshGrid();
-            ShowScreenshotSavedToast(dialog.SavedScreenshot);
+            ShowFileSavedToast(dialog.SavedScreenshot, "核验结果长截图已保存");
         }
         await Task.CompletedTask;
     }
 
-    private void ShowScreenshotSavedToast(string screenshotPath)
+    private void ExportList()
+    {
+        if (_scanCancellation is not null || _state.Records.Count == 0) return;
+        using var dialog = new SaveFileDialog
+        {
+            Title = "导出本批全部关单列表",
+            Filter = "Markdown 文档 (*.md)|*.md",
+            DefaultExt = "md",
+            AddExtension = true,
+            OverwritePrompt = true,
+            FileName = $"关单列表_{DateTime.Now:yyyyMMdd_HHmmss}.md",
+            RestoreDirectory = true
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        try
+        {
+            MarkdownListExporter.Save(dialog.FileName, BatchScanner.SortRecords(_state.Records).ToList(), DateTime.Now);
+            ShowFileSavedToast(dialog.FileName, "关单列表已导出为 Markdown");
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write(ex);
+            MessageBox.Show($"导出未完成，请检查保存位置权限或文件占用情况。\n{ex.Message}", "列表导出", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    private void ShowFileSavedToast(string filePath, string message)
     {
         var toast = new RoundedPanel
         {
@@ -397,12 +423,12 @@ internal sealed class MainForm : Form
             BackColor = ColorTranslator.FromHtml("#F1FBF5"),
             BorderColor = ColorTranslator.FromHtml("#9ECBB0"),
             Radius = 9,
-            AccessibleName = "截图保存成功提示"
+            AccessibleName = "文件保存成功提示"
         };
         toast.Location = new Point(Math.Max(20, ClientSize.Width - toast.Width - 30), Math.Max(20, ClientSize.Height - toast.Height - 30));
         var text = new Label
         {
-            Text = "核验结果长截图已保存",
+            Text = message,
             Location = new Point(18, 0),
             Size = new Size(225, toast.Height),
             Font = Theme.UiFont(14F),
@@ -415,7 +441,7 @@ internal sealed class MainForm : Form
         open.Font = Theme.UiFont(14F);
         open.Click += (_, _) =>
         {
-            try { Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{screenshotPath}\"") { UseShellExecute = true }); }
+            try { Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{filePath}\"") { UseShellExecute = true }); }
             catch (Exception ex) { AppLog.Write(ex); }
             Controls.Remove(toast);
             toast.Dispose();

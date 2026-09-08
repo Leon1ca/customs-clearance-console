@@ -50,6 +50,7 @@ internal static class SelfTest
             throw new InvalidOperationException("按钮 PNG 图标资源未复制到程序目录。");
         RunSplitAmountAndFuzzyCurrencyRegression();
         RunLineTotalSafetyRegression();
+        RunMarkdownExportRegression();
         RunDropDownLifecycleRegression();
         RunCaptionStateRegression();
         Console.OutputEncoding = System.Text.Encoding.UTF8;
@@ -66,15 +67,47 @@ internal static class SelfTest
         var totals = DeclarationParser.SumReliableLineTotals(lines);
         if (totals.GetValueOrDefault("CNY") != 100m)
             throw new InvalidOperationException("双引擎冲突金额被错误计入合计。");
-        using var details = new DeclarationDetailsForm(new DeclarationRecord
+    }
+
+    private static void RunMarkdownExportRegression()
+    {
+        var longName = new string('名', 90) + "_公司|A&B<script>";
+        var first = new DeclarationRecord
         {
-            DeclarationNo = "310120260000000001",
-            SourcePath = "detail-regression.pdf",
-            LineTotals = lines,
-            Totals = totals
-        });
-        if (details.Controls.Count == 0)
-            throw new InvalidOperationException("金额详情窗口未正确创建。");
+            DeclarationNo = "310120260000000001", Consignee = longName, ContractNo = "AB_001\n第二行",
+            IsDuplicate = true, SourcePath = "sample.pdf",
+            LineTotals =
+            [
+                new() { PageNumber = 1, Sequence = 1, ItemNo = "1", Currency = "USD", Amount = 1234567890.12m },
+                new() { PageNumber = 2, Sequence = 2, ItemNo = "2", Currency = "CNY", Amount = 200m },
+                new() { PageNumber = 2, Sequence = 3, ItemNo = "3", Currency = "CNY", Amount = 999m, VerificationAmount = 998m, IsReliable = false }
+            ],
+            Totals = new() { ["USD"] = 1234567890.12m, ["CNY"] = 200m }
+        };
+        var duplicate = new DeclarationRecord { DeclarationNo = first.DeclarationNo, IsDuplicate = true, SourcePath = "duplicate.pdf" };
+        var result = MarkdownListExporter.Render([first, duplicate], new DateTime(2026, 9, 8, 12, 0, 0));
+        if (!result.Contains(new string('名', 90)) || !result.Contains("&#95;公司&#124;A&amp;B&lt;script&gt;") ||
+            !result.Contains("AB&#95;001<br>第二行") || !result.Contains("1,234,567,890.12") ||
+            !result.Contains("未确认，未计入总价") || !result.Contains("998.00") ||
+            !result.Contains("未保存分项价格") || !result.Contains("未识别，未计入合计") ||
+            result.Split("## 关单 ").Length != 3 || result.Split(Environment.NewLine + "---" + Environment.NewLine).Length != 2)
+            throw new InvalidOperationException("Markdown 导出未完整保留长内容、多币种、重复文件或未确认金额。");
+        var totalPart = result.Split("### 关单总价")[1].Split("---" + Environment.NewLine)[0];
+        if (totalPart.Contains("999.00") || !totalPart.Contains("200.00") || !totalPart.Contains("USD"))
+            throw new InvalidOperationException("Markdown 总价错误包含未确认分项或丢失币种。");
+
+        var folder = Path.Combine(Path.GetTempPath(), "customs-export-test-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(folder);
+        var file = Path.Combine(folder, "列表导出.md");
+        try
+        {
+            MarkdownListExporter.Save(file, [first, duplicate], new DateTime(2026, 9, 8, 12, 0, 0));
+            if (File.ReadAllText(file) != result) throw new InvalidOperationException("导出文件内容与生成结果不一致。");
+            MarkdownListExporter.Save(file, [duplicate], new DateTime(2026, 9, 8, 12, 0, 0));
+            if (Directory.GetFiles(folder).Length != 1 || File.ReadAllText(file) != MarkdownListExporter.Render([duplicate], new DateTime(2026, 9, 8, 12, 0, 0)))
+                throw new InvalidOperationException("导出文件替换或临时文件清理失败。");
+        }
+        finally { File.Delete(file); Directory.Delete(folder); }
     }
 
     private static void RunSplitAmountAndFuzzyCurrencyRegression()
@@ -183,20 +216,7 @@ internal static class SelfTest
         if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
         using Form form = kind.Equals("directory", StringComparison.OrdinalIgnoreCase)
             ? new DirectorySettingsForm(@"C:\关单读取目录", @"C:\核验截图目录")
-            : kind.Equals("details", StringComparison.OrdinalIgnoreCase)
-                ? new DeclarationDetailsForm(new DeclarationRecord
-                {
-                    DeclarationNo = "516620260000491860",
-                    SourcePath = @"C:\关单读取目录\横向扫描关单.pdf",
-                    Totals = new() { ["CNY"] = 29234m },
-                    LineTotals =
-                    [
-                        new() { Sequence = 1, PageNumber = 1, ItemNo = "1", Currency = "CNY", Amount = 232714.44m, VerificationAmount = 232714.44m, Note = "双引擎一致" },
-                        new() { Sequence = 2, PageNumber = 1, ItemNo = "2", Currency = "CNY", Amount = 154337.14m, VerificationAmount = 154337.10m, IsReliable = false, Note = "双引擎不一致：未计入合计" },
-                        new() { Sequence = 3, PageNumber = 2, ItemNo = "7", Currency = "CNY", Amount = 56096.71m, VerificationAmount = 56096.71m, Note = "双引擎一致" }
-                    ]
-                })
-                : new ConfirmationDialog("确认清理关单目录？", "将把关单读取目录中的 PDF/图片移入 Windows 回收站。", "请确认当前目录中没有需要保留的关单文件。");
+            : new ConfirmationDialog("确认清理关单目录？", "将把关单读取目录中的 PDF/图片移入 Windows 回收站。", "请确认当前目录中没有需要保留的关单文件。");
         form.StartPosition = FormStartPosition.Manual;
         form.Location = new Point(-32000, -32000);
         form.ShowInTaskbar = false;
