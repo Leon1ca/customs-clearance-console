@@ -21,9 +21,44 @@ function Invoke-Gh {
 }
 
 function Invoke-Git {
-    $result = & git -c http.sslBackend=openssl -c 'credential.helper=' -c 'credential.helper=!gh auth git-credential' @args
-    if ($LASTEXITCODE -ne 0) { throw "Git command failed (exit $LASTEXITCODE). No force-push will be attempted." }
-    return $result
+    $gitArguments = @($args)
+    $operation = [string]$gitArguments[0]
+    $networkOperation = $operation -in @('ls-remote', 'fetch', 'push')
+    # Read/fetch and replaying the same non-force push are safe to retry.
+    # Do not blindly replay deletion after an ambiguous network failure.
+    $attemptLimit = if ($networkOperation -and $gitArguments -notcontains '--delete') { 4 } else { 1 }
+    $transientFailure = '(?i)connection (was )?reset|recv failure|connection timed out|operation timed out|failed to connect|could not resolve host|remote end hung up|early eof|ssl_error_syscall|tls connection was non-properly terminated|requested url returned error: (429|502|503|504)'
+    $logRoot = Join-Path $repoRoot 'artifacts\dev-state'
+    New-Item -ItemType Directory -Path $logRoot -Force | Out-Null
+    $errorFile = Join-Path $logRoot ('publish-git-' + [Guid]::NewGuid().ToString('N') + '.stderr')
+    # PowerShell 5 treats redirected native stderr as ErrorRecord objects.
+    # Inspect the exit code ourselves without losing the command's stdout.
+    $ErrorActionPreference = 'Continue'
+    $PSNativeCommandUseErrorActionPreference = $false
+    try {
+        for ($attempt = 1; $attempt -le $attemptLimit; $attempt++) {
+            if ($networkOperation) { Write-Host "Git $operation (attempt $attempt/$attemptLimit, HTTP/1.1)..." }
+            $result = & git -c http.sslBackend=openssl -c http.version=HTTP/1.1 -c http.lowSpeedLimit=1 -c http.lowSpeedTime=30 -c 'credential.helper=' -c 'credential.helper=!gh auth git-credential' @gitArguments 2> $errorFile
+            $exitCode = $LASTEXITCODE
+            $errorText = if (Test-Path -LiteralPath $errorFile) { [IO.File]::ReadAllText($errorFile) } else { '' }
+            if ($exitCode -eq 0) {
+                if ($errorText.Trim()) { Write-Host $errorText.Trim() }
+                return $result
+            }
+            if ($errorText.Trim()) { Write-Host $errorText.Trim() -ForegroundColor Yellow }
+            if ($attempt -lt $attemptLimit -and $errorText -match $transientFailure) {
+                $delay = [int][Math]::Pow(2, $attempt)
+                Write-Host "Temporary network failure. Retrying in $delay seconds; no force-push."
+                Start-Sleep -Seconds $delay
+                continue
+            }
+            [IO.File]::WriteAllText((Join-Path $logRoot 'publish-network-last-error.txt'),
+                "git $operation; exit $exitCode; attempt $attempt/$attemptLimit`r`n$errorText", [Text.UTF8Encoding]::new($false))
+            throw "Git $operation failed (exit $exitCode, attempt $attempt/$attemptLimit). Publication stopped; no later cleanup steps were run. See artifacts/dev-state/publish-network-last-error.txt."
+        }
+    } finally {
+        if (Test-Path -LiteralPath $errorFile) { Remove-Item -LiteralPath $errorFile -Force }
+    }
 }
 
 function Get-Releases {
