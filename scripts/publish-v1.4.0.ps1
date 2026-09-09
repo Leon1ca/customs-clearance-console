@@ -42,7 +42,9 @@ function Invoke-Git {
             $exitCode = $LASTEXITCODE
             $errorText = if (Test-Path -LiteralPath $errorFile) { [IO.File]::ReadAllText($errorFile) } else { '' }
             if ($exitCode -eq 0) {
-                if ($errorText.Trim()) { Write-Host $errorText.Trim() }
+                # Successful Git progress is written to stderr. Do not display
+                # PowerShell 5's NativeCommandError formatting for exit code 0.
+                if ($networkOperation) { Write-Host "Git $operation completed." }
                 return $result
             }
             if ($errorText.Trim()) { Write-Host $errorText.Trim() -ForegroundColor Yellow }
@@ -66,6 +68,27 @@ function Get-Releases {
     $result = @()
     foreach ($page in ($pages | ConvertFrom-Json)) { $result += @($page) }
     return $result
+}
+
+function Find-VerifiedAsset {
+    param($Release, [System.IO.FileInfo]$File)
+    $digest = 'sha256:' + (Get-FileHash -LiteralPath $File.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+    $named = @($Release.assets | Where-Object { $_.name -eq $File.Name })
+    if ($named.Count -gt 0) {
+        # A conflicting same-name upload must not be silently ignored.
+        $candidates = $named
+    } else {
+        # GitHub can sanitize non-ASCII upload filenames. Match content, not
+        # the local Chinese filename, and never weaken size/SHA-256 checks.
+        $candidates = @($Release.assets | Where-Object { $_.digest -eq $digest -and $_.size -eq $File.Length })
+    }
+    if ($candidates.Count -eq 0) { return $null }
+    if ($candidates.Count -ne 1 -or $candidates[0].state -ne 'uploaded' -or
+        $candidates[0].size -ne $File.Length -or $candidates[0].digest -ne $digest) {
+        throw "Conflicting/incomplete asset: $($File.Name). No existing asset was overwritten."
+    }
+    Write-Host "Verified asset: $($candidates[0].name) ($($File.Length) bytes, SHA-256 matches)."
+    return $candidates[0]
 }
 
 function Assert-OldTagUnchanged {
@@ -117,16 +140,22 @@ try {
     Invoke-Git fetch origin main
     Invoke-Git merge-base --is-ancestor origin/main HEAD
     $head = ((Invoke-Git rev-parse HEAD) -join '').Trim()
+    $localTag = @(Invoke-Git tag --list $tag)
+    $releaseCommit = $head
+    if ($localTag.Count -gt 0) {
+        # Resuming after a script-only fix must preserve the published tag.
+        $releaseCommit = ((Invoke-Git rev-parse "$tag^{}") -join '').Trim()
+        Invoke-Git merge-base --is-ancestor $testedCommit $releaseCommit
+        Invoke-Git merge-base --is-ancestor $releaseCommit HEAD
+        Invoke-Git diff --exit-code $testedCommit $releaseCommit -- src docs/release-notes-v1.4.0.md
+    }
     $remoteTag = @(Invoke-Git ls-remote origin "refs/tags/$tag" "refs/tags/$tag^{}")
     if ($remoteTag.Count -gt 0) {
         $target = @($remoteTag | Where-Object { $_ -match '\^\{\}$' })
         if ($target.Count -eq 0) { $target = $remoteTag }
-        if (($target[0] -split '\s+')[0] -ne $head) { throw 'Remote v1.4.0 already points to different code; refusing to replace it.' }
+        if (($target[0] -split '\s+')[0] -ne $releaseCommit) { throw 'Remote v1.4.0 tag differs from the verified local release tag; refusing to replace it.' }
     }
-    $localTag = @(Invoke-Git tag --list $tag)
-    if ($localTag.Count -gt 0) {
-        if (((Invoke-Git rev-parse "$tag^{}") -join '').Trim() -ne $head) { throw 'Local v1.4.0 tag points to different code.' }
-    } else {
+    if ($localTag.Count -eq 0) {
         Invoke-Git tag -a $tag -m 'Consolidated v1.4.0 release' $head
     }
     Invoke-Git push --atomic origin 'HEAD:refs/heads/main' "refs/tags/$tag"
@@ -141,23 +170,19 @@ try {
     $releaseId = $release[0].id
     foreach ($file in @($zip, (Get-Item -LiteralPath (Join-Path $outputRoot 'SHA256SUMS.txt')))) {
         $info = ((Invoke-Gh api "repos/$repo/releases/$releaseId") -join "`n") | ConvertFrom-Json
-        $existing = @($info.assets | Where-Object { $_.name -eq $file.Name })
-        $digest = 'sha256:' + (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-        if ($existing.Count -eq 0) {
+        $existing = Find-VerifiedAsset -Release $info -File $file
+        if ($null -eq $existing) {
             Invoke-Gh release upload $tag $file.FullName --repo $repo
-        } elseif ($existing.Count -ne 1 -or $existing[0].state -ne 'uploaded' -or
-                  $existing[0].size -ne $file.Length -or $existing[0].digest -ne $digest) {
-            throw "An existing asset differs or is incomplete: $($file.Name). It has not been overwritten."
         }
     }
 
     Write-Host '[3/5] Verifying uploaded SHA-256, then publishing v1.4.0 as Latest...'
     $info = ((Invoke-Gh api "repos/$repo/releases/$releaseId") -join "`n") | ConvertFrom-Json
     foreach ($file in @($zip, (Get-Item -LiteralPath (Join-Path $outputRoot 'SHA256SUMS.txt')))) {
-        $asset = @($info.assets | Where-Object { $_.name -eq $file.Name })
-        $digest = 'sha256:' + (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-        if ($asset.Count -ne 1 -or $asset[0].state -ne 'uploaded' -or $asset[0].size -ne $file.Length -or $asset[0].digest -ne $digest) {
-            throw 'Remote file verification failed. v1.6.0 is untouched.'
+        $asset = Find-VerifiedAsset -Release $info -File $file
+        if ($null -eq $asset) {
+            $details = ($info.assets | Select-Object name,size,state,digest | ConvertTo-Json -Compress) -join ''
+            throw "Uploaded file not found by name or content: $($file.Name). Assets: $details. v1.6.0 is untouched."
         }
     }
     Invoke-Gh release edit $tag --repo $repo --draft=false --prerelease=false --latest --notes-file $notes
