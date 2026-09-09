@@ -1,10 +1,16 @@
 param(
-    [string]$Configuration = "Release"
+    [string]$Configuration = "Release",
+    [string]$LocalRoot = ""
 )
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path $PSScriptRoot -Parent
-$localRoot = Join-Path $repoRoot "artifacts\local-current"
+if (-not $LocalRoot) { $LocalRoot = Join-Path $repoRoot "artifacts\local-current" }
+$localRoot = [System.IO.Path]::GetFullPath($LocalRoot)
+$artifactsRoot = [System.IO.Path]::GetFullPath((Join-Path $repoRoot "artifacts")) + [System.IO.Path]::DirectorySeparatorChar
+if (-not $localRoot.StartsWith($artifactsRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "本地运行目录必须位于仓库 artifacts 子目录内。"
+}
 $portableSdk = Join-Path $repoRoot ".devtools\dotnet-sdk\dotnet.exe"
 $sdkCommand = Get-Command dotnet -ErrorAction SilentlyContinue
 $sdk = if (Test-Path -LiteralPath $portableSdk) { $portableSdk } elseif ($sdkCommand) { $sdkCommand.Source } else { $null }
@@ -18,13 +24,17 @@ $appDll = Join-Path $localApp "关单核验台.dll"
 $launcherBuildScript = Join-Path $repoRoot "scripts\build-launcher.ps1"
 $launcherOutput = Join-Path $repoRoot "artifacts\launcher\关单核验台.exe"
 $usageGuide = Join-Path $repoRoot "src\CustomsClearanceConsole\使用说明.txt"
-$releaseNotes = Join-Path $repoRoot "docs\release-notes-v1.7.0.md"
+$projectXml = [xml](Get-Content -LiteralPath $project -Raw)
+$version = [string]($projectXml.Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1)
+if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "项目版本号格式无效：$version" }
+$notesName = "更新说明-v$version.md"
+$releaseNotes = Join-Path $repoRoot "docs\release-notes-v$version.md"
 
 if (-not $sdk) {
     throw "未找到 .NET 8 SDK。请安装 .NET 8 SDK，或放到仓库 .devtools\dotnet-sdk。"
 }
 
-foreach ($required in @($project, $nugetConfig, $localRoot, $localApp, $runtime)) {
+foreach ($required in @($project, $nugetConfig, $localRoot, $localApp, $runtime, $releaseNotes)) {
     if (-not (Test-Path -LiteralPath $required)) {
         throw "缺少本地开发依赖：$required"
     }
@@ -72,9 +82,9 @@ try {
     }
     Copy-Item -LiteralPath $launcherOutput -Destination (Join-Path $localRoot "关单核验台.exe") -Force
     Copy-Item -LiteralPath $usageGuide -Destination (Join-Path $localRoot "使用说明.txt") -Force
-    Copy-Item -LiteralPath $releaseNotes -Destination (Join-Path $localRoot "更新说明-v1.7.0.md") -Force
+    Copy-Item -LiteralPath $releaseNotes -Destination (Join-Path $localRoot $notesName) -Force
     Get-ChildItem -LiteralPath $localRoot -Filter "更新说明-v*.md" -File |
-        Where-Object { $_.Name -ne "更新说明-v1.7.0.md" } |
+        Where-Object { $_.Name -ne $notesName } |
         Remove-Item -Force
 
     Write-Host "仓库内本地运行版已更新：$localRoot"
