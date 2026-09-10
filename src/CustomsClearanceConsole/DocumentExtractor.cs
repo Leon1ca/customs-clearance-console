@@ -33,7 +33,8 @@ internal sealed partial class DocumentExtractor
     {
         var pages = new List<TextPage>();
         var rendered = new List<(int Index, string Path)>();
-        var temp = Path.Combine(AppPaths.TempRoot, Guid.NewGuid().ToString("N"));
+        using var workspace = new TemporaryDirectory(AppPaths.TempRoot);
+        var temp = workspace.Path;
 
         using (var document = new PdfiumNative.PdfDocument(path))
         {
@@ -62,7 +63,6 @@ internal sealed partial class DocumentExtractor
             verificationPages[item.Index] = WithPageNumber(result.Secondary ?? result.Primary, item.Index + 1);
             if (!string.IsNullOrWhiteSpace(result.SecondaryError)) secondaryErrors.Add(result.SecondaryError);
         }
-        try { if (Directory.Exists(temp)) Directory.Delete(temp, true); } catch { }
         var declarationIndexes = SelectDeclarationPageIndexes(pages, verificationPages);
         if (declarationIndexes.Count > 0)
         {
@@ -145,8 +145,8 @@ internal sealed partial class DocumentExtractor
         if (!File.Exists(AppPaths.TesseractExe))
             throw new FileNotFoundException("该文件需要 OCR，但程序包中的 Tesseract 组件缺失。", AppPaths.TesseractExe);
 
-        var temp = Path.Combine(AppPaths.TempRoot, Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(temp);
+        using var workspace = new TemporaryDirectory(AppPaths.TempRoot);
+        var temp = workspace.Path;
         using var source = Image.FromFile(path);
         var rotation = await DetectOrientationAsync(path, cancellationToken);
         using var prepared = new Bitmap(source);
@@ -205,7 +205,6 @@ internal sealed partial class DocumentExtractor
             secondaryError = $"第二 OCR 引擎不可用：{ex.GetBaseException().Message}";
             AppLog.Write($"{secondaryError}\n文件：{path}\n{ex}");
         }
-        try { Directory.Delete(temp, true); } catch { }
         return new OcrPageResult(primary, secondary, secondaryError);
     }
 
@@ -239,9 +238,9 @@ internal sealed partial class DocumentExtractor
         {
             using var process = Process.Start(start);
             if (process is null) return 0;
-            var outputTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
-            var errorTask = process.StandardError.ReadToEndAsync(cancellationToken);
-            await process.WaitForExitAsync(cancellationToken);
+            var outputTask = process.StandardOutput.ReadToEndAsync();
+            var errorTask = process.StandardError.ReadToEndAsync();
+            await OwnedProcess.WaitForExitAsync(process, cancellationToken);
             var text = (await outputTask) + Environment.NewLine + (await errorTask);
             var rotate = System.Text.RegularExpressions.Regex.Match(text, @"Rotate:\s*(0|90|180|270)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
             var confidence = System.Text.RegularExpressions.Regex.Match(text, @"Orientation confidence:\s*([0-9.]+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
@@ -306,9 +305,9 @@ internal sealed partial class DocumentExtractor
         start.ArgumentList.Add("tsv");
 
         using var process = Process.Start(start) ?? throw new InvalidOperationException("无法启动 OCR 组件。");
-        var errorTask = process.StandardError.ReadToEndAsync(cancellationToken);
-        var outputTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
-        await process.WaitForExitAsync(cancellationToken);
+        var errorTask = process.StandardError.ReadToEndAsync();
+        var outputTask = process.StandardOutput.ReadToEndAsync();
+        await OwnedProcess.WaitForExitAsync(process, cancellationToken);
         var error = await errorTask;
         await outputTask;
         if (process.ExitCode != 0) throw new InvalidOperationException($"OCR 失败：{error.Trim()}");

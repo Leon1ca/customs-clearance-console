@@ -22,13 +22,15 @@ flowchart LR
 
 ## 模块职责
 
-- `BatchScanner`：限定格式和 200 文件边界、批量调度、重复分组、去重合计。
+- `ScanPlan` / `ScanSession`：文件预检、不可变清单、批次取消与已完成结果。
+- `BatchScanner`：后台提取调度、逐条结果回报、重复分组、去重合计；可注入提取器进行核心回归。
 - `DocumentExtractor`：PDF 文字层抽取、页面渲染、图片 OCR 和双引擎执行。
 - `DeclarationParser`：利用关单字段标签、表格列位置与业务格式提取六个字段。
 - `DeclarationReconciler`：比较两个引擎的字段结果，执行安全补全或保守冲突标记。
-- `StateStore`：将历史、浏览器偏好、分页大小和截图目录保存在 `%LocalAppData%\关单核验台`。
-- `MainForm`：高 DPI 自适应布局、表格交互、筛选、分页和安全清理入口。
-- `BrowserValidation` / `VerificationForm`：启动 Edge/Chrome、填写单号、等待人工验证并保存长截图。
+- `StateStore`：将历史、分页大小和目录设置保存在 `%LocalAppData%\关单核验台`。
+- `MainForm`：批次和界面事件；`MainForm.Layout`：布局和表格绘制。
+- `Theme`、`UiControls`、`UiIcons`、`MetricCard`、`MoneySummaryPanel`：主题、基础控件、图标与汇总展示。
+- `BrowserValidation` / `VerificationForm`：启动 Edge/Chrome、填写单号、等待人工验证并保存长截图；网页脚本作为 `BrowserScripts/*.js` 嵌入程序集，由浏览器回归页直接复用。
 
 ## 便携运行
 
@@ -38,6 +40,6 @@ flowchart LR
 
 - 输入只读取用户选定文件夹当前层。
 - 运行数据只写入 `%LocalAppData%\关单核验台`、用户选定的截图目录和临时 OCR 目录。
-- 临时渲染页处理结束后尝试清理；失败只记录日志，不影响关单结果。
+- 临时渲染页与 OCR 工作目录在成功、失败和取消时统一释放；失败只记录日志，不影响关单结果。
 - 在线核验由用户主动触发，且人工验证阶段保持在浏览器中完成。
 

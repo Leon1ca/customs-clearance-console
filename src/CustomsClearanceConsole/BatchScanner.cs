@@ -1,43 +1,28 @@
 namespace CustomsClearanceConsole;
 
-internal sealed class BatchScanner
+internal sealed partial class BatchScanner
 {
     public const int MaximumFiles = 200;
     public static readonly string[] SupportedExtensions = [".pdf", ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"];
-    private readonly DocumentExtractor _extractor = new();
+    private readonly Func<string, CancellationToken, Task<DocumentText>> _extract;
+    internal BatchScanner(Func<string, CancellationToken, Task<DocumentText>> extract) => _extract = extract;
     private readonly DeclarationParser _parser = new();
 
-    public async Task<List<DeclarationRecord>> ScanAsync(
-        string folder,
-        IProgress<(int Done, int Total, string File)> progress,
-        CancellationToken cancellationToken,
+    public Task<List<DeclarationRecord>> ScanAsync(string folder,
+        IProgress<(int Done, int Total, string File)> progress, CancellationToken cancellationToken,
+        IProgress<DeclarationRecord>? itemProgress = null) =>
+        ScanAsync(ScanPlan.FromFolder(folder), progress, cancellationToken, itemProgress);
+
+    public Task<List<DeclarationRecord>> ScanFilesAsync(IEnumerable<string> paths,
+        IProgress<(int Done, int Total, string File)> progress, CancellationToken cancellationToken,
+        IProgress<DeclarationRecord>? itemProgress = null) =>
+        ScanAsync(ScanPlan.FromFiles(paths), progress, cancellationToken, itemProgress);
+
+    public async Task<List<DeclarationRecord>> ScanAsync(ScanPlan plan,
+        IProgress<(int Done, int Total, string File)> progress, CancellationToken cancellationToken,
         IProgress<DeclarationRecord>? itemProgress = null)
     {
-        var extensions = new HashSet<string>(SupportedExtensions, StringComparer.OrdinalIgnoreCase);
-        var files = Directory.EnumerateFiles(folder, "*", SearchOption.TopDirectoryOnly)
-            .Where(x => extensions.Contains(Path.GetExtension(x)))
-            .OrderBy(x => Path.GetFileName(x), StringComparer.CurrentCultureIgnoreCase)
-            .ToList();
-        return await ScanFilesAsync(files, progress, cancellationToken, itemProgress);
-    }
-
-    public async Task<List<DeclarationRecord>> ScanFilesAsync(
-        IEnumerable<string> paths,
-        IProgress<(int Done, int Total, string File)> progress,
-        CancellationToken cancellationToken,
-        IProgress<DeclarationRecord>? itemProgress = null)
-    {
-        var extensions = new HashSet<string>(SupportedExtensions, StringComparer.OrdinalIgnoreCase);
-        var files = paths
-            .Where(File.Exists)
-            .Where(x => extensions.Contains(Path.GetExtension(x)))
-            .Select(Path.GetFullPath)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(x => Path.GetFileName(x), StringComparer.CurrentCultureIgnoreCase)
-            .ToList();
-        if (files.Count == 0) throw new InvalidOperationException("没有可识别的关单文件。支持 PDF、PNG、JPG、BMP、TIF/TIFF。");
-        if (files.Count > MaximumFiles) throw new InvalidOperationException($"本批有 {files.Count} 个支持的文件，超过每批 {MaximumFiles} 个的上限。请分批识别。");
-
+        var files = plan.Files;
         var result = new List<DeclarationRecord>();
         for (var i = 0; i < files.Count; i++)
         {
@@ -45,7 +30,7 @@ internal sealed class BatchScanner
             progress.Report((i, files.Count, Path.GetFileName(files[i])));
             try
             {
-                var text = await _extractor.ExtractAsync(files[i], cancellationToken);
+                var text = await Task.Run(() => _extract(files[i], cancellationToken), cancellationToken);
                 var record = _parser.Parse(files[i], text);
                 result.Add(record);
                 itemProgress?.Report(record);
@@ -69,23 +54,19 @@ internal sealed class BatchScanner
 
     public static void MarkDuplicates(List<DeclarationRecord> records)
     {
-        foreach (var record in records) { record.IsDuplicate = false; record.IsCanonical = true; }
-        foreach (var group in records.Where(x => x.DeclarationNo.Length == 18).GroupBy(x => x.DeclarationNo).Where(x => x.Count() > 1))
+        foreach (var record in records) { record.IsDuplicate = false; record.IsCanonical = true; record.DuplicateWarning = ""; }
+        foreach (var group in records.Where(x => x.HasValidDeclarationNo).GroupBy(x => x.DeclarationNo).Where(x => x.Count() > 1))
         {
             var canonical = group.OrderByDescending(x => x.Confidence).ThenBy(x => x.SourcePath, StringComparer.OrdinalIgnoreCase).First();
+            var valuesDiffer = group.Any(record => !SameContents(record, canonical));
             foreach (var record in group)
             {
-                var recognitionWarning = record.Status == "需关注" ? record.Warning : "";
                 record.IsDuplicate = true;
                 record.IsCanonical = ReferenceEquals(record, canonical);
-                record.Status = "重复单号";
-                var valuesDiffer = !SameContents(record, canonical);
                 var duplicateWarning = valuesDiffer
                     ? "同一报关单号的识别内容不一致；去重合计采用完整度更高的一条"
                     : "当前批次存在相同报关单号；去重合计仅计一次";
-                record.Warning = string.IsNullOrWhiteSpace(recognitionWarning)
-                    ? duplicateWarning
-                    : $"{duplicateWarning}；{recognitionWarning}";
+                record.DuplicateWarning = duplicateWarning;
             }
         }
     }

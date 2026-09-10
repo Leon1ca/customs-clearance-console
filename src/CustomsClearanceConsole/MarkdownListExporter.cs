@@ -24,7 +24,7 @@ internal static class MarkdownListExporter
                 ["合同协议号", record.ContractNo],
                 ["源文件", record.SourceName],
                 ["识别状态", record.Status + (record.IsDuplicate && !record.Status.Contains("重复单号") ? "；重复单号" : "")],
-                ["识别提示", record.Warning]
+                ["识别提示", record.AllWarnings]
             ], [14, 64]);
 
             output.AppendLine("### 分项价格").AppendLine();

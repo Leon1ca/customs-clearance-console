@@ -16,10 +16,23 @@ public sealed class DeclarationRecord
     public int Confidence { get; set; }
     public string Status { get; set; } = "待识别";
     public string Warning { get; set; } = "";
+    public string DuplicateWarning { get; set; } = "";
     public bool IsDuplicate { get; set; }
     public bool IsCanonical { get; set; } = true;
     public string ScreenshotPath { get; set; } = "";
     public DateTime ScannedAt { get; set; } = DateTime.Now;
+
+    [JsonIgnore]
+    public bool HasValidDeclarationNo => DeclarationNo.Length == 18 && DeclarationNo.All(char.IsAsciiDigit);
+    [JsonIgnore]
+    public bool NeedsAttention => Status is "需关注" or "识别失败" || LineTotals.Any(x => !x.IsReliable);
+    [JsonIgnore]
+    public bool HasScreenshot => !string.IsNullOrWhiteSpace(ScreenshotPath) && File.Exists(ScreenshotPath);
+    [JsonIgnore]
+    public string DisplayStatus => string.Join(Environment.NewLine,
+        new[] { IsDuplicate ? "重复单号" : "", NeedsAttention ? Status == "识别失败" ? "识别失败" : "需关注" : "", !IsDuplicate && !NeedsAttention ? "识别完成" : "" }.Where(x => x.Length > 0));
+    [JsonIgnore]
+    public string AllWarnings => string.Join("；", new[] { Warning, DuplicateWarning }.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct());
 
     [JsonIgnore]
     public string DisplayTotal => Totals.Count == 0
@@ -52,10 +65,9 @@ public sealed class DeclarationLineTotal
 
 public sealed class AppState
 {
-    public int UiSchemaVersion { get; set; } = 3;
+    public int UiSchemaVersion { get; set; } = 5;
     public string LastFolder { get; set; } = "";
     public string ScreenshotFolder { get; set; } = "";
-    public string BrowserPreference { get; set; } = "Edge";
     public int PageSize { get; set; } = 50;
     public List<DeclarationRecord> Records { get; set; } = [];
 }
@@ -108,15 +120,8 @@ internal static class CurrencyNames
 
 internal static class Formatters
 {
-    public static string MoneyTotals(Dictionary<string, decimal> values) => values.Count == 0
-        ? "—"
-        : string.Join("  /  ", values.OrderBy(x => x.Key).Select(x => $"{x.Key} {x.Value.ToString("N2", CultureInfo.CurrentCulture)}"));
-
     public static string MoneyTotalsLines(Dictionary<string, decimal> values) => values.Count == 0
         ? "—"
         : string.Join(Environment.NewLine, values.OrderBy(x => x.Key).Select(x => $"{x.Key} {x.Value.ToString("N2", CultureInfo.CurrentCulture)}"));
 
-    public static string MoneyTotalsCompact(Dictionary<string, decimal> values) => values.Count == 0
-        ? "—"
-        : string.Join(" / ", values.OrderBy(x => x.Key).Select(x => $"{x.Key}{x.Value.ToString("N2", CultureInfo.CurrentCulture)}"));
 }

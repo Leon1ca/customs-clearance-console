@@ -99,13 +99,13 @@ internal sealed partial class DeclarationParser
         {
             recovered.Add("逐项总价（第二引擎完整表格）");
             agreements++;
-            return MarkStructurallyVerified(secondary, "第二引擎完整读取，已通过表格结构校验");
+            return MarkStructurallyVerified(secondary, primary, "第二引擎完整读取，已通过表格结构校验");
         }
         if (HasCompleteTableAdvantage(primary, secondary))
         {
             recovered.Add("逐项总价（主引擎完整表格）");
             agreements++;
-            return MarkStructurallyVerified(primary, "主引擎完整读取，已通过表格结构校验");
+            return MarkStructurallyVerified(primary, secondary, "主引擎完整读取，已通过表格结构校验");
         }
 
         var result = new List<DeclarationLineTotal>();
@@ -160,19 +160,31 @@ internal sealed partial class DeclarationParser
     private static bool HasCompleteTableAdvantage(IReadOnlyList<DeclarationLineTotal> stronger, IReadOnlyList<DeclarationLineTotal> weaker)
     {
         if (stronger.Count < 3 || stronger.Count < weaker.Count + 3 || stronger.Count < Math.Max(3, weaker.Count * 2)) return false;
-        if (stronger.Any(x => x.Amount <= 0 || string.IsNullOrWhiteSpace(x.Currency) || x.PageNumber <= 0)) return false;
+        if (stronger.Any(x => !x.IsReliable || x.Amount <= 0 || string.IsNullOrWhiteSpace(x.Currency) || x.PageNumber <= 0)) return false;
+        // Structural completeness may recover missing rows, but must not override
+        // conflicts on rows actually read by both engines.
+        foreach (var weak in weaker)
+        {
+            var matches = stronger.Where(x => x.PageNumber == weak.PageNumber &&
+                (!string.IsNullOrWhiteSpace(weak.ItemNo) ? x.ItemNo == weak.ItemNo : x.Sequence == weak.Sequence)).ToList();
+            if (matches.Count != 1 || !matches[0].Currency.Equals(weak.Currency, StringComparison.OrdinalIgnoreCase) ||
+                matches[0].Amount != weak.Amount || !weak.IsReliable || !matches[0].IsReliable) return false;
+        }
         var pages = stronger.GroupBy(x => x.PageNumber).OrderBy(x => x.Key).ToList();
         if (pages.Count == 0 || pages.Select(x => x.Key).Zip(pages.Select(x => x.Key).Skip(1), (a, b) => b - a).Any(gap => gap > 1)) return false;
         return pages.All(page => page.Count() > 0 && page.Select(x => x.Currency).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 1);
     }
 
-    private static List<DeclarationLineTotal> MarkStructurallyVerified(IReadOnlyList<DeclarationLineTotal> source, string note)
+    private static List<DeclarationLineTotal> MarkStructurallyVerified(IReadOnlyList<DeclarationLineTotal> source, IReadOnlyList<DeclarationLineTotal> verification, string note)
     {
         var result = source.OrderBy(x => x.PageNumber).ThenBy(x => x.Sequence).Select(CloneLine).ToList();
         for (var i = 0; i < result.Count; i++)
         {
+            var originalSequence = result[i].Sequence;
             result[i].Sequence = i + 1;
-            result[i].VerificationAmount = result[i].Amount;
+            var match = verification.FirstOrDefault(x => x.PageNumber == result[i].PageNumber &&
+                (!string.IsNullOrWhiteSpace(result[i].ItemNo) ? x.ItemNo == result[i].ItemNo : x.Sequence == originalSequence));
+            result[i].VerificationAmount = match?.Amount;
             result[i].IsReliable = true;
             result[i].Note = note;
         }
@@ -189,7 +201,8 @@ internal sealed partial class DeclarationParser
             var exact = samePageCurrency.FirstOrDefault(x => x.ItemNo == target.ItemNo);
             if (exact is not null) return exact;
         }
-        return samePageCurrency.OrderBy(x => Math.Abs(x.Sequence - target.Sequence)).FirstOrDefault();
+        return samePageCurrency.Where(x => string.IsNullOrWhiteSpace(target.ItemNo) || string.IsNullOrWhiteSpace(x.ItemNo))
+            .OrderBy(x => Math.Abs(x.Sequence - target.Sequence)).FirstOrDefault();
     }
 
     private static DeclarationLineTotal CloneLine(DeclarationLineTotal source) => new()

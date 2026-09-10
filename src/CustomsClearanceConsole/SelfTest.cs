@@ -53,6 +53,7 @@ internal static class SelfTest
         RunMarkdownExportRegression();
         RunDropDownLifecycleRegression();
         RunCaptionStateRegression();
+        RunEnterpriseLayoutRegression();
         Console.OutputEncoding = System.Text.Encoding.UTF8;
         Console.WriteLine("UI_CONTRACTS_OK");
     }
@@ -189,6 +190,45 @@ internal static class SelfTest
         host.Close();
     }
 
+    private static void RunEnterpriseLayoutRegression()
+    {
+        var previousData = Environment.GetEnvironmentVariable("CUSTOMS_CONSOLE_DATA");
+        using var workspace = new TemporaryDirectory(Path.GetTempPath());
+        Environment.SetEnvironmentVariable("CUSTOMS_CONSOLE_DATA", workspace.Path);
+        try
+        {
+            new StateStore().Save(new AppState { Records =
+            [
+                new() { DeclarationNo = "310120260000000001", SourcePath = "sample.pdf", Status = "需关注", Warning = "金额冲突", Totals = new() { ["USD"] = 1234567890.12m, ["CNY"] = 200m }, Confidence = 80 },
+                new() { DeclarationNo = "310120260000000001", SourcePath = "duplicate.pdf", Status = "识别完成", Totals = new() { ["USD"] = 1234567890.12m }, Confidence = 90 }
+            ] });
+            foreach (var size in new[] { new Size(1200, 800), new Size(1600, 1000) })
+            {
+                using var form = new MainForm { Size = size, StartPosition = FormStartPosition.Manual, Location = new Point(-32000, -32000), ShowInTaskbar = false, Opacity = 0 };
+                form.Show(); form.PerformLayout(); Application.DoEvents();
+                var controls = Descendants(form).ToList();
+                var grid = controls.OfType<DataGridView>().Single();
+                if (grid.Rows.Count != 2 || grid.ColumnCount != 9 || grid.Columns["No"].Width < 200)
+                    throw new InvalidOperationException("企业版列表未保留完整字段或单号宽度。");
+                if (!Convert.ToString(grid.Rows[1].Cells["Status"].Value)!.Contains("需关注") && !Convert.ToString(grid.Rows[0].Cells["Status"].Value)!.Contains("需关注"))
+                    throw new InvalidOperationException("重复单号掩盖识别异常。");
+                foreach (var name in new[] { "全部记录", "正常记录", "重复记录", "需关注记录" })
+                    if (!controls.OfType<Button>().Any(x => x.AccessibleName == name && x.Visible))
+                        throw new InvalidOperationException($"缺少筛选入口：{name}");
+                var money = controls.OfType<MoneySummaryPanel>().Single();
+                if (money.CurrencyCount != 2 || money.Width < 400) throw new InvalidOperationException("多币种汇总布局异常。");
+                if (grid.Height < 200) throw new InvalidOperationException("记录区域高度不足。");
+                form.Close();
+            }
+        }
+        finally { Environment.SetEnvironmentVariable("CUSTOMS_CONSOLE_DATA", previousData); }
+    }
+
+    private static IEnumerable<Control> Descendants(Control root)
+    {
+        foreach (Control child in root.Controls) { yield return child; foreach (var nested in Descendants(child)) yield return nested; }
+    }
+
     public static void CaptureUi(string outputPath, int width, int height)
     {
         var directory = Path.GetDirectoryName(Path.GetFullPath(outputPath));
@@ -214,9 +254,12 @@ internal static class SelfTest
     {
         var directory = Path.GetDirectoryName(Path.GetFullPath(outputPath));
         if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
-        using Form form = kind.Equals("directory", StringComparison.OrdinalIgnoreCase)
-            ? new DirectorySettingsForm(@"C:\关单读取目录", @"C:\核验截图目录")
-            : new ConfirmationDialog("确认清理关单目录？", "将把关单读取目录中的 PDF/图片移入 Windows 回收站。", "请确认当前目录中没有需要保留的关单文件。");
+        using Form form = kind.ToLowerInvariant() switch
+        {
+            "directory" => new DirectorySettingsForm(@"C:\关单读取目录", @"C:\核验截图目录"),
+            "verification" => new VerificationForm(new DeclarationRecord { DeclarationNo = "310120260000000001" }, Path.GetTempPath(), autoStart: false),
+            _ => new ConfirmationDialog("核对清理范围 · 1 / 2", "关单源文件（PDF / 图片，仅当前目录）\n共 24 个文件，将移入 Windows 回收站。", @"C:\业务资料\出口业务\待处理关单")
+        };
         form.StartPosition = FormStartPosition.Manual;
         form.Location = new Point(-32000, -32000);
         form.ShowInTaskbar = false;

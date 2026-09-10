@@ -30,10 +30,10 @@ internal sealed class ConfirmationDialog : Form
 {
     private readonly Button _cancel;
 
-    internal ConfirmationDialog(string titleText, string bodyText, string warningText)
+    internal ConfirmationDialog(string titleText, string bodyText, string warningText, string confirmText = "确认清理")
     {
         Text = titleText;
-        ClientSize = new Size(640, 324);
+        ClientSize = new Size(640, 414);
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         BackColor = Color.White;
@@ -49,13 +49,15 @@ internal sealed class ConfirmationDialog : Form
             Margin = new Padding(0)
         };
 
-        var icon = new DangerTrashIcon { Location = new Point(32, 30), Size = new Size(52, 52) };
+        Control icon = confirmText == "确认清理"
+            ? new DangerTrashIcon { Location = new Point(32, 30), Size = new Size(52, 52) }
+            : new Label { Text = "✓", Location = new Point(32, 30), Size = new Size(52, 52), TextAlign = ContentAlignment.MiddleCenter, ForeColor = Theme.Blue, Font = Theme.UiFont(28) };
         var title = new Label
         {
             Text = titleText,
             Location = new Point(102, 30),
             Size = new Size(506, 52),
-            Font = Theme.UiFont(26F, FontStyle.Bold),
+            Font = Theme.UiFont(22F, FontStyle.Bold),
             ForeColor = Theme.Text,
             TextAlign = ContentAlignment.MiddleLeft,
             AutoEllipsis = true
@@ -64,32 +66,31 @@ internal sealed class ConfirmationDialog : Form
         {
             Text = bodyText,
             Location = new Point(32, 106),
-            Size = new Size(576, 26),
-            Font = Theme.UiFont(17F),
+            Size = new Size(576, 64),
+            Font = Theme.UiFont(14F),
             ForeColor = Theme.Muted,
             TextAlign = ContentAlignment.MiddleLeft,
             AutoEllipsis = true
         };
         var warning = new RoundedPanel
         {
-            Location = new Point(32, 148),
-            Size = new Size(576, 58),
+            Location = new Point(32, 184),
+            Size = new Size(576, 112),
             Radius = 7,
             BorderColor = ColorTranslator.FromHtml("#FFF5F3"),
             BackColor = ColorTranslator.FromHtml("#FFF5F3")
         };
-        warning.Controls.Add(new Label
+        warning.Controls.Add(new TextBox
         {
-            Text = warningText,
-            Dock = DockStyle.Fill,
-            Padding = new Padding(18, 0, 18, 0),
-            Font = Theme.UiFont(16F),
-            ForeColor = ColorTranslator.FromHtml("#8C1D18"),
-            TextAlign = ContentAlignment.MiddleLeft,
-            AutoEllipsis = true
+            Text = warningText, Dock = DockStyle.Fill, Multiline = true, ReadOnly = true,
+            ScrollBars = ScrollBars.Vertical, BorderStyle = BorderStyle.None,
+            BackColor = Theme.DangerSoft, ForeColor = Theme.Text, Font = Theme.UiFont(14),
+            AccessibleName = "完整范围和目录"
         });
+        warning.Padding = new Padding(14);
 
-        var footer = new Panel { Location = new Point(1, 232), Size = new Size(638, 91), BackColor = Color.White };
+
+        var footer = new Panel { Location = new Point(1, 322), Size = new Size(638, 91), BackColor = Color.White };
         footer.Paint += (_, e) =>
         {
             using var pen = new Pen(ColorTranslator.FromHtml("#D5DEE9"));
@@ -99,7 +100,7 @@ internal sealed class ConfirmationDialog : Form
         _cancel.Location = new Point(371, 20);
         _cancel.Size = new Size(112, 48);
         _cancel.DialogResult = DialogResult.No;
-        var confirm = Theme.DangerSolidButton("确认清理");
+        var confirm = confirmText == "确认清理" ? Theme.DangerSolidButton(confirmText) : Theme.PrimaryButton(confirmText);
         confirm.Location = new Point(495, 20);
         confirm.Size = new Size(112, 48);
         confirm.DialogResult = DialogResult.Yes;
@@ -111,9 +112,9 @@ internal sealed class ConfirmationDialog : Form
         CancelButton = _cancel;
     }
 
-    public static bool Confirm(Form owner, string title, string body, string warning)
+    public static bool Confirm(Form owner, string title, string body, string warning, string confirmText = "确认清理")
     {
-        using var dialog = new ConfirmationDialog(title, body, warning);
+        using var dialog = new ConfirmationDialog(title, body, warning, confirmText);
         return ModalPresenter.Show(dialog, owner) == DialogResult.Yes;
     }
 

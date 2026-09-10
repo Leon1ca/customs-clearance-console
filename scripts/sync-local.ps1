@@ -63,6 +63,9 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "程序依赖准备失败，退出代码：$LASTEXITCODE" }
     }
 
+    & $sdk run --project (Join-Path $repoRoot "tests\CoreRegression\CoreRegression.csproj") -c $Configuration
+    if ($LASTEXITCODE -ne 0) { throw "核心业务回归测试失败，退出代码：$LASTEXITCODE" }
+
     & $sdk build $project -c $Configuration --no-restore -v:q
     if ($LASTEXITCODE -ne 0) { throw "程序构建失败，退出代码：$LASTEXITCODE" }
 
