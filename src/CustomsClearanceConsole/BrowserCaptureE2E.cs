@@ -112,17 +112,33 @@ internal static class BrowserCaptureE2E
         catch (TimeoutException) { return Harness(session, "测试侧等待超时，未取得生产结论。"); }
     }
 
+    /// <summary>
+    /// Carries the fixture iframe's inline style read before the capture. A read failure is
+    /// recorded here (not swallowed) so the owning scenario fails instead of skipping the
+    /// restore comparison.
+    /// </summary>
+    private sealed class FrameStyleEvidence
+    {
+        public string? Before { get; set; }
+
+        public Exception? BeforeError { get; set; }
+    }
+
     private static async Task<BrowserCaptureResult> DriveAsync(BrowserValidation session, string? evidencePath, bool waitForSettled,
-        Func<Task>? afterLoad = null)
+        FrameStyleEvidence? styleEvidence = null)
     {
         var problem = await StartAndWaitAsync(session, waitForSettled);
-        // The page is loaded by now; let a scenario snapshot the original inline style
+        // The page is loaded by now; let the scenario snapshot the original inline style
         // before the capture mutates and restores it. Runs even when the settle wait failed
         // so a failing scenario can still report the real original.
-        if (afterLoad is not null)
+        if (styleEvidence is not null)
         {
-            try { await afterLoad(); }
-            catch (Exception ex) { AppLog.Write($"读取捕获前样式失败：{ex.Message}"); }
+            try { styleEvidence.Before = await session.EvaluateRawAsync(FrameStyleProbe, CancellationToken.None); }
+            catch (Exception ex) { styleEvidence.BeforeError = ex; }
+            // Without a valid original there is no basis to claim a restore, so a pre-capture
+            // read failure is immediately reported as this scenario's failure.
+            if (styleEvidence.BeforeError is not null)
+                return Harness(session, $"捕获前读取 iframe 原样式失败，场景失败：{styleEvidence.BeforeError.Message}");
         }
         if (problem is not null) return Harness(session, problem);
         if (!waitForSettled) await Task.Delay(1200);
@@ -130,6 +146,66 @@ internal static class BrowserCaptureE2E
         if (evidencePath is not null && result.State == "saved" && result.FilePath is not null && File.Exists(result.FilePath))
             File.Copy(result.FilePath, evidencePath, overwrite: true);
         return result;
+    }
+
+    /// <summary>The four inline style values the frame fixture restore must give back exactly.</summary>
+    private static readonly string[] FrameStyleFields = ["height", "heightPriority", "maxHeight", "maxHeightPriority"];
+
+    /// <summary>Reads the after-capture frame style, turning a protocol/script failure into data.</summary>
+    private static async Task<(string? Json, string? Error)> ReadFrameStyleAsync(BrowserValidation session)
+    {
+        try { return (await session.EvaluateRawAsync(FrameStyleProbe, CancellationToken.None), null); }
+        catch (Exception ex) { return (null, ex.Message); }
+    }
+
+    /// <summary>
+    /// Requires a concrete style reading: parseable JSON, not the probe's missing=true
+    /// sentinel, with all four fields present as strings. An empty read or a shape mismatch is
+    /// not evidence and must never let the strict restore comparison be skipped.
+    /// </summary>
+    private static bool TryParseFrameStyle(string? json, out Dictionary<string, string> values, out string error)
+    {
+        values = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (string.IsNullOrWhiteSpace(json)) { error = "读取结果为空"; return false; }
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) { error = $"根节点不是对象（{root.ValueKind}）"; return false; }
+            if (root.TryGetProperty("missing", out var missing) && missing.ValueKind == JsonValueKind.True)
+            { error = "探针返回 missing=true，未找到 iframe"; return false; }
+            foreach (var field in FrameStyleFields)
+            {
+                if (!root.TryGetProperty(field, out var element) || element.ValueKind != JsonValueKind.String)
+                { error = $"缺少字符串字段 {field}"; return false; }
+                values[field] = element.GetString() ?? "";
+            }
+            error = "";
+            return true;
+        }
+        catch (JsonException ex) { error = $"JSON 解析失败：{ex.Message}"; return false; }
+    }
+
+    /// <summary>
+    /// Strictly compares the four inline style values read before and after the capture. Both
+    /// readings must first validate as concrete evidence; only then are values compared, so an
+    /// empty/unparseable/absent reading can never be reported as a restored original.
+    /// </summary>
+    private static void AssertFrameStyleRestored(string? beforeJson, string? beforeError, string? afterJson, string? afterError,
+        string label, List<string> details)
+    {
+        var beforeValid = TryParseFrameStyle(beforeJson, out var before, out var beforeParseError);
+        if (!beforeValid)
+            details.Add($"{label}：捕获前样式证据无效，无法断言原样式已复原（{beforeError ?? beforeParseError}）。");
+        var afterValid = TryParseFrameStyle(afterJson, out var after, out var afterParseError);
+        if (!afterValid)
+            details.Add($"{label}：捕获后样式证据无效，无法断言原样式已复原（{afterError ?? afterParseError}）。");
+        if (!beforeValid || !afterValid) return;
+        foreach (var field in FrameStyleFields)
+        {
+            if (!string.Equals(before[field], after[field], StringComparison.Ordinal))
+                details.Add($"{label}：{field} 未复原，原=\"{before[field]}\" 现=\"{after[field]}\"。");
+        }
     }
 
     private static async Task<Scenario> RunSuccessAsync(string outputFolder, string browser, TestServer server)
@@ -488,9 +564,9 @@ internal static class BrowserCaptureE2E
         var frameUrl = other.Url($"/frame?content=800&result={number}&query=1");
         var url = server.Url($"/page?content=300&result={number}&frame=cross&clamp=1&xhost={Uri.EscapeDataString(frameUrl)}");
         await using var session = new BrowserValidation(number, folder, url, browser, headless: true, allowTestTarget: true);
-        string? originalStyle = null;
+        var styleEvidence = new FrameStyleEvidence();
         var result = await DriveAsync(session, Path.Combine(outputFolder, "capture-cross-frame.png"), waitForSettled: true,
-            afterLoad: async () => originalStyle = await session.EvaluateRawAsync(FrameStyleProbe, CancellationToken.None));
+            styleEvidence: styleEvidence);
         var details = new List<string>();
         if (result.State != "saved") details.Add($"跨源 frame 截图失败：{result.Message}");
         if (result.FilePath is null || !File.Exists(result.FilePath)) details.Add("未生成跨源 frame 截图。");
@@ -504,11 +580,11 @@ internal static class BrowserCaptureE2E
                 details.Add("跨源 frame 底部标记未出现在截图中（内容被截断）。");
         }
         // The frame element really is height:400px + max-height:400px !important in the
-        // fixture; the restore must give back exactly that. Comparing with the style
-        // captured before the capture is stricter than hard-coding either value.
-        var style = await session.EvaluateRawAsync(FrameStyleProbe, CancellationToken.None);
-        if (originalStyle is not null && !string.Equals(style, originalStyle, StringComparison.Ordinal))
-            details.Add($"iframe 原高度/max-height 及 !important 优先级未复原：原={originalStyle} 现={style}");
+        // fixture; the restore must give back exactly that. Both readings must first be
+        // concrete evidence, then all four values are compared strictly.
+        var (afterStyle, afterError) = await ReadFrameStyleAsync(session);
+        AssertFrameStyleRestored(styleEvidence.Before, styleEvidence.BeforeError?.Message, afterStyle, afterError,
+            "跨源 frame 原高度/max-height 及 !important 优先级", details);
         return new Scenario("cross-origin-frame", details.Count == 0, details.Count == 0 ? ["顶层无查询，max-height 约束的跨源 frame 内查询首尾完整且原样式优先级复原"] : details);
     }
 
@@ -529,9 +605,9 @@ internal static class BrowserCaptureE2E
         var url = server.Url($"/page?content=300&result={number}&frame=cross&clamp=1&xhost={Uri.EscapeDataString(frameUrl)}");
         await using var session = new BrowserValidation(number, folder, url, browser, headless: true, allowTestTarget: true,
             extraBrowserArgs: [$"--host-resolver-rules=MAP {host} 127.0.0.1"]);
-        string? originalStyle = null;
+        var styleEvidence = new FrameStyleEvidence();
         var result = await DriveAsync(session, Path.Combine(outputFolder, "capture-oopif-frame.png"), waitForSettled: true,
-            afterLoad: async () => originalStyle = await session.EvaluateRawAsync(FrameStyleProbe, CancellationToken.None));
+            styleEvidence: styleEvidence);
         var details = new List<string>();
         if (result.State != "saved")
         {
@@ -551,9 +627,9 @@ internal static class BrowserCaptureE2E
             if (!ColumnContainsColor(image, Color.FromArgb(0x77, 0x00, 0xAA)))
                 details.Add("跨站 OOPIF frame 底部标记未入图（独立进程内容被截断）。");
         }
-        var style = await session.EvaluateRawAsync(FrameStyleProbe, CancellationToken.None);
-        if (originalStyle is not null && !string.Equals(style, originalStyle, StringComparison.Ordinal))
-            details.Add($"OOPIF frame 原高度/max-height 及优先级未复原：原={originalStyle} 现={style}");
+        var (afterStyle, afterError) = await ReadFrameStyleAsync(session);
+        AssertFrameStyleRestored(styleEvidence.Before, styleEvidence.BeforeError?.Message, afterStyle, afterError,
+            "OOPIF frame 原高度/max-height 及优先级", details);
         return new Scenario("cross-site-oopif-frame", details.Count == 0, details.Count == 0 ? ["独立进程 OOPIF frame 内查询经 CDP session 完整捕获并复原样式"] : details);
     }
 

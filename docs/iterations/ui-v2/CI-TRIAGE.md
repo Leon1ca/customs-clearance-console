@@ -74,3 +74,36 @@ Markdown实际包含61个逐关单段落，完整来源/关别/目的国、逐�
 `ui-states.json`记录桌面成功设为1920×1080，四档实际窗口/PNG尺寸与请求一致；实际DeviceDpi、windowDpi、systemDpi都为96，其他缩放仍待真实机器验证。字体报告确认Noto Sans SC Regular/Bold/Medium及JetBrains Mono Regular/Medium实际加载。
 
 `environment.json`的构建输出目录探测里rootLicense/thirdPartyNotices为false，不能据此直接断言正式ZIP缺许可；正式包另有独立打包检查，本次证据目录未含ZIP，不在此替代该检查或宣称已独立核对包内容。最终报告仍等待最终同一SHA、浏览器失败修复后产物，以及上述三项UI修复后的真实屏幕图。
+
+## 07851ef 定点源码复核
+
+固定提交：`07851efa983212d22fb3091cb4809b802c8ffcb3`。只读取该提交相对633db49的相关修复及必要调用链，未运行本机产品/测试。最终云端与真实屏幕仍待该提交产物。
+
+### 三项UI：源码根因已处理，运行证据待补
+
+MainForm以独立`_recordStateWanted`控制初始化布局/置顶，并在OnShown再布局，避免祖先尚未显示导致Visible有效getter为false的路径。标题按实际字体测量宽度，分隔线与版本紧随其后，消除原先固定几何重叠；序号表头独立使用零padding与居中。SelfTest新增状态面板有效可见/实际层次/范围及标题边界检查。现有修复与已发现根因对应，不要求进一步重做视觉；仍需最终真实屏幕确认。
+
+### OOPIF等候monitor：未发现弱化核心成功断言
+
+FormHtml由固定400ms改成最多约20秒等候monitor，再对实际查询按钮执行DOM click并填充合成结果。没有直接修改monitor.queryAt或跳过生产结果核验；截图仍通过可见卡片的CDP鼠标点击，saved、PNG存在、首尾颜色标记、尺寸检查均保留。它不等同于人为鼠标查询，但该动作方式本轮没有从真实鼠标降级（此前同样使用DOM click）。因此可视作修正过早查询的夹具竞态，运行成功仍待云端。
+
+### P2明确残留：样式基线缺失时可跳过恢复断言
+
+`BrowserCaptureE2E.cs:124–125`吞掉afterLoad前测异常，只写AppLog。跨源与OOPIF场景在约510/555行仅当`originalStyle is not null`时比较恢复前后值；如果前测瞬时CDP/JS错误、后续截图成功，场景可以Pass并声称“原样式优先级复原”，实际没有任何原始样式依据。
+
+此外EvaluateRawAsync底层在无value/结构不符时可返回空字符串，FrameStyleProbe在找不到iframe时返回`{missing:true}`。因此不能仅把null改成失败：前后值都应解析为有效对象、明确没有missing=true，并包含height/heightPriority/maxHeight/maxHeightPriority四个字符串字段，再逐值或严格序列化比较；允许合法的空属性值，但不允许缺失整个证据对象。前测异常应直接使场景失败（可用Harness结果或传播至统一失败路径），不可仅记日志继续宣称恢复通过。这是证据假阳性漏洞，尚不等同于已证实生产恢复失败。
+
+## 07851ef P2 修复实现记录（不改上节独立结论）
+
+上节为独立复核结论，保持原文；本节只记录针对该 P2 的实现响应，最终是否闭环以同一 SHA 云端运行和独立终验为准。
+
+- **前测异常即失败**：`DriveAsync` 的 `afterLoad` 回调改为 `FrameStyleEvidence` 载体；捕获前读取 `FrameStyleProbe` 的异常写入 `BeforeError` 并立即返回 `Harness` 失败结果，场景因此判失败，不再仅记 `AppLog` 后继续。
+- **证据必须具体**：新增 `TryParseFrameStyle`，要求读取结果非空、可 `JsonDocument.Parse` 为对象、`missing != true`，且 `height`/`heightPriority`/`maxHeight`/`maxHeightPriority` 四项均为 JSON 字符串（允许空串）。空串、`{missing:true}`、字段缺失或类型不符都判为“证据无效”。
+- **严格比较**：新增 `AssertFrameStyleRestored`，先校验前后两侧证据，再逐字段 `Ordinal` 比较；任一侧无效都直接写入失败详情，绝不跳过比较或宣称恢复通过。捕获后读取异常同样转为失败详情。
+- **保留的断言**：真实点击/`saved`、PNG 存在与尺寸、首尾/接缝像素、身份与授权校验、跨源与 OOPIF 帧诊断均未改动，未放宽或删除任何成功场景断言。
+
+### 基线运行暴露的 OOPIF 授权根因（新增实现响应）
+
+对固定提交 `07851ef` 的云端运行 [35963761182](https://github.com/Leon1ca/customs-clearance-console/actions/runs/35963761182) 复核发现：核心/构建/UI 契约/字体/导出/快照/打包/ZIP/根启动器 smoke 的原始 outcome 均为 `success`，但浏览器 E2E 原始 outcome 为 `failure`（被 `continue-on-error` 掩盖），门禁如实报 `browser=failure`；浏览器 26/27，唯一失败为 `cross-site-oopif-frame`：`查询结果未就绪：waiting|not-started`。
+
+其帧诊断显示 OOPIF 上下文 `session=<子会话>;authorized=False;url=`（URL 为空），而 `monitor=True`。根因是 `BrowserValidation.OnAttachedToTarget` 未登记子 target 的 URL：OOPIF 的 `Page.frameNavigated` 在子会话启用 Page 之前触发会丢失，`Page.getFrameTree` 初始种子又可能早于 iframe 建立，于是该 frame 永远没有 URL、永远不通过 `IsAuthorizedFrameId`，身份探针从不进入该 frame。实现响应：attach 时登记 `targetInfo.url`，并在子会话 `Page.enable` 后查询一次 `Page.getFrameTree` 回填真实 URL（导航仍未提交时由随后到达的 `frameNavigated` 覆盖）。这只让真实 OOPIF URL 参与既有授权判定，不放宽授权规则；`cross-origin-frame`、身份/结果核验与像素断言均保留。

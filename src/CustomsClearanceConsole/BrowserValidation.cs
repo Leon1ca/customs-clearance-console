@@ -434,6 +434,13 @@ internal sealed class BrowserValidation : IAsyncDisposable
             if (targetId.Length == 0 || sessionId.Length == 0) return;
             // For an iframe target the target id is the frame id.
             lock (_frameTargetSessions) _frameTargetSessions[targetId] = sessionId;
+            // Register the target URL so the flattened OOPIF frame is authorized by its own
+            // URL. Its Page.frameNavigated is delivered on the child session and can fire
+            // before that session enabled Page, which previously left the frame URL unknown
+            // and the frame permanently unauthorized (identity stayed waiting|not-started).
+            var attachUrl = targetInfo.TryGetProperty("url", out var attachUrlProperty) ? attachUrlProperty.GetString() ?? "" : "";
+            if (attachUrl.Length > 0 && !attachUrl.StartsWith("about:", StringComparison.OrdinalIgnoreCase))
+                lock (_frameUrls) _frameUrls[targetId] = attachUrl;
             _ = Task.Run(async () =>
             {
                 var cdp = _cdp;
@@ -441,6 +448,19 @@ internal sealed class BrowserValidation : IAsyncDisposable
                 try { await cdp.SendAsync("Runtime.enable", null, CancellationToken.None, sessionId); } catch { }
                 try { await cdp.SendAsync("Page.enable", null, CancellationToken.None, sessionId); } catch { }
                 try { await cdp.SendAsync("DOM.enable", null, CancellationToken.None, sessionId); } catch { }
+                // The attach-time URL can still be about:blank (or the navigation committed
+                // before Page.enable, which drops the frameNavigated event). Ask the child
+                // session for its frame tree once so the real URL is registered either way.
+                try
+                {
+                    var tree = await cdp.SendAsync("Page.getFrameTree", null, CancellationToken.None, sessionId);
+                    var rootFrame = tree.GetProperty("result").GetProperty("frameTree").GetProperty("frame");
+                    var rootFrameId = rootFrame.GetProperty("id").GetString() ?? "";
+                    var rootUrl = rootFrame.TryGetProperty("url", out var rootUrlProperty) ? rootUrlProperty.GetString() ?? "" : "";
+                    if (rootFrameId.Length > 0 && rootUrl.Length > 0)
+                        lock (_frameUrls) _frameUrls[rootFrameId] = rootUrl;
+                }
+                catch { }
                 // A child target (typically an OOPIF query frame) needs the click monitor at
                 // document start too, otherwise a query that completes before the C# side
                 // injects the monitor is never observed and identity stays "waiting". The

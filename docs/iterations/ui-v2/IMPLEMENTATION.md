@@ -209,3 +209,20 @@
 |---|---|---|
 | [35962368728](https://github.com/Leon1ca/customs-clearance-console/actions/runs/35962368728) | `633db49` | 核心/构建/UI 契约/字体/导出/快照/打包/ZIP/根启动器 smoke 通过；浏览器 25/27，`cross-origin-frame`、`cross-site-oopif-frame` 失败已在本里程碑修复，待下一轮云端确认 |
 | 本轮 | 见下 | P1/P2 + 浏览器两项修复后待云端验证 |
+
+## 里程碑 M11 · 浏览器帧样式复原证据假阳性定点修复（P2）
+
+基线 `07851efa983212d22fb3091cb4809b802c8ffcb3`。独立定点源码复核（`CI-TRIAGE.md` 的“07851ef 定点源码复核”节）确认三项 UI 修复方向正确、OOPIF 等候 monitor 后真实 click 未弱化核心成功断言，唯一明确残留为该节 P2。本节不改独立结论，只记录实现响应。
+
+- **前测异常即失败**：`BrowserCaptureE2E.DriveAsync` 原先用 `Func<Task>? afterLoad` 并在 `try/catch` 中只写 `AppLog`；现改为 `FrameStyleEvidence` 载体。捕获前读取 `FrameStyleProbe` 的异常写入 `BeforeError`，立即返回 `Harness` 失败结果，使该场景判失败，不再吞掉后继续。
+- **证据有效性校验**：新增 `TryParseFrameStyle`，要求读取结果非空、`JsonDocument.Parse` 成功且根为对象、`missing != true`，并且 `height/heightPriority/maxHeight/maxHeightPriority` 四项都存在且为 JSON 字符串（允许合法空串）。空串、`{missing:true}`、字段缺失/类型不符一律判“证据无效”。
+- **严格逐字段比较**：新增 `AssertFrameStyleRestored`；先校验捕获前后两侧证据，再对四项做 `Ordinal` 严格比较并逐项报告差异。任一侧无效直接写入失败详情，绝不因 `originalStyle is null`、空串或双方同为 `{missing:true}` 而跳过比较或伪称复原通过。捕获后读取异常同样转为失败详情。
+- **保留断言**：真实 CDP 点击、`saved`、PNG 存在/尺寸、首尾与接缝像素、身份与授权校验、跨源/OOPIF 帧诊断、其余成功场景断言均未改动或放宽。
+- **OOPIF 授权根因（基线运行新增发现）**：复核 `07851ef` 的云端运行发现浏览器 E2E 原始 outcome 为 `failure`（26/27），唯一失败 `cross-site-oopif-frame` 返回 `waiting|not-started`；帧诊断显示 OOPIF 上下文 `authorized=False;url=`（URL 为空）而 `monitor=True`。根因是 `BrowserValidation.OnAttachedToTarget` 只登记了子 target 的 session，未登记 URL：OOPIF 的 `Page.frameNavigated` 在该子会话启用 Page 之前触发会丢失，初始 `Page.getFrameTree` 种子又可能早于 iframe 建立，结果该 frame 永远无 URL、无法通过 `IsAuthorizedFrameId`。修复：attach 时登记 `targetInfo.url`，并在子会话 `Page.enable` 后查询一次 `Page.getFrameTree` 回填真实 URL（导航尚未提交时由随后 `frameNavigated` 覆盖）。仅让真实 OOPIF URL 参与既有严格授权判定，未放宽任何授权规则。
+
+### 云端运行记录（M11）
+
+| 运行 | 提交 | 结论 |
+|---|---|---|
+| [35963761182](https://github.com/Leon1ca/customs-clearance-console/actions/runs/35963761182) | `07851ef` | 门禁 `browser=failure`（`continue-on-error` 掩盖原始失败）：核心/构建/UI 契约/字体/导出/快照/打包/ZIP/根启动器 smoke 原始 outcome 全 `success`；浏览器 26/27，`cross-site-oopif-frame` 因 OOPIF URL 未登记而 `waiting|not-started`，已在本里程碑修复 |
+| 本轮 | 见下 | P2 证据校验 + OOPIF 授权修复，待同一最终 SHA 云端验证 |
