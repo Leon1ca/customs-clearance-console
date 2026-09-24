@@ -1268,8 +1268,14 @@ internal static class BrowserCaptureE2E
         var problem = await StartAndWaitAsync(session, false);
         var details = new List<string>();
         if (problem is not null) return new Scenario("stalled-capture", false, [problem]);
-        if (!await session.ClickElementInFrameAsync("#inner", "#queryBtn", CancellationToken.None))
-            details.Add("未能在 frame 内真实点击查询按钮。");
+        // The query frame may still be loading right after start; retry the real click until it lands.
+        var clicked = false;
+        for (var attempt = 0; attempt < 40 && !clicked; attempt++)
+        {
+            clicked = await session.ClickElementInFrameAsync("#inner", "#queryBtn", CancellationToken.None);
+            if (!clicked) await Task.Delay(250);
+        }
+        if (!clicked) details.Add("未能在 frame 内真实点击查询按钮。");
         var identity = await session.WaitForIdentitySettledAsync(TimeSpan.FromSeconds(30), CancellationToken.None);
         if (!identity.StartsWith("ready|", StringComparison.Ordinal)) details.Add($"查询未就绪：{identity}");
 
