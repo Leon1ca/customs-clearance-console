@@ -143,9 +143,16 @@ internal static class BrowserCaptureE2E
             if (!await session.ClickCaptureButtonAsync(CancellationToken.None))
                 return (Harness(session, "未找到可见的卡片按钮，未执行真实点击。"), gateHeld);
             try { return (await completion.Task.WaitAsync(timeout), gateHeld); }
-            catch (TimeoutException) { return (Harness(session, "测试侧等待超时，未取得生产结论。"), gateHeld); }
+            catch (TimeoutException) { return (Harness(session, $"测试侧等待超时，未取得生产结论（点击命中：{session.LastClickHitTarget}）。"), gateHeld); }
         }
         finally { session.CaptureCompleted -= handler; }
+    }
+
+    /// <summary>Best-effort card/binding diagnostics for a failed fast retry; never throws.</summary>
+    private static async Task<string> WidgetDiagnosticAsync(BrowserValidation session)
+    {
+        try { return "卡片诊断=" + await session.DescribeWidgetForTestAsync(CancellationToken.None); }
+        catch (Exception ex) { return "卡片诊断失败=" + ex.Message; }
     }
 
     /// <summary>
@@ -1002,7 +1009,12 @@ internal static class BrowserCaptureE2E
                 if (!await session.CanCaptureAsync(CancellationToken.None)) { details.Add($"快速重试第 {retry} 次前卡片按钮不可点击。"); break; }
                 var (again, gateHeldAtRetry) = await ClickAndAwaitContractAsync(session, TimeSpan.FromSeconds(120));
                 if (gateHeldAtRetry) { details.Add($"快速重试第 {retry} 次完成事件发布时截图锁仍被持有。"); break; }
-                if (again.State != "saved") { details.Add($"快速重试第 {retry} 次未保存：{again.State}：{again.Message}"); break; }
+                if (again.State != "saved")
+                {
+                    var widget = await WidgetDiagnosticAsync(session);
+                    details.Add($"快速重试第 {retry} 次未保存：{again.State}：{again.Message}；{widget}");
+                    break;
+                }
                 if (again.FilePath is null || !File.Exists(again.FilePath)) { details.Add($"快速重试第 {retry} 次未生成截图。"); break; }
             }
         }

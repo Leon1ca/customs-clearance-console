@@ -1586,6 +1586,15 @@ internal sealed class BrowserValidation : IAsyncDisposable
     /// </summary>
     public bool CaptureLockHeldForTest => Volatile.Read(ref _captureGate) != 0;
 
+    /// <summary>
+    /// E2E diagnostics for a timed-out capture click: whether the page still exposes the CDP
+    /// binding, what the card thinks its state is, and where the visible button is.
+    /// </summary>
+    public Task<string> DescribeWidgetForTestAsync(CancellationToken token) =>
+        EvaluateRawAsync(
+            "JSON.stringify((function(){var w=window.__cccWidget;return {binding:typeof window.cccRequestCapture==='function',isCapturing:w?!!w.isCapturing:null,canCapture:w?!!w.canCapture():null,bbox:(w&&w.captureButtonRect)?w.captureButtonRect():null,hosts:document.querySelectorAll('#ccc-widget-host').length};})())",
+            token);
+
     public Task<int> CountWidgetHostsAsync(CancellationToken token) =>
         EvaluateIntAsync("document.querySelectorAll('#ccc-widget-host').length", token);
 
