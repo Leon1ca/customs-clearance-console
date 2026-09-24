@@ -1249,6 +1249,20 @@ internal static class SelfTest
                 screenBitmap.Save(Path.Combine(Path.GetDirectoryName(path)!, Path.GetFileNameWithoutExtension(path) + "-screen.png"), ImageFormat.Png);
             }
             Phase("  CopyFromScreen returned");
+            // Diagnostic: the grid's effective border settings, and a second capture after a
+            // forced synchronous repaint, to tell stale screen pixels from real painting.
+            var grid = form.GridForTest;
+            Phase($"  grid border={grid.CellBorderStyle} color={grid.GridColor} advanced={grid.AdvancedCellBorderStyle.All}/{grid.AdvancedCellBorderStyle.Right} handle={grid.IsHandleCreated} layered={form.Opacity}");
+            form.Refresh();
+            Application.DoEvents();
+            Thread.Sleep(400);
+            Application.DoEvents();
+            using (var screenBitmap = new Bitmap(form.ClientSize.Width, form.ClientSize.Height))
+            {
+                using (var graphics = Graphics.FromImage(screenBitmap))
+                    graphics.CopyFromScreen(bounds.Left, bounds.Top, 0, 0, form.ClientSize);
+                screenBitmap.Save(Path.Combine(Path.GetDirectoryName(path)!, Path.GetFileNameWithoutExtension(path) + "-screen2.png"), ImageFormat.Png);
+            }
             form.TopMost = previousTopMost;
             form.Opacity = previousOpacity;
             realScreen = true;
