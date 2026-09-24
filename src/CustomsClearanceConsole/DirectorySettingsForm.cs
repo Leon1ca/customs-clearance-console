@@ -1,7 +1,7 @@
 namespace CustomsClearanceConsole;
 
 /// <summary>Directory settings dialog (design spec 4.2, 520x400).</summary>
-internal sealed class DirectorySettingsForm : Form
+internal sealed class DirectorySettingsForm : DpiDialog
 {
     private readonly TextBox _declarationFolder;
     private readonly TextBox _screenshotFolder;
@@ -17,8 +17,6 @@ internal sealed class DirectorySettingsForm : Form
         ShowInTaskbar = false;
         ClientSize = new Size(520, 400);
         BackColor = Color.White;
-        AutoScaleMode = AutoScaleMode.Dpi;
-        AutoScaleDimensions = new SizeF(96F, 96F);
         StartPosition = FormStartPosition.CenterParent;
 
         var frame = new RoundedPanel { Dock = DockStyle.Fill, Radius = 10, BorderColor = Theme.Border, BackColor = Color.White };
@@ -26,7 +24,8 @@ internal sealed class DirectorySettingsForm : Form
         header.Paint += (_, e) =>
         {
             using var pen = new Pen(Theme.Divider);
-            e.Graphics.DrawLine(pen, 20, header.Height - 1, header.Width - 20, header.Height - 1);
+            var inset = DpiLayout.Scale(20, header.DeviceDpi);
+            e.Graphics.DrawLine(pen, inset, header.Height - 1, header.Width - inset, header.Height - 1);
         };
         header.Controls.Add(new Label
         {
@@ -163,13 +162,17 @@ internal sealed class DirectorySettingsForm : Form
     {
         if (string.IsNullOrWhiteSpace(DeclarationFolder) || !Directory.Exists(DeclarationFolder))
         {
-            ShowHelper("请选择有效的关单读取目录。", true);
+            ShowHelper(string.IsNullOrWhiteSpace(DeclarationFolder)
+                ? "请选择关单读取目录。"
+                : $"关单目录不存在或无法访问，请点“浏览…”重新选择：{DeclarationFolder}", true);
             _declarationFolder.Focus();
             return;
         }
         if (string.IsNullOrWhiteSpace(ScreenshotFolder) || !Directory.Exists(ScreenshotFolder))
         {
-            ShowHelper("请选择有效的截图保存目录。", true);
+            ShowHelper(string.IsNullOrWhiteSpace(ScreenshotFolder)
+                ? "请选择截图保存目录。"
+                : $"截图目录不存在或无法访问，请点“浏览…”重新选择：{ScreenshotFolder}", true);
             _screenshotFolder.Focus();
             return;
         }
@@ -194,7 +197,7 @@ internal sealed class DirectorySettingsForm : Form
     {
         base.OnResize(e);
         if (Width <= 0 || Height <= 0) return;
-        using var path = Theme.RoundedPath(new RectangleF(0, 0, Width, Height), 10);
+        using var path = Theme.RoundedPath(new RectangleF(0, 0, Width, Height), 10 * DeviceDpi / 96F);
         var oldRegion = Region;
         Region = new Region(path);
         oldRegion?.Dispose();

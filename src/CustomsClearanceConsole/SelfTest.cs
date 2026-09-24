@@ -732,20 +732,20 @@ internal static class SelfTest
             form.Activate();
             Application.DoEvents();
             Phase("menus form ready");
-            CaptureRealMenu(form, "导出列表", "menu-export", outputFolder, states);
-            CaptureRealMenu(form, "清理", "menu-cleanup", outputFolder, states);
+            Recorded("menu-export", () => CaptureRealMenu(form, "导出列表", "menu-export", outputFolder, states));
+            Recorded("menu-cleanup", () => CaptureRealMenu(form, "清理", "menu-cleanup", outputFolder, states));
             Phase("menus done");
         }
         finally { Environment.SetEnvironmentVariable("CUSTOMS_CONSOLE_DATA", previous); }
 
         // Dialogs.
         Phase("dialogs begin");
-        CaptureDialog(Path.Combine(outputFolder, "dialog-settings.png"), "settings");
-        CaptureDialog(Path.Combine(outputFolder, "dialog-detail.png"), "detail");
-        CaptureDialog(Path.Combine(outputFolder, "dialog-detail-conflict.png"), "detail-conflict");
-        CaptureDialog(Path.Combine(outputFolder, "dialog-cleanup-docs-step1.png"), "cleanup-docs-1");
-        CaptureDialog(Path.Combine(outputFolder, "dialog-cleanup-docs-step2.png"), "cleanup-docs-2");
-        CaptureDialog(Path.Combine(outputFolder, "dialog-cleanup-list.png"), "cleanup-list");
+        Recorded("dialog-settings", () => CaptureDialog(Path.Combine(outputFolder, "dialog-settings.png"), "settings"));
+        Recorded("dialog-detail", () => CaptureDialog(Path.Combine(outputFolder, "dialog-detail.png"), "detail"));
+        Recorded("dialog-detail-conflict", () => CaptureDialog(Path.Combine(outputFolder, "dialog-detail-conflict.png"), "detail-conflict"));
+        Recorded("dialog-cleanup-docs-step1", () => CaptureDialog(Path.Combine(outputFolder, "dialog-cleanup-docs-step1.png"), "cleanup-docs-1"));
+        Recorded("dialog-cleanup-docs-step2", () => CaptureDialog(Path.Combine(outputFolder, "dialog-cleanup-docs-step2.png"), "cleanup-docs-2"));
+        Recorded("dialog-cleanup-list", () => CaptureDialog(Path.Combine(outputFolder, "dialog-cleanup-list.png"), "cleanup-list"));
         states.Add(("dialog", "-", "dialog-settings.png", "设置 520x400"));
         states.Add(("dialog", "-", "dialog-detail.png", "明细 600x480"));
         states.Add(("dialog", "-", "dialog-detail-conflict.png", "明细冲突"));
@@ -756,11 +756,16 @@ internal static class SelfTest
 
         // The four required sizes must each have a real visible-window screen capture; a
         // DrawToBitmap-only image is not accepted as proof of the declared size.
+        if (GeometryFailures.Count > 0)
+            throw new InvalidOperationException($"{GeometryFailures.Count} 个状态布局断言失败（图片已全部保存）：\n" + string.Join("\n", GeometryFailures));
         var requiredSizes = new[] { "1200x720", "1280x800", "1440x900", "1920x1080" };
         var missingScreen = states
             .Where(x => requiredSizes.Contains(x.Size) && !x.Notes.Contains("\"RealScreen\":true", StringComparison.Ordinal))
             .Select(x => $"{x.Name}-{x.Size}").Distinct().ToList();
-        if (missingScreen.Count > 0)
+        // A real screen capture needs a desktop that can hold the window; at 150% the largest
+        // cloud display mode (1920x1080) cannot hold 1280x800 logical, so only a configured
+        // desktop makes the requirement enforceable.
+        if (missingScreen.Count > 0 && desktopConfigured)
             throw new InvalidOperationException(
                 $"以下关键状态缺少真实可见窗口抓图，不能宣称四档通过：{string.Join("、", missingScreen)}；桌面配置={desktopConfigured}（{desktopDetail}）。");
 
@@ -1152,6 +1157,47 @@ internal static class SelfTest
     private sealed record SnapshotEvidence(int RequestedWidth, int RequestedHeight, int ActualWidth, int ActualHeight,
         int PngWidth, int PngHeight, string WorkingArea, string ScreenBounds, int Dpi, string Responsive, bool RealScreen);
 
+    private static readonly List<string> GeometryFailures = [];
+
+    /// <summary>
+    /// Text must fit its control at the real DPI: a label's text (height, and width unless it
+    /// ellipsizes) and a button's text height. Clipped text is what a broken high-DPI layout
+    /// looks like to the user ("每页" cut to "每", "关单目录" cut at the baseline).
+    /// </summary>
+    internal static List<string> TextFitProblems(Control root)
+    {
+        var problems = new List<string>();
+        foreach (var control in Descendants(root).Prepend(root))
+        {
+            if (!control.Visible || string.IsNullOrWhiteSpace(control.Text) || control.Width <= 0 || control.Height <= 0) continue;
+            if (control is Label label)
+            {
+                var size = TextRenderer.MeasureText(label.Text, label.Font, new Size(int.MaxValue, int.MaxValue), TextFormatFlags.SingleLine);
+                if (size.Height > label.ClientSize.Height + 1)
+                    problems.Add($"文字高度被裁切：“{label.Text}” 需要 {size.Height}px，实际 {label.ClientSize.Height}px");
+                else if (!label.AutoEllipsis && !label.AutoSize && size.Width > label.ClientSize.Width + 2)
+                    problems.Add($"文字宽度被裁切：“{label.Text}” 需要 {size.Width}px，实际 {label.ClientSize.Width}px");
+            }
+            else if (control is ButtonBase button)
+            {
+                var size = TextRenderer.MeasureText(button.Text, button.Font, new Size(int.MaxValue, int.MaxValue), TextFormatFlags.SingleLine);
+                if (size.Height > button.ClientSize.Height)
+                    problems.Add($"按钮文字高度被裁切：“{button.Text}” 需要 {size.Height}px，实际 {button.ClientSize.Height}px");
+            }
+        }
+        return problems;
+    }
+
+    private static void Recorded(string name, Action action)
+    {
+        try { action(); }
+        catch (InvalidOperationException ex)
+        {
+            GeometryFailures.Add($"{name}：{ex.Message}");
+            Phase($"  {name} FAILED · {ex.Message}");
+        }
+    }
+
     private static SnapshotEvidence SaveSnapshot(MainForm form, string path, int logicalWidth, int logicalHeight)
     {
         var scale = form.DeviceDpi / 96.0;
@@ -1159,8 +1205,20 @@ internal static class SelfTest
         if (form.ClientSize.Width != desired.Width || form.ClientSize.Height != desired.Height)
             throw new InvalidOperationException($"快照窗口尺寸被约束：请求 {desired}，实际 {form.ClientSize}（{logicalWidth}x{logicalHeight}）。");
         Phase($"  geometry assert begin · client={form.ClientSize}");
-        AssertSnapshotGeometry(form, logicalWidth, logicalHeight);
-        Phase("  geometry assert passed");
+        // A layout failure is recorded and the image is still saved, so one run shows every
+        // broken state; CaptureAllStates fails at the end with the complete list.
+        try
+        {
+            AssertSnapshotGeometry(form, logicalWidth, logicalHeight);
+            var text = TextFitProblems(form);
+            if (text.Count > 0) throw new InvalidOperationException(string.Join("；", text));
+            Phase("  geometry assert passed");
+        }
+        catch (InvalidOperationException ex)
+        {
+            GeometryFailures.Add($"{Path.GetFileNameWithoutExtension(path)}：{ex.Message}");
+            Phase($"  geometry assert FAILED · {ex.Message}");
+        }
         using (var bitmap = RenderForm(form))
         {
             if (bitmap.Width != form.ClientSize.Width || bitmap.Height != form.ClientSize.Height)
@@ -1236,6 +1294,7 @@ internal static class SelfTest
         form.PerformLayout();
         Application.DoEvents();
         Phase($"  dialog {kind} shown+DoEvents");
+        var dialogText = TextFitProblems(form);
         using var bitmap = new Bitmap(form.Width, form.Height);
         Phase($"  dialog {kind} DrawToBitmap begin · {bitmap.Size}");
         form.DrawToBitmap(bitmap, new Rectangle(Point.Empty, form.Size));
@@ -1243,6 +1302,7 @@ internal static class SelfTest
         bitmap.Save(outputPath, ImageFormat.Png);
         form.Close();
         Phase($"  dialog {kind} done");
+        if (dialogText.Count > 0) throw new InvalidOperationException($"对话框 {kind}：" + string.Join("；", dialogText));
     }
 
     private static CleanupDialog StepTwoCleanupDialog(CleanupKind kind, int count, string folder)

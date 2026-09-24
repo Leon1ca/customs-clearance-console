@@ -33,7 +33,15 @@ internal sealed partial class MainForm : Form
     /// </summary>
     internal bool AllowOversizeForSnapshot { get; set; }
 
+    private TableLayoutPanel _root = null!;
+    private TableLayoutPanel _titleRow = null!;
     private TableLayoutPanel _body = null!;
+    /// <summary>
+    /// DPI the child bounds are expressed in: 96 (logical) while the form is built, then the
+    /// window's real DPI once the handle exists (see DpiLayout).
+    /// </summary>
+    private int _layoutDpi = DpiLayout.LogicalDpi;
+    internal int LayoutDpiForTest => _layoutDpi;
     private TableLayoutPanel _statsRow = null!;
     private TableLayoutPanel _toolbar = null!;
     private TableLayoutPanel _footerPanel = null!;
@@ -106,8 +114,9 @@ internal sealed partial class MainForm : Form
         Size = new Size(1440, 900);
         BackColor = Theme.Canvas;
         Font = Theme.UiFont(13.5F);
-        AutoScaleMode = AutoScaleMode.Dpi;
-        AutoScaleDimensions = new SizeF(96F, 96F);
+        // Built in 96-DPI logical pixels and scaled once the window's real DPI is known
+        // (OnHandleCreated / OnDpiChanged). See DpiLayout for why auto-scaling is off.
+        AutoScaleMode = AutoScaleMode.None;
         FormBorderStyle = FormBorderStyle.None;
         Padding = new Padding(0);
         var iconPath = Path.Combine(AppContext.BaseDirectory, "app.ico");
@@ -163,6 +172,75 @@ internal sealed partial class MainForm : Form
             _searchTimer.Dispose();
         }
         base.Dispose(disposing);
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        RescaleLayout(DeviceDpi, placeWindow: true);
+    }
+
+    protected override void OnDpiChanged(DpiChangedEventArgs e)
+    {
+        // Windows already applied the suggested window rectangle for the new monitor.
+        base.OnDpiChanged(e);
+        RescaleLayout(e.DeviceDpiNew, placeWindow: false);
+    }
+
+    /// <summary>
+    /// Scales every child from the DPI it is laid out at to <paramref name="dpi"/> and re-applies
+    /// the responsive layout. On first creation the window is also sized from the logical design
+    /// size and fitted to the monitor's working area.
+    /// </summary>
+    private void RescaleLayout(int dpi, bool placeWindow)
+    {
+        if (dpi <= 0) return;
+        var from = _layoutDpi;
+        SuspendLayout();
+        try
+        {
+            if (dpi != from)
+            {
+                DpiLayout.ScaleChildren(this, from, dpi);
+                _layoutDpi = dpi;
+                // Manually dragged column widths are physical pixels of the old DPI.
+                _manualWidths.Clear();
+                RefreshDpiImages();
+            }
+            if (placeWindow && !AllowOversizeForSnapshot) PlaceOnScreen();
+        }
+        finally { ResumeLayout(true); }
+        ApplyResponsiveLayout();
+        LayoutRecordState();
+    }
+
+    /// <summary>
+    /// Design size 1440x900 and minimum 1200x720 are logical pixels. A 1920x1080 display at
+    /// 150% only offers about 1280x690 logical pixels of working area, so the window is fitted
+    /// to the working area (and opens maximized when the design size does not fit) instead of
+    /// extending past the screen edge where the caption buttons would be unreachable.
+    /// </summary>
+    private void PlaceOnScreen()
+    {
+        var working = Screen.FromHandle(Handle).WorkingArea;
+        var design = DpiLayout.Scale(UiTokens.Metrics.DesignWindow, _layoutDpi);
+        var minimum = DpiLayout.Scale(UiTokens.Metrics.MinWindow, _layoutDpi);
+        MinimumSize = new Size(Math.Min(minimum.Width, working.Width), Math.Min(minimum.Height, working.Height));
+        var size = new Size(Math.Min(design.Width, working.Width), Math.Min(design.Height, working.Height));
+        Bounds = new Rectangle(
+            working.Left + (working.Width - size.Width) / 2,
+            working.Top + (working.Height - size.Height) / 2,
+            size.Width, size.Height);
+        if (design.Width > working.Width || design.Height > working.Height)
+            WindowState = FormWindowState.Maximized;
+    }
+
+    /// <summary>Button images are bitmaps loaded for a DPI; reload them after a DPI change.</summary>
+    private void RefreshDpiImages()
+    {
+        if (_settings is not null) _settings.Image = UiV2Icons.Load(Ui2.SettingsWhite, 16, _layoutDpi);
+        if (_cleanupButton is not null) _cleanupButton.Image = UiV2Icons.Load(Ui2.TrashInk, 16, _layoutDpi);
+        if (_scan is not null && _exportButton is not null) RefreshAll();
     }
 
     /// <summary>
@@ -415,11 +493,11 @@ internal sealed partial class MainForm : Form
     {
         var state = CurrentState;
         var processing = state == BatchState.Processing;
-        _body.RowStyles[2].Height = processing ? UiScale.Px(this, _layout.CompactHeight ? 92 : 104) : 0;
-        _body.RowStyles[3].Height = processing ? UiScale.Px(this, _layout.CompactHeight ? 34 : 38) : 0;
+        _body.RowStyles[2].Height = processing ? DpiLayout.Scale(_layout.CompactHeight ? 92 : 104, _layoutDpi) : 0;
+        _body.RowStyles[3].Height = processing ? DpiLayout.Scale(_layout.CompactHeight ? 34 : 38, _layoutDpi) : 0;
         _exportButton.Enabled = _state.Records.Count > 0 && !processing;
         _exportButton.Image?.Dispose();
-        _exportButton.Image = UiV2Icons.Load(_exportButton.Enabled ? Ui2.Export : Ui2.ExportDisabled, 16, DeviceDpi);
+        _exportButton.Image = UiV2Icons.Load(_exportButton.Enabled ? Ui2.Export : Ui2.ExportDisabled, 16, _layoutDpi);
         _settings.Enabled = !processing;
         _cleanupButton.Enabled = !processing;
         _filterSegmented.Enabled = _state.Records.Count > 0 && !processing;
@@ -428,7 +506,7 @@ internal sealed partial class MainForm : Form
         {
             _scan.Text = "取消识别";
             _scan.Image?.Dispose();
-            _scan.Image = UiV2Icons.Load(Ui2.Stop, 16, DeviceDpi);
+            _scan.Image = UiV2Icons.Load(Ui2.Stop, 16, _layoutDpi);
             _scan.BackColor = Color.White;
             _scan.ForeColor = Theme.Danger;
             _scan.AccessibleName = "取消识别";
@@ -443,7 +521,7 @@ internal sealed partial class MainForm : Form
         {
             _scan.Text = "开始识别";
             _scan.Image?.Dispose();
-            _scan.Image = UiV2Icons.Load(Ui2.Play, 16, DeviceDpi);
+            _scan.Image = UiV2Icons.Load(Ui2.Play, 16, _layoutDpi);
             var primaryFill = state == BatchState.Empty ? UiTokens.Colors.DisabledPrimaryFill : Theme.Primary;
             _scan.BackColor = primaryFill;
             _scan.ForeColor = Color.White;
@@ -470,7 +548,7 @@ internal sealed partial class MainForm : Form
         var size = CurrentPageSize();
         var items = _visible.Skip((_page - 1) * size).Take(size).ToList();
         _grid.Rows.Clear();
-        var rowHeight = UiScale.Px(this, _layout.TableRow);
+        var rowHeight = DpiLayout.Scale(_layout.TableRow, _layoutDpi);
         for (var i = 0; i < items.Count; i++)
         {
             var record = items[i];
@@ -542,7 +620,7 @@ internal sealed partial class MainForm : Form
     /// <summary>Stats row height that fits both the KPI grid and the currency summary.</summary>
     private int StatsRowHeight()
     {
-        var dpi = DeviceDpi;
+        var dpi = _layoutDpi;
         int S(int px) => (int)Math.Round(px * dpi / 96.0);
         var kpi = KpiPanel.RequiredHeight(dpi, _layout.CompactHeight);
         var money = S(96 + _moneySummary.RowCount * (_layout.AmountRow + 4) +
@@ -705,7 +783,9 @@ internal sealed partial class MainForm : Form
         var header = _grid.ColumnHeadersHeight;
         _recordState.Bounds = new Rectangle(0, header, _gridHost.ClientSize.Width, Math.Max(0, _gridHost.ClientSize.Height - header));
         if (_dropBanner is null) return;
-        _dropBanner.Bounds = new Rectangle(Math.Max(0, (_gridHost.ClientSize.Width - 420) / 2), 6, Math.Min(420, _gridHost.ClientSize.Width), 34);
+        var bannerWidth = DpiLayout.Scale(420, _layoutDpi);
+        _dropBanner.Bounds = new Rectangle(Math.Max(0, (_gridHost.ClientSize.Width - bannerWidth) / 2), DpiLayout.Scale(6, _layoutDpi),
+            Math.Min(bannerWidth, _gridHost.ClientSize.Width), DpiLayout.Scale(34, _layoutDpi));
         if (_dropBanner.Parent is null)
         {
             _gridHost.Controls.Add(_dropBanner);
@@ -919,7 +999,7 @@ internal sealed partial class MainForm : Form
             using var pen = new Pen(UiTokens.Colors.BorderAccentSoft);
             graphics.DrawPath(pen, path);
         }
-        var icon = UiV2Icons.Load(Ui2.External, 16, DeviceDpi);
+        var icon = UiV2Icons.Load(Ui2.External, 16, _layoutDpi);
         var iconWidth = icon?.Width ?? 0;
         var contentWidth = textWidth + (iconWidth > 0 ? S(6) + iconWidth : 0);
         var contentX = button.X + (button.Width - contentWidth) / 2;
@@ -940,7 +1020,7 @@ internal sealed partial class MainForm : Form
         var tag = new Rectangle(bounds.X + (bounds.Width - width) / 2, bounds.Y + (bounds.Height - S(26)) / 2, width, S(26));
         using var path = Theme.RoundedPath(tag, S(4));
         using (var fill = new SolidBrush(UiTokens.Status.Kept.Bg)) graphics.FillPath(fill, path);
-        var icon = UiV2Icons.Load(Ui2.CameraBlue, 16, DeviceDpi);
+        var icon = UiV2Icons.Load(Ui2.CameraBlue, 16, _layoutDpi);
         var iconWidth = icon?.Width ?? 0;
         var contentWidth = textWidth + (iconWidth > 0 ? S(5) + iconWidth : 0);
         var contentX = tag.X + (tag.Width - contentWidth) / 2;
@@ -1344,7 +1424,7 @@ internal sealed partial class MainForm : Form
         base.OnResize(e);
         if (Width <= 0 || Height <= 0) return;
         if (WindowState == FormWindowState.Maximized) { var maximizedRegion = Region; Region = null; maximizedRegion?.Dispose(); return; }
-        using var path = Theme.RoundedPath(new RectangleF(0, 0, Width, Height), 10);
+        using var path = Theme.RoundedPath(new RectangleF(0, 0, Width, Height), 10F * DeviceDpi / 96F);
         var oldRegion = Region;
         Region = new Region(path);
         oldRegion?.Dispose();
@@ -1372,6 +1452,20 @@ internal sealed partial class MainForm : Form
             base.WndProc(ref message);
             var info = Marshal.PtrToStructure<MinMaxInfo>(message.LParam);
             info.MaxTrackSize = new Point(8192, 8192);
+            Marshal.StructureToPtr(info, message.LParam, false);
+            return;
+        }
+        if (message.Msg == wmGetMinMaxInfo && IsHandleCreated)
+        {
+            // A borderless window maximizes over the whole monitor, covering the taskbar.
+            // Maximize to the working area of the monitor the window is on instead
+            // (MaxPosition is relative to that monitor's top-left corner).
+            base.WndProc(ref message);
+            var info = Marshal.PtrToStructure<MinMaxInfo>(message.LParam);
+            var screen = Screen.FromHandle(Handle);
+            var working = screen.WorkingArea;
+            info.MaxPosition = new Point(working.Left - screen.Bounds.Left, working.Top - screen.Bounds.Top);
+            info.MaxSize = new Point(working.Width, working.Height);
             Marshal.StructureToPtr(info, message.LParam, false);
             return;
         }

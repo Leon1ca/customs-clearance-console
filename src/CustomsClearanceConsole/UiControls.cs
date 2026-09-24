@@ -4,7 +4,9 @@ namespace CustomsClearanceConsole;
 
 internal sealed class RoundedButton : Button
 {
+    /// <summary>Corner radius in 96-DPI logical pixels; drawn at the control's real DPI.</summary>
     public int Radius { get; set; } = 7;
+    private float ScaledRadius => Radius * DeviceDpi / 96F;
     public Color BorderColor { get; set; } = Theme.Border;
     public Color HoverBackColor { get; set; } = Color.White;
     public Color PressedBackColor { get; set; } = Color.White;
@@ -33,7 +35,7 @@ internal sealed class RoundedButton : Button
         if (!Enabled) back = DisabledFill;
         var fore = Enabled ? ForeColor : Theme.Blend(ForeColor, parentBack, .58F);
         var border = Enabled ? BorderColor : Theme.Blend(BorderColor, parentBack, .58F);
-        using var path = Theme.RoundedPath(new RectangleF(.5F, .5F, Math.Max(1, Width - 1F), Math.Max(1, Height - 1F)), Radius);
+        using var path = Theme.RoundedPath(new RectangleF(.5F, .5F, Math.Max(1, Width - 1F), Math.Max(1, Height - 1F)), ScaledRadius);
         using (var brush = new SolidBrush(back)) e.Graphics.FillPath(brush, path);
         using (var pen = new Pen(border, 1F)) e.Graphics.DrawPath(pen, path);
 
@@ -54,7 +56,7 @@ internal sealed class RoundedButton : Button
         TextRenderer.DrawText(e.Graphics, Text, Font, new Rectangle(startX, 0, Math.Max(0, Width - startX), Height), fore, flags | TextFormatFlags.Left);
         if (Focused && ShowFocusCues)
         {
-            using var focusPath = Theme.RoundedPath(new RectangleF(3F, 3F, Math.Max(1, Width - 6F), Math.Max(1, Height - 6F)), Math.Max(2, Radius - 2));
+            using var focusPath = Theme.RoundedPath(new RectangleF(3F, 3F, Math.Max(1, Width - 6F), Math.Max(1, Height - 6F)), Math.Max(2, ScaledRadius - 2));
             using var focusPen = new Pen(Theme.Blue, 2F);
             e.Graphics.DrawPath(focusPen, focusPath);
         }
@@ -64,7 +66,7 @@ internal sealed class RoundedButton : Button
     {
         base.OnResize(e);
         if (Width <= 0 || Height <= 0) return;
-        using var path = Theme.RoundedPath(new RectangleF(0, 0, Width, Height), Radius);
+        using var path = Theme.RoundedPath(new RectangleF(0, 0, Width, Height), ScaledRadius);
         var oldRegion = Region;
         Region = new Region(path);
         oldRegion?.Dispose();
@@ -73,7 +75,9 @@ internal sealed class RoundedButton : Button
 
 internal class RoundedPanel : Panel
 {
+    /// <summary>Corner radius in 96-DPI logical pixels; drawn at the control's real DPI.</summary>
     public int Radius { get; set; } = 8;
+    private float ScaledRadius => Radius * DeviceDpi / 96F;
     public Color BorderColor { get; set; } = Theme.Border;
     public int BorderWidth { get; set; } = 1;
     public Color AccentColor { get; set; } = Color.Transparent;
@@ -83,7 +87,7 @@ internal class RoundedPanel : Panel
     {
         base.OnResize(eventArgs);
         if (Width <= 0 || Height <= 0) return;
-        using var path = Theme.RoundedPath(new RectangleF(0, 0, Width, Height), Radius);
+        using var path = Theme.RoundedPath(new RectangleF(0, 0, Width, Height), ScaledRadius);
         var oldRegion = Region;
         Region = new Region(path);
         oldRegion?.Dispose();
@@ -93,13 +97,13 @@ internal class RoundedPanel : Panel
     {
         base.OnPaint(eventArgs);
         eventArgs.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        using var borderPath = Theme.RoundedPath(new RectangleF(0.5F, 0.5F, Width - 1F, Height - 1F), Radius);
+        using var borderPath = Theme.RoundedPath(new RectangleF(0.5F, 0.5F, Width - 1F, Height - 1F), ScaledRadius);
         using var borderPen = new Pen(BorderColor, BorderWidth);
         eventArgs.Graphics.DrawPath(borderPen, borderPath);
         if (AccentHeight > 0 && AccentColor != Color.Transparent)
         {
             using var accentPen = new Pen(AccentColor, AccentHeight);
-            eventArgs.Graphics.DrawLine(accentPen, Radius, AccentHeight / 2F, Width - Radius, AccentHeight / 2F);
+            eventArgs.Graphics.DrawLine(accentPen, ScaledRadius, AccentHeight / 2F, Width - ScaledRadius, AccentHeight / 2F);
         }
     }
 }
@@ -110,20 +114,21 @@ internal sealed class WindowCaptionButton : Control
 {
     private readonly CaptionGlyph _glyph;
     private bool _hover;
+    private bool _pressed;
     internal bool ShowsRestoreGlyph => _glyph == CaptionGlyph.Maximize && FindForm()?.WindowState == FormWindowState.Maximized;
 
     public WindowCaptionButton(CaptionGlyph glyph)
     {
         _glyph = glyph;
-        Size = new Size(56, 56);
-        Cursor = Cursors.Hand;
+        Size = new Size(46, UiTokens.Metrics.Header);
+        Cursor = Cursors.Default;
         TabStop = false;
         AccessibleName = glyph switch { CaptionGlyph.Minimize => "最小化", CaptionGlyph.Maximize => "最大化", _ => "关闭" };
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint, true);
     }
 
     protected override void OnMouseEnter(EventArgs e) { base.OnMouseEnter(e); _hover = true; Invalidate(); }
-    protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); _hover = false; Invalidate(); }
+    protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); _hover = false; _pressed = false; Invalidate(); }
     public void RefreshWindowState()
     {
         if (_glyph == CaptionGlyph.Maximize)
@@ -131,60 +136,66 @@ internal sealed class WindowCaptionButton : Control
         Invalidate();
     }
 
+    protected override void OnMouseDown(MouseEventArgs e) { base.OnMouseDown(e); if (e.Button == MouseButtons.Left) { _pressed = true; Invalidate(); } }
+    protected override void OnMouseUp(MouseEventArgs e) { base.OnMouseUp(e); _pressed = false; Invalidate(); }
+
+    /// <summary>
+    /// Windows 11 caption button: full title-bar height, 46 logical pixels wide, a 10-pixel
+    /// glyph drawn crisply at the real DPI, the title-bar colour at rest, a light overlay on
+    /// hover and the system red behind the close glyph.
+    /// </summary>
     protected override void OnPaint(PaintEventArgs e)
     {
-        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        var buttonBack = _hover ? _glyph == CaptionGlyph.Close ? Theme.Danger : ColorTranslator.FromHtml("#294766") : Theme.Navy;
-        e.Graphics.Clear(buttonBack);
-        var cx = ClientSize.Width / 2F;
-        var cy = ClientSize.Height / 2F;
-        using var pen = new Pen(Color.White, 1.35F) { StartCap = LineCap.Square, EndCap = LineCap.Square };
-        if (_glyph == CaptionGlyph.Minimize) e.Graphics.DrawLine(pen, cx - 8, cy, cx + 8, cy);
-        else if (_glyph == CaptionGlyph.Maximize)
+        var restColor = Parent?.BackColor ?? Theme.HeaderBg;
+        var back = !_hover ? restColor
+            : _glyph == CaptionGlyph.Close ? (_pressed ? ColorTranslator.FromHtml("#94251A") : ColorTranslator.FromHtml("#C42B1C"))
+            : Blend(restColor, Color.White, _pressed ? 0.16F : 0.10F);
+        e.Graphics.Clear(back);
+        var scale = DeviceDpi / 96F;
+        var stroke = Math.Max(1F, MathF.Round(scale));
+        var half = MathF.Round(5F * scale);
+        var cx = MathF.Round(ClientSize.Width / 2F);
+        var cy = MathF.Round(ClientSize.Height / 2F);
+        e.Graphics.PixelOffsetMode = PixelOffsetMode.Half;
+        if (_glyph == CaptionGlyph.Close)
         {
-            var restore = ShowsRestoreGlyph;
-            AccessibleName = restore ? "还原窗口" : "最大化";
-            if (!restore) e.Graphics.DrawRectangle(pen, cx - 7.5F, cy - 7.5F, 15, 15);
-            else
-            {
-                // Draw only the visible outline segments. Covering an antialiased back
-                // rectangle with a filled front rectangle made its top and bottom strokes
-                // appear different at 125%/150% DPI.
-                var scale = DeviceDpi / 96F;
-                var iconCx = MathF.Round(cx);
-                var iconCy = MathF.Round(cy);
-                var four = MathF.Round(4F * scale);
-                var eight = MathF.Round(8F * scale);
-                var twelve = MathF.Round(12F * scale);
-                var backLeft = iconCx - four;
-                var backTop = iconCy - eight;
-                var backRight = backLeft + twelve;
-                var backBottom = backTop + twelve;
-                var frontLeft = iconCx - eight;
-                var frontTop = iconCy - four;
-                var frontRight = frontLeft + twelve;
-                var frontBottom = frontTop + twelve;
-                e.Graphics.SmoothingMode = SmoothingMode.None;
-                e.Graphics.PixelOffsetMode = PixelOffsetMode.Half;
-                using var crispPen = new Pen(Color.White, Math.Max(1F, MathF.Round(scale)))
-                {
-                    StartCap = LineCap.Square,
-                    EndCap = LineCap.Square,
-                    LineJoin = LineJoin.Miter
-                };
-                e.Graphics.DrawLine(crispPen, backLeft, backTop, backRight, backTop);
-                e.Graphics.DrawLine(crispPen, backRight, backTop, backRight, backBottom);
-                e.Graphics.DrawLine(crispPen, backLeft, backTop, backLeft, frontTop);
-                e.Graphics.DrawLine(crispPen, frontRight, backBottom, backRight, backBottom);
-                e.Graphics.DrawRectangle(crispPen, frontLeft, frontTop, twelve, twelve);
-            }
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using var pen = new Pen(Color.White, stroke * 1.1F);
+            e.Graphics.DrawLine(pen, cx - half, cy - half, cx + half, cy + half);
+            e.Graphics.DrawLine(pen, cx + half, cy - half, cx - half, cy + half);
+            return;
         }
-        else
+        e.Graphics.SmoothingMode = SmoothingMode.None;
+        using var crisp = new Pen(Color.White, stroke) { LineJoin = LineJoin.Miter };
+        if (_glyph == CaptionGlyph.Minimize)
         {
-            e.Graphics.DrawLine(pen, cx - 7, cy - 7, cx + 7, cy + 7);
-            e.Graphics.DrawLine(pen, cx + 7, cy - 7, cx - 7, cy + 7);
+            e.Graphics.DrawLine(crisp, cx - half, cy, cx + half, cy);
+            return;
         }
+        var restore = ShowsRestoreGlyph;
+        AccessibleName = restore ? "还原窗口" : "最大化";
+        if (!restore)
+        {
+            e.Graphics.DrawRectangle(crisp, cx - half, cy - half, half * 2, half * 2);
+            return;
+        }
+        // Restore: a front square plus the visible top/right edges of the square behind it.
+        var offset = MathF.Round(2F * scale);
+        var size = half * 2 - offset;
+        var frontLeft = cx - half;
+        var frontTop = cy - half + offset;
+        e.Graphics.DrawRectangle(crisp, frontLeft, frontTop, size, size);
+        var backLeft = frontLeft + offset;
+        var backTop = cy - half;
+        var backRight = backLeft + size;
+        e.Graphics.DrawLine(crisp, backLeft, backTop, backRight, backTop);
+        e.Graphics.DrawLine(crisp, backRight, backTop, backRight, backTop + size);
     }
+
+    private static Color Blend(Color from, Color to, float amount) => Color.FromArgb(
+        (int)Math.Round(from.R + (to.R - from.R) * amount),
+        (int)Math.Round(from.G + (to.G - from.G) * amount),
+        (int)Math.Round(from.B + (to.B - from.B) * amount));
 }
 
 internal sealed class SearchField : RoundedPanel
@@ -389,7 +400,7 @@ internal sealed class ModernDropDown : RoundedPanel
         {
             base.OnSizeChanged(e);
             if (Width <= 0 || Height <= 0) return;
-            using var path = Theme.RoundedPath(new RectangleF(0, 0, Width, Height), 10);
+            using var path = Theme.RoundedPath(new RectangleF(0, 0, Width, Height), 10F * DeviceDpi / 96F);
             var oldRegion = Region;
             Region = new Region(path);
             oldRegion?.Dispose();

@@ -4,7 +4,7 @@ using System.Text;
 namespace CustomsClearanceConsole;
 
 /// <summary>Read-only declaration detail dialog (design spec 4.1, 600x480).</summary>
-internal sealed class DetailForm : Form
+internal sealed class DetailForm : DpiDialog
 {
     private readonly DeclarationRecord _record;
 
@@ -16,8 +16,6 @@ internal sealed class DetailForm : Form
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         BackColor = Color.White;
-        AutoScaleMode = AutoScaleMode.Dpi;
-        AutoScaleDimensions = new SizeF(96F, 96F);
         StartPosition = FormStartPosition.CenterParent;
 
         var frame = new RoundedPanel { Dock = DockStyle.Fill, Radius = 10, BorderColor = Theme.Border, BackColor = Color.White };
@@ -27,7 +25,8 @@ internal sealed class DetailForm : Form
         header.Paint += (_, e) =>
         {
             using var pen = new Pen(Theme.Divider);
-            e.Graphics.DrawLine(pen, 20, header.Height - 1, header.Width - 20, header.Height - 1);
+            var inset = DpiLayout.Scale(20, header.DeviceDpi);
+            e.Graphics.DrawLine(pen, inset, header.Height - 1, header.Width - inset, header.Height - 1);
         };
         var title = new Label
         {
@@ -74,7 +73,8 @@ internal sealed class DetailForm : Form
         var columnHeader = new DetailColumnHeader("总价");
         var scroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true, BackColor = Color.White };
         var lineList = new DetailLineList(record) { Dock = DockStyle.Top };
-        lineList.Height = Math.Max(1, record.LineTotals.Count) * Scale(44) + Scale(4);
+        // Logical pixels like every other constructor value; DpiDialog scales them once.
+        lineList.Height = Math.Max(1, record.LineTotals.Count) * 44 + 4;
         scroll.Controls.Add(lineList);
 
         var currencyRows = ReliableCurrencyTotals(record);
@@ -99,8 +99,6 @@ internal sealed class DetailForm : Form
         header.MouseDown += (_, e) => { if (e.Button == MouseButtons.Left) BeginDialogDrag(); };
         title.MouseDown += (_, e) => { if (e.Button == MouseButtons.Left) BeginDialogDrag(); };
     }
-
-    private int Scale(int value) => (int)Math.Round(value * DeviceDpi / 96f);
 
     private void BeginDialogDrag()
     {

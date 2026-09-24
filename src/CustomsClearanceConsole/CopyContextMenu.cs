@@ -51,7 +51,7 @@ internal sealed class CopyContextMenu : ToolStripDropDown
     private void UpdateRegion()
     {
         if (Width <= 0 || Height <= 0) return;
-        using var path = Theme.RoundedPath(new RectangleF(0, 0, Width, Height), 8F);
+        using var path = Theme.RoundedPath(new RectangleF(0, 0, Width, Height), 8F * DeviceDpi / 96F);
         var oldRegion = Region;
         Region = new Region(path);
         oldRegion?.Dispose();

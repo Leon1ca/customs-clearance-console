@@ -26,7 +26,7 @@ internal static class ModalPresenter
     }
 }
 
-internal sealed class ConfirmationDialog : Form
+internal sealed class ConfirmationDialog : DpiDialog
 {
     private readonly Button _cancel;
 
@@ -37,8 +37,6 @@ internal sealed class ConfirmationDialog : Form
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         BackColor = Color.White;
-        AutoScaleMode = AutoScaleMode.Dpi;
-        AutoScaleDimensions = new SizeF(96F, 96F);
 
         var frame = new RoundedPanel
         {
@@ -129,7 +127,7 @@ internal sealed class ConfirmationDialog : Form
     {
         base.OnResize(e);
         if (Width <= 0 || Height <= 0) return;
-        using var path = Theme.RoundedPath(new RectangleF(0, 0, Width, Height), 12);
+        using var path = Theme.RoundedPath(new RectangleF(0, 0, Width, Height), 12 * DeviceDpi / 96F);
         var oldRegion = Region;
         Region = new Region(path);
         oldRegion?.Dispose();
@@ -194,17 +192,23 @@ internal sealed class CircleCloseButton : Control
 
     protected override void OnPaint(PaintEventArgs e)
     {
+        // Design 12-settings: a plain muted "×" whose hover state is a light circle.
+        var scale = DeviceDpi / 96F;
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        using (var brush = new SolidBrush(_hover ? ColorTranslator.FromHtml("#E7ECF3") : ColorTranslator.FromHtml("#EEF2F7")))
+        e.Graphics.Clear(Parent?.BackColor ?? Color.White);
+        if (_hover)
+        {
+            using var brush = new SolidBrush(ColorTranslator.FromHtml("#EEF2F7"));
             e.Graphics.FillEllipse(brush, 0, 0, Width - 1, Height - 1);
-        using var pen = new Pen(Theme.Muted, 1.8F) { StartCap = LineCap.Round, EndCap = LineCap.Round };
-        var cx = Width / 2F; var cy = Height / 2F;
-        e.Graphics.DrawLine(pen, cx - 6, cy - 6, cx + 6, cy + 6);
-        e.Graphics.DrawLine(pen, cx + 6, cy - 6, cx - 6, cy + 6);
+        }
+        using var pen = new Pen(_hover ? Theme.Text : Theme.Muted, 1.6F * scale) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+        var cx = Width / 2F; var cy = Height / 2F; var arm = 5F * scale;
+        e.Graphics.DrawLine(pen, cx - arm, cy - arm, cx + arm, cy + arm);
+        e.Graphics.DrawLine(pen, cx + arm, cy - arm, cx - arm, cy + arm);
         if (Focused && ShowFocusCues)
         {
-            using var focusPen = new Pen(Theme.Blue, 2F);
-            e.Graphics.DrawEllipse(focusPen, 2, 2, Width - 5, Height - 5);
+            using var focusPen = new Pen(Theme.Blue, 2F * scale);
+            e.Graphics.DrawEllipse(focusPen, 2 * scale, 2 * scale, Width - 1 - 4 * scale, Height - 1 - 4 * scale);
         }
     }
 }
@@ -215,7 +219,7 @@ internal enum CleanupKind { List, Declarations, Screenshots }
 /// Two-click cleanup confirmation (design spec 4.3). The final destructive button
 /// is never the AcceptButton, so Enter cannot confirm it accidentally.
 /// </summary>
-internal sealed class CleanupDialog : Form
+internal sealed class CleanupDialog : DpiDialog
 {
     private readonly CleanupKind _kind;
     private readonly int _fileCount;
@@ -239,8 +243,6 @@ internal sealed class CleanupDialog : Form
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         BackColor = Color.White;
-        AutoScaleMode = AutoScaleMode.Dpi;
-        AutoScaleDimensions = new SizeF(96F, 96F);
 
         var frame = new RoundedPanel { Dock = DockStyle.Fill, Radius = 10, BorderColor = Theme.Border, BackColor = Color.White };
         _step = new Label
@@ -398,7 +400,7 @@ internal sealed class CleanupDialog : Form
     {
         base.OnResize(e);
         if (Width <= 0 || Height <= 0) return;
-        using var path = Theme.RoundedPath(new RectangleF(0, 0, Width, Height), 10);
+        using var path = Theme.RoundedPath(new RectangleF(0, 0, Width, Height), 10 * DeviceDpi / 96F);
         var oldRegion = Region;
         Region = new Region(path);
         oldRegion?.Dispose();
