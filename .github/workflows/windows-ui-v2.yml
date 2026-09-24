@@ -34,8 +34,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .nuget/packages
-          key: ${{ runner.os }}-nuget-${{ hashFiles('NuGet.Config', '**/*.csproj') }}
+          key: ${{ runner.os }}-nuget-${{ hashFiles('global.json', 'NuGet.Config', '**/*.csproj') }}
           restore-keys: ${{ runner.os }}-nuget-
+      - name: Show effective SDK
+        run: dotnet --version
       - name: Run core regression
         run: dotnet run --project tests/CoreRegression/CoreRegression.csproj -c Release
       - name: Upload core regression log
@@ -57,12 +59,17 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "8.0.x"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - name: Cache NuGet packages
         uses: actions/cache@v4
         with:
           path: .nuget/packages
-          key: ${{ runner.os }}-nuget-${{ hashFiles('NuGet.Config', '**/*.csproj') }}
+          key: ${{ runner.os }}-nuget-${{ hashFiles('global.json', 'NuGet.Config', '**/*.csproj') }}
           restore-keys: ${{ runner.os }}-nuget-
+      - name: Show effective SDK
+        run: dotnet --version
 
       - name: Prepare OCR and native dependencies from the v1.4.0 release (verify SHA256SUMS)
         shell: pwsh
@@ -91,14 +98,32 @@ jobs:
           # Keep the runtime folder for the portable package later.
           Copy-Item -LiteralPath (Join-Path $pkg 'runtime') -Destination (Join-Path $env:RUNNER_TEMP 'portable-runtime') -Recurse -Force
 
+      - name: Prepare static fonts and original licences (verify pinned SHA256)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m pip install --disable-pip-version-check --no-input "fonttools==4.60.2"
+          if ($LASTEXITCODE -ne 0) { throw "fonttools 安装失败：$LASTEXITCODE" }
+          & "$env:GITHUB_WORKSPACE/scripts/prepare-fonts.ps1"
+          if ($LASTEXITCODE -ne 0) { throw "静态字体准备失败：$LASTEXITCODE" }
+
       - name: Build main application
         run: dotnet build src/CustomsClearanceConsole/CustomsClearanceConsole.csproj -c Release
 
       - name: Native UI contract self-test
         run: dotnet "$env:APP_DLL" --ui-contract-self-test
 
-      - name: Environment and font report
-        run: dotnet "$env:APP_DLL" --env-report artifacts/validation/environment
+      - name: Environment, DPI and font report (fails if static weights are not real)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet "$env:APP_DLL" --env-report artifacts/validation/environment
+          if ($LASTEXITCODE -ne 0) { throw "环境/字体报告失败：$LASTEXITCODE" }
+          $report = Get-Content 'artifacts/validation/environment/environment.json' -Raw | ConvertFrom-Json
+          Write-Host "actualDeviceDpi=$($report.dpi) windowDpi=$($report.dpiProbe.windowDpi) systemDpi=$($report.dpiProbe.systemDpi)"
+          Write-Host "realMonitorScalingVerified=$($report.realMonitorScalingVerified)"
+          Write-Host "fontVerification.ok=$($report.fontVerification.ok) detail=$($report.fontVerification.detail)"
+          if (-not $report.fontVerification.ok) { throw "随包静态字体未真实加载：$($report.fontVerification.detail)" }
 
       - name: Excel and Markdown export validation
         run: dotnet "$env:APP_DLL" --export-samples artifacts/validation/export
@@ -109,7 +134,7 @@ jobs:
       - name: Controlled browser long-screenshot E2E
         run: dotnet "$env:APP_DLL" --browser-e2e artifacts/validation/browser
 
-      - name: Portable package
+      - name: Portable package (root runtime + tools + launcher + app fonts/licences)
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -121,18 +146,29 @@ jobs:
           dotnet publish src/CustomsClearanceConsole/CustomsClearanceConsole.csproj -c Release -o (Join-Path $root 'app')
           if ($LASTEXITCODE -ne 0) { throw "dotnet publish 失败：$LASTEXITCODE" }
           Copy-Item -LiteralPath (Join-Path $env:RUNNER_TEMP 'portable-runtime') -Destination (Join-Path $root 'runtime') -Recurse -Force
+          # The portable layout keeps native tools at the package root, matching AppPaths.
+          if (Test-Path -LiteralPath (Join-Path $root 'app/tools')) {
+            Move-Item -LiteralPath (Join-Path $root 'app/tools') -Destination (Join-Path $root 'tools')
+          }
           & "$env:GITHUB_WORKSPACE/scripts/build-launcher.ps1"
           if ($LASTEXITCODE -ne 0) { throw "启动器构建失败：$LASTEXITCODE" }
           Copy-Item -LiteralPath 'artifacts/launcher/关单核验台.exe' -Destination (Join-Path $root '关单核验台.exe') -Force
           Copy-Item -LiteralPath "docs/release-notes-v$version.md" -Destination (Join-Path $root "更新说明-v$version.md") -Force
           Copy-Item -LiteralPath 'src/CustomsClearanceConsole/使用说明.txt' -Destination (Join-Path $root '使用说明.txt') -Force
+          # GPL, third-party and font licences ship both at the root and inside app/.
+          Copy-Item -LiteralPath 'LICENSE' -Destination (Join-Path $root 'LICENSE') -Force
+          Copy-Item -LiteralPath 'third-party-notices' -Destination (Join-Path $root 'third-party-notices') -Recurse -Force
+          Copy-Item -LiteralPath 'src/CustomsClearanceConsole/AboutAndLicenses.txt' -Destination (Join-Path $root 'AboutAndLicenses.txt') -Force
           # Fonts and licences must ship inside the portable app folder.
           $fontDir = Join-Path $root 'app/fonts'
           if (-not (Test-Path -LiteralPath $fontDir)) { throw '便携包缺少 fonts 目录。' }
-          foreach ($font in @('NotoSansSC-Variable.ttf', 'JetBrainsMono-Regular.ttf', 'JetBrainsMono-Medium.ttf', 'NotoSansSC-OFL.txt', 'JetBrainsMono-OFL.txt')) {
-            if (-not (Test-Path -LiteralPath (Join-Path $fontDir $font))) { throw "便携包缺少字体或许可：$font" }
+          foreach ($font in @('NotoSansSC-Regular.ttf', 'NotoSansSC-Medium.ttf', 'NotoSansSC-Bold.ttf',
+                              'JetBrainsMono-Regular.ttf', 'JetBrainsMono-Medium.ttf', 'JetBrainsMono-Bold.ttf',
+                              'NotoSansSC-OFL.txt', 'JetBrainsMono-OFL.txt', 'MANIFEST.json')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $fontDir $font))) { throw "便携包缺少字体、许可或清单：$font" }
           }
           if (-not (Test-Path -LiteralPath (Join-Path $root 'app/assets/ui-v2/icons/png/play-white-24.png'))) { throw '便携包缺少 UI v2 图标。' }
+          if (-not (Test-Path -LiteralPath (Join-Path $root 'tools/tesseract/tesseract.exe'))) { throw '便携包缺少根 tools/tesseract。' }
           & "$env:GITHUB_WORKSPACE/scripts/package-release.ps1" -SourceRoot $root
 
       - name: Verify portable ZIP contents
@@ -145,12 +181,44 @@ jobs:
           $archive = [IO.Compression.ZipFile]::OpenRead($zip.FullName)
           try {
             $names = $archive.Entries | ForEach-Object { $_.FullName }
-            foreach ($required in @('关单核验台.exe', 'app/关单核验台.dll', 'app/fonts/NotoSansSC-Variable.ttf', 'app/fonts/JetBrainsMono-Regular.ttf', 'runtime/dotnet.exe', 'tools/tesseract/tesseract.exe')) {
+            foreach ($required in @('关单核验台.exe', 'LICENSE', 'AboutAndLicenses.txt',
+                                    'third-party-notices/EmguCV-GPLv3-or-Commercial.txt',
+                                    'third-party-notices/ONNXRuntime-MIT.txt',
+                                    'app/关单核验台.dll', 'app/AboutAndLicenses.txt',
+                                    'app/fonts/NotoSansSC-Regular.ttf', 'app/fonts/NotoSansSC-Medium.ttf',
+                                    'app/fonts/NotoSansSC-Bold.ttf', 'app/fonts/JetBrainsMono-Regular.ttf',
+                                    'app/fonts/NotoSansSC-OFL.txt', 'app/fonts/JetBrainsMono-OFL.txt',
+                                    'runtime/dotnet.exe', 'tools/tesseract/tesseract.exe',
+                                    'tools/pdfium/pdfium.dll', 'app/ocr-models/ppocrv5_dict.txt')) {
               if (-not ($names -contains $required)) { throw "便携 ZIP 缺少：$required" }
             }
+            if ($names -contains 'app/fonts/NotoSansSC-Variable.ttf') { throw '便携 ZIP 仍包含可变字体，违反静态字体要求。' }
             Write-Host "便携 ZIP 文件数：$($names.Count)"
           } finally { $archive.Dispose() }
           Get-Content (Get-ChildItem -LiteralPath 'artifacts/releases' -Recurse -Filter 'SHA256SUMS.txt' | Select-Object -First 1).FullName
+
+      - name: Smoke test clean ZIP extraction through the root launcher
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = Get-ChildItem -LiteralPath 'artifacts/releases' -Recurse -Filter '*.zip' | Select-Object -First 1
+          $extract = Join-Path $env:RUNNER_TEMP 'portable-smoke'
+          Remove-Item -LiteralPath $extract -Recurse -Force -ErrorAction SilentlyContinue
+          Expand-Archive -LiteralPath $zip.FullName -DestinationPath $extract -Force
+          $launcher = Join-Path $extract '关单核验台.exe'
+          function Invoke-Launcher {
+            param([string]$Arguments, [string]$Label)
+            $process = Start-Process -FilePath $launcher -ArgumentList $Arguments -PassThru -WorkingDirectory $extract
+            if (-not $process.WaitForExit(300000)) { $process.Kill(); throw "$Label 超时未退出。" }
+            Write-Host "$Label 退出码：$($process.ExitCode)"
+            if ($process.ExitCode -ne 0) { throw "$Label 退出码非 0：$($process.ExitCode)" }
+          }
+          Invoke-Launcher '--ui-contract-self-test' '根启动器契约自检'
+          $envReport = Join-Path $extract 'smoke-evidence'
+          Invoke-Launcher "--env-report `"$envReport`"" '根启动器环境/字体报告'
+          $report = Get-Content (Join-Path $envReport 'environment.json') -Raw | ConvertFrom-Json
+          if (-not $report.fontVerification.ok) { throw "解压后字体未真实加载：$($report.fontVerification.detail)" }
+          Write-Host "干净解压包 DeviceDpi=$($report.dpi) 字体=$($report.fontVerification.detail)"
 
       - name: Upload validation evidence
         if: always()

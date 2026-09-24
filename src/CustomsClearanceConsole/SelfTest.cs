@@ -1,5 +1,6 @@
 using System.Drawing.Imaging;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 
@@ -63,6 +64,10 @@ internal static class SelfTest
 
         VerifyScaleMath();
         RunDetailConsistencyRegression();
+        RunDetailMultiCurrencyRegression();
+        RunMultiCurrencySummaryRegression();
+        RunCopySelectionRegression();
+        RunDesignMenuInteractionRegression();
         RunLineDetailParseRegression();
         RunExcelExportRegression();
         RunLineTotalSafetyRegression();
@@ -114,6 +119,125 @@ internal static class SelfTest
         var conflictResult = DetailForm.EvaluateConsistency(conflict);
         if (conflictResult.Consistent || !conflictResult.Message.Contains("未计入确认合计"))
             throw new InvalidOperationException("冲突分项不得计入确认合计。");
+    }
+
+    /// <summary>R3-3: detail rows carry their own currency and per-currency totals never mix.</summary>
+    private static void RunDetailMultiCurrencyRegression()
+    {
+        var record = new DeclarationRecord
+        {
+            DeclarationNo = "310120260000000009",
+            LineTotals =
+            [
+                new DeclarationLineTotal { Sequence = 1, PageNumber = 1, ItemNo = "1", ProductName = new string('超', 80) + "长商品名称", Quantity = 10, Unit = "KG", UnitPrice = 1.5m, Currency = "USD", Amount = 15m, IsReliable = true },
+                new DeclarationLineTotal { Sequence = 2, PageNumber = 1, ItemNo = "2", ProductName = "混合币种项", Quantity = 5, Unit = "台", UnitPrice = 20m, Currency = "EUR", Amount = 100m, IsReliable = true },
+                new DeclarationLineTotal { Sequence = 3, PageNumber = 2, ItemNo = "3", ProductName = "冲突项", Quantity = 1, Unit = "KG", UnitPrice = 9m, Currency = "USD", Amount = 9m, VerificationAmount = 8m, IsReliable = false, Note = "两引擎不一致" }
+            ]
+        };
+        record.Totals = DeclarationParser.SumReliableLineTotals(record.LineTotals);
+        var summary = DetailForm.CurrencySummaryText(record);
+        if (!summary.Contains("USD 15.00") || !summary.Contains("EUR 100.00"))
+            throw new InvalidOperationException("明细未按币种分列合计：" + summary);
+        if (summary.Contains("115.00") || summary.Contains("109.00"))
+            throw new InvalidOperationException("明细把不同币种相加了：" + summary);
+        var columns = DetailForm.Columns(600, 96, 0, 34, "总价");
+        if (columns.Count != 6 || columns[4].Text != "币种" || columns[5].Text != "总价")
+            throw new InvalidOperationException("明细列未包含独立币种/总价列。");
+        if (columns[0].Rect.Right > columns[5].Rect.Right)
+            throw new InvalidOperationException("明细列矩形未实体化或越界。");
+    }
+
+    /// <summary>R3-2/R3-4: multi-currency text is complete, per-currency and never cross-summed.</summary>
+    private static void RunMultiCurrencySummaryRegression()
+    {
+        var record = new DeclarationRecord
+        {
+            DeclarationNo = "310120260000000010",
+            SourcePath = "multi.pdf",
+            Status = "双引擎校验通过",
+            LineTotals =
+            [
+                new DeclarationLineTotal { Sequence = 1, ItemNo = "1", Currency = "USD", Amount = 100m, IsReliable = true },
+                new DeclarationLineTotal { Sequence = 2, ItemNo = "2", Currency = "EUR", Amount = 50m, IsReliable = false, VerificationAmount = 49m },
+                new DeclarationLineTotal { Sequence = 3, ItemNo = "3", Currency = "USD", Amount = 30m, IsReliable = false }
+            ]
+        };
+        record.Totals = DeclarationParser.SumReliableLineTotals(record.LineTotals);
+        var lines = MainForm.AmountLines(record);
+        if (lines.Count != 3) throw new InvalidOperationException($"多币种金额行数异常：{lines.Count}");
+        if (lines.Count(x => x.Currency == "USD" && !x.Reliable) != 1 || lines.Count(x => x.Currency == "EUR" && !x.Reliable) != 1)
+            throw new InvalidOperationException("未确认金额未按币种分列。");
+        var copy = MainForm.CopyAmountText(record);
+        if (!copy.Contains("USD 100.00") || !copy.Contains("EUR 50.00") || !copy.Contains("USD 30.00"))
+            throw new InvalidOperationException("金额复制文本不完整：" + copy);
+        if (copy.Contains("150.00") || copy.Contains("130.00") || copy.Contains("180.00"))
+            throw new InvalidOperationException("金额复制文本把不同币种相加了：" + copy);
+        var number = MainForm.CopyNumberText(record);
+        if (!number.Contains(record.DeclarationNo) || !number.Contains("multi.pdf"))
+            throw new InvalidOperationException("单号复制文本缺少单号或源文件：" + number);
+        if (MainForm.StatusLabel(record).Length == 0)
+            throw new InvalidOperationException("状态复制文本为空。");
+    }
+
+    /// <summary>R3-2: real grid selection copies No/Amount/Status with full text, not blanks.</summary>
+    private static void RunCopySelectionRegression()
+    {
+        var previousData = Environment.GetEnvironmentVariable("CUSTOMS_CONSOLE_DATA");
+        using var workspace = new TemporaryDirectory(Path.GetTempPath());
+        Environment.SetEnvironmentVariable("CUSTOMS_CONSOLE_DATA", workspace.Path);
+        try
+        {
+            var records = BuildSnapshotRecords(workspace.Path);
+            var mixed = new DeclarationRecord
+            {
+                DeclarationNo = "310120260000000099",
+                SourcePath = "mix-currency.pdf",
+                Consignee = "MIX CURRENCY LTD",
+                ContractNo = "MX-2026-01",
+                Status = "双引擎校验通过",
+                LineTotals =
+                [
+                    new DeclarationLineTotal { Sequence = 1, PageNumber = 1, ItemNo = "1", Currency = "EUR", Amount = 55m, IsReliable = true },
+                    new DeclarationLineTotal { Sequence = 2, PageNumber = 1, ItemNo = "2", Currency = "USD", Amount = 20m, IsReliable = true }
+                ]
+            };
+            mixed.Totals = DeclarationParser.SumReliableLineTotals(mixed.LineTotals);
+            records.Add(mixed);
+            BatchScanner.MarkDuplicates(records);
+            new StateStore().Save(new AppState { LastFolder = workspace.Path, ScreenshotFolder = workspace.Path, Records = records });
+            using var form = new MainForm { Size = new Size(1440, 900), StartPosition = FormStartPosition.Manual, Location = new Point(-32000, -32000), ShowInTaskbar = false, Opacity = 0 };
+            form.Show();
+            form.PerformLayout();
+            Application.DoEvents();
+            var grid = Descendants(form).OfType<DataGridView>().Single();
+            var copyColumns = new[] { "Index", "Status", "No", "Amount", "Detail", "Verify" };
+            grid.ClearSelection();
+            for (var row = 0; row < Math.Min(3, grid.Rows.Count); row++)
+            {
+                foreach (var name in copyColumns)
+                {
+                    var cell = grid.Rows[row].Cells[name];
+                    if (string.IsNullOrWhiteSpace(Convert.ToString(cell.Value)))
+                        throw new InvalidOperationException($"单元格 {name} 第 {row} 行为空，复制会丢失内容。");
+                    cell.Selected = true;
+                }
+            }
+            var (count, text) = form.ExtractCopySelection();
+            if (count != copyColumns.Length * Math.Min(3, grid.Rows.Count))
+                throw new InvalidOperationException($"复制选择单元格数量异常：{count}");
+            if (!text.Contains(records[0].DeclarationNo) || !text.Contains(records[0].SourceName))
+                throw new InvalidOperationException("复制文本缺少单号或源文件。");
+            if (!text.Contains("USD") && !text.Contains("CNY") && !text.Contains("EUR"))
+                throw new InvalidOperationException("复制文本缺少币种金额。");
+            if (!text.Contains("重复") && !text.Contains("正常") && !text.Contains("需关注") && !text.Contains("识别失败"))
+                throw new InvalidOperationException("复制文本缺少状态文本。");
+            if (!text.Contains("明细") || !text.Contains("校验") && !text.Contains("已留存") && !text.Contains("不可核验"))
+                throw new InvalidOperationException("复制文本缺少操作列文本。");
+            if (MainForm.CopyAmountText(mixed).Contains("75.00"))
+                throw new InvalidOperationException("多币种复制被跨币种相加。");
+            form.Close();
+        }
+        finally { Environment.SetEnvironmentVariable("CUSTOMS_CONSOLE_DATA", previousData); }
     }
 
     private static void RunLineDetailParseRegression()
@@ -477,7 +601,9 @@ internal static class SelfTest
             Capture("processing", size, width, height, SeedReady, form => form.PreviewProcessing(6, 10, "scan_0921_03.jpg", 5, 0, 0));
         }
 
-        // Menus rendered over the complete workspace.
+        // Real native popups over the complete workspace: the same DesignMenu popup Forms
+        // the user sees are shown through the real button click, position-checked and
+        // captured. They are not re-drawn at a fake location.
         var menuRoot = Path.Combine(outputFolder, "data", "menus");
         Directory.CreateDirectory(menuRoot);
         var previous = Environment.GetEnvironmentVariable("CUSTOMS_CONSOLE_DATA");
@@ -485,22 +611,13 @@ internal static class SelfTest
         try
         {
             SeedComplete(menuRoot);
-            using var form = NewSnapshotForm(1440, 900);
-            using var bitmap = RenderForm(form);
-            using (var graphics = Graphics.FromImage(bitmap))
-            {
-                DesignMenu.Render(graphics, ExportMenuEntries(), 248, form.DeviceDpi);
-            }
-            bitmap.Save(Path.Combine(outputFolder, "menu-export-1440x900.png"), ImageFormat.Png);
-            states.Add(("menu-export", "1440x900", "menu-export-1440x900.png", "导出列表下拉"));
-
-            using var cleanupBitmap = RenderForm(form);
-            using (var graphics = Graphics.FromImage(cleanupBitmap))
-            {
-                DesignMenu.Render(graphics, CleanupMenuEntries(), 248, form.DeviceDpi);
-            }
-            cleanupBitmap.Save(Path.Combine(outputFolder, "menu-cleanup-1440x900.png"), ImageFormat.Png);
-            states.Add(("menu-cleanup", "1440x900", "menu-cleanup-1440x900.png", "清理下拉"));
+            using var form = NewSnapshotForm(1280, 800);
+            form.Opacity = 1;
+            form.Location = new Point(0, 0);
+            form.Activate();
+            Application.DoEvents();
+            CaptureRealMenu(form, "导出列表", "menu-export", outputFolder, states);
+            CaptureRealMenu(form, "清理", "menu-cleanup", outputFolder, states);
         }
         finally { Environment.SetEnvironmentVariable("CUSTOMS_CONSOLE_DATA", previous); }
 
@@ -518,10 +635,13 @@ internal static class SelfTest
         states.Add(("dialog", "-", "dialog-cleanup-docs-step2.png", "关单清理 2/2"));
         states.Add(("dialog", "-", "dialog-cleanup-list.png", "列表清理"));
 
+        var probe = ProbeDpi();
         var report = new
         {
             generatedAt = DateTime.Now.ToString("s"),
-            windowDpiNote = "CI 以 100% DPI 运行；DPI 档位通过 UiScale.Px(96/120/144/192) 单元断言覆盖，125/150/200% 真机缩放仍为人工验收项。",
+            actualDeviceDpi = probe.FormDpi,
+            dpiProbe = new { formDeviceDpi = probe.FormDpi, windowDpi = probe.WindowDpi, systemDpi = probe.SystemDpi, threadContext = "PER_MONITOR_AWARE_V2" },
+            windowDpiNote = $"本机实际 DeviceDpi={probe.FormDpi}（window={probe.WindowDpi}，system={probe.SystemDpi}）；四档逻辑尺寸快照按该实际 DPI 渲染。其余 DPI 档位由 UiScale/Responsive 断言覆盖；真实 125/150/200% 显示器缩放仍是人工验收项，未伪造。",
             states = states.Select(x => new { state = x.Name, size = x.Size, file = x.File, notes = x.Notes })
         };
         File.WriteAllText(Path.Combine(outputFolder, "ui-states.json"),
@@ -561,18 +681,114 @@ internal static class SelfTest
         form.Close();
     }
 
-    private static DesignMenu.Entry[] ExportMenuEntries() =>
-    [
-        new("excel", "导出为 Excel", null, Ui2.FileExcel, ".xlsx"),
-        new("markdown", "导出为 Markdown", null, Ui2.FileMarkdownInk, ".md")
-    ];
+    /// <summary>
+    /// Clicks the real toolbar button, waits for the real DesignMenu popup Form, asserts
+    /// its screen bounds stay inside the working area, and captures the popup itself plus
+    /// a composite over the workspace. The popup is never re-drawn at a fixed origin.
+    /// </summary>
+    private static void CaptureRealMenu(MainForm form, string buttonAccessibleName, string name, string outputFolder,
+        List<(string Name, string Size, string File, string Notes)> states)
+    {
+        var button = Descendants(form).OfType<Button>().FirstOrDefault(x => x.AccessibleName == buttonAccessibleName)
+            ?? throw new InvalidOperationException($"找不到工具栏按钮：{buttonAccessibleName}");
+        button.PerformClick();
+        Application.DoEvents();
+        var popup = Application.OpenForms.Cast<Form>()
+            .FirstOrDefault(candidate => !ReferenceEquals(candidate, form) && candidate.Visible && candidate.Width > 0 && candidate.Height > 0)
+            ?? throw new InvalidOperationException($"菜单 {name} 未真实弹出。");
+        try
+        {
+            var working = Screen.FromControl(button).WorkingArea;
+            var anchor = button.RectangleToScreen(button.ClientRectangle);
+            var bounds = popup.Bounds;
+            if (!working.Contains(bounds))
+                throw new InvalidOperationException($"菜单 {name} 弹出位置超出工作区：popup={bounds} working={working}");
+            var notes = $"真实弹出 bounds={bounds};anchor={anchor};working={working};popupDpi={popup.DeviceDpi};anchorDpi={button.DeviceDpi}";
+            using (var popupBitmap = new Bitmap(popup.Width, popup.Height))
+            {
+                popup.DrawToBitmap(popupBitmap, new Rectangle(Point.Empty, popup.Size));
+                popupBitmap.Save(Path.Combine(outputFolder, $"{name}-popup.png"), ImageFormat.Png);
+                using var composite = RenderForm(form);
+                using (var graphics = Graphics.FromImage(composite))
+                    graphics.DrawImage(popupBitmap, popup.Left - form.Left, popup.Top - form.Top);
+                composite.Save(Path.Combine(outputFolder, $"{name}-1440x900.png"), ImageFormat.Png);
+            }
+            states.Add((name, "1280x800", $"{name}-1440x900.png", notes));
+            states.Add((name + "-popup", "-", $"{name}-popup.png", notes));
+        }
+        finally
+        {
+            popup.Close();
+            Application.DoEvents();
+        }
+    }
 
-    private static DesignMenu.Entry[] CleanupMenuEntries() =>
-    [
-        new("list", "列表清理", "仅清除识别记录，不删除文件", Ui2.TrashInk),
-        new("docs", "关单清理", "当前层 PDF / 图片移入回收站", Ui2.TrashRed, Danger: true, SeparatorBefore: true),
-        new("screenshots", "截图清理", "核验截图移入回收站", Ui2.TrashRed, Danger: true)
-    ];
+    /// <summary>R3-7: exercises the real DesignMenu hit-test/selection event path.</summary>
+    private static void RunDesignMenuInteractionRegression()
+    {
+        string? chosen = null;
+        using var menu = new DesignMenu([new DesignMenu.Entry("excel", "导出为 Excel", null, Ui2.FileExcel, ".xlsx")]);
+        menu.ItemSelected += (_, key) => chosen = key;
+        using var host = new Form { Size = new Size(420, 300), StartPosition = FormStartPosition.Manual, Location = new Point(-32000, -32000), ShowInTaskbar = false, Opacity = 0 };
+        var anchor = new Button { Text = "打开菜单", Location = new Point(24, 24), Size = new Size(96, 32) };
+        host.Controls.Add(anchor);
+        host.Show();
+        try
+        {
+            menu.Show(anchor, anchor.Height + 6, true);
+            Application.DoEvents();
+            if (!menu.Visible) throw new InvalidOperationException("DesignMenu 未真实显示。");
+            var surfaceField = typeof(DesignMenu).GetField("_surface", BindingFlags.Instance | BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException("DesignMenu 缺少 _surface。");
+            var surface = (Control?)surfaceField.GetValue(menu) ?? throw new InvalidOperationException("DesignMenu 未创建弹出表面。");
+            var rowsField = surface.GetType().GetField("_rows", BindingFlags.Instance | BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException("MenuSurface 缺少 _rows。");
+            var hoverField = surface.GetType().GetField("_hover", BindingFlags.Instance | BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException("MenuSurface 缺少 _hover。");
+            var rows = (List<Rectangle>?)rowsField.GetValue(surface) ?? throw new InvalidOperationException("MenuSurface 行矩形缺失。");
+            if (rows.Count != 1) throw new InvalidOperationException($"MenuSurface 行数异常：{rows.Count}");
+            hoverField.SetValue(surface, 0);
+            var onMouseUp = surface.GetType().GetMethod("OnMouseUp", BindingFlags.Instance | BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException("MenuSurface 缺少 OnMouseUp。");
+            onMouseUp.Invoke(surface, [new MouseEventArgs(MouseButtons.Left, 1, rows[0].X + 4, rows[0].Y + 4, 0)]);
+            Application.DoEvents();
+            if (chosen != "excel") throw new InvalidOperationException($"菜单点击未触发选择事件：{chosen ?? "null"}");
+            menu.Close();
+        }
+        finally { host.Close(); }
+    }
+
+    [DllImport("user32.dll")] private static extern uint GetDpiForWindow(IntPtr hwnd);
+    [DllImport("user32.dll")] private static extern uint GetDpiForSystem();
+    [DllImport("user32.dll")] private static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
+    private static readonly IntPtr DpiAwarenessPerMonitorV2 = new(-4);
+
+    /// <summary>
+    /// Reads the real DPI of a probe window under a PER_MONITOR_AWARE_V2 thread context.
+    /// A cloud runner usually reports 96; the report keeps that honest instead of
+    /// hard-coding a value.
+    /// </summary>
+    private static (int FormDpi, uint WindowDpi, uint SystemDpi) ProbeDpi()
+    {
+        var previous = SetThreadDpiAwarenessContext(DpiAwarenessPerMonitorV2);
+        try
+        {
+            var system = GetDpiForSystem();
+            using var probe = new Form
+            {
+                StartPosition = FormStartPosition.Manual,
+                Location = new Point(-32000, -32000),
+                ShowInTaskbar = false,
+                Opacity = 0
+            };
+            probe.Show();
+            var formDpi = probe.DeviceDpi;
+            var windowDpi = GetDpiForWindow(probe.Handle);
+            probe.Close();
+            return (formDpi, windowDpi, system);
+        }
+        finally { SetThreadDpiAwarenessContext(previous); }
+    }
 
     public static void CaptureDialog(string outputPath, string kind)
     {
@@ -618,12 +834,40 @@ internal static class SelfTest
     public static void WriteEnvironmentReport(string outputFolder)
     {
         Directory.CreateDirectory(outputFolder);
+        var probe = ProbeDpi();
+        var fontCheck = AppFonts.VerifyShipset();
+        var dpiBands = new[] { 96, 120, 144, 192 }.Select(dpi =>
+        {
+            var logical = Responsive.Compute(1200, 720);
+            var wide = Responsive.Compute(1600, 1000);
+            return new
+            {
+                dpi,
+                scale = dpi / 96.0,
+                px24 = UiScale.Px(dpi, 24),
+                compactAt720 = logical.CompactHeight,
+                mergedAt1200 = logical.Table.PortDestMerged,
+                mergedAt1600 = wide.Table.PortDestMerged
+            };
+        }).ToArray();
         var report = new
         {
             version = typeof(SelfTest).Assembly.GetName().Version?.ToString(),
             os = Environment.OSVersion.ToString(),
             isWindows = OperatingSystem.IsWindows(),
-            dpi = 96,
+            dpi = probe.FormDpi,
+            dpiProbe = new
+            {
+                formDeviceDpi = probe.FormDpi,
+                windowDpi = probe.WindowDpi,
+                systemDpi = probe.SystemDpi,
+                threadContext = "PER_MONITOR_AWARE_V2"
+            },
+            realMonitorScalingVerified = probe.FormDpi != 96,
+            dpiNote = probe.FormDpi == 96
+                ? "云端 runner 实际 DeviceDpi=96。UiScale/Responsive 的 120/144/192 断言覆盖缩放算式，但真实 125/150/200% 显示器缩放未在此环境验证，保留为实机人工验收项。"
+                : $"云端 runner 实际 DeviceDpi={probe.FormDpi}，快照与控件按该 DPI 真实渲染。",
+            fontVerification = new { ok = fontCheck.Ok, detail = fontCheck.Detail },
             uiFamilyLoaded = AppFonts.HasUiFamily,
             monoFamilyLoaded = AppFonts.HasMonoFamily,
             loadedFamilies = AppFonts.LoadedFamilies,
@@ -636,12 +880,25 @@ internal static class SelfTest
                 fontsDirectory = Directory.Exists(Path.Combine(AppContext.BaseDirectory, "fonts")),
                 fontFiles = Directory.Exists(Path.Combine(AppContext.BaseDirectory, "fonts"))
                     ? Directory.GetFiles(Path.Combine(AppContext.BaseDirectory, "fonts")).Select(Path.GetFileName).ToArray()
-                    : []
+                    : [],
+                licenses = new
+                {
+                    rootLicense = File.Exists(Path.Combine(AppPaths.BaseDirectory, "LICENSE")),
+                    thirdPartyNotices = Directory.Exists(Path.Combine(AppPaths.BaseDirectory, "third-party-notices")),
+                    about = File.Exists(Path.Combine(AppContext.BaseDirectory, "AboutAndLicenses.txt")),
+                    notoOfl = File.Exists(Path.Combine(AppContext.BaseDirectory, "fonts", "NotoSansSC-OFL.txt")),
+                    jetBrainsOfl = File.Exists(Path.Combine(AppContext.BaseDirectory, "fonts", "JetBrainsMono-OFL.txt"))
+                }
             }
         };
         File.WriteAllText(Path.Combine(outputFolder, "environment.json"),
             JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true }), new UTF8Encoding(false));
         Console.WriteLine(JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true }));
+        if (!fontCheck.Ok)
+        {
+            Console.Error.WriteLine("FONT_VERIFICATION_FAILED: " + fontCheck.Detail);
+            Environment.ExitCode = 1;
+        }
     }
 
     private static string TryBrowser()

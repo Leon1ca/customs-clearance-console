@@ -131,6 +131,7 @@ internal static class Theme
     public static Button IconButton(string text, Button baseButton, string? iconStem = null, int iconSize = 16, float dpi = 96F)
     {
         baseButton.Text = text;
+        if (string.IsNullOrEmpty(baseButton.AccessibleName)) baseButton.AccessibleName = text;
         baseButton.TextImageRelation = TextImageRelation.ImageBeforeText;
         baseButton.ImageAlign = ContentAlignment.MiddleCenter;
         if (iconStem is not null)

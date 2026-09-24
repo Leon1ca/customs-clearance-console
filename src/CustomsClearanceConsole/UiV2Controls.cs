@@ -85,28 +85,62 @@ internal sealed class KpiPanel : RoundedPanel
 
 internal sealed record MoneySummaryRow(string Currency, int BeforeCount, int AfterCount, decimal Gross, decimal Net);
 
-internal sealed record MoneySummarySnapshot(
-    IReadOnlyList<MoneySummaryRow> Rows, decimal UnconfirmedAmount, int UnconfirmedCount, string UnconfirmedCurrency, string UnconfirmedFile);
+/// <summary>Unconfirmed total for one currency. Amounts are never summed across currencies.</summary>
+internal sealed record UnconfirmedRow(string Currency, decimal Amount, int Count, string File);
 
-/// <summary>Currency summary with per-currency counts, gross/net/deduction and a warning notice.</summary>
+internal sealed record MoneySummarySnapshot(
+    IReadOnlyList<MoneySummaryRow> Rows,
+    IReadOnlyList<UnconfirmedRow> Unconfirmed);
+
+/// <summary>Currency summary with per-currency counts, gross/net/deduction and per-currency unconfirmed notice.</summary>
 internal sealed class MoneySummaryPanel : RoundedPanel
 {
-    private MoneySummarySnapshot _snapshot = new([], 0, 0, "", "");
+    private MoneySummarySnapshot _snapshot = new([], []);
+    private bool _updatingScroll;
 
     public MoneySummaryPanel()
     {
         BackColor = Theme.Surface;
         BorderColor = Theme.Border;
         Radius = 8;
+        AutoScroll = true;
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
     }
 
     public int RowCount => _snapshot.Rows.Count;
+    public int UnconfirmedRowCount => _snapshot.Unconfirmed.Count;
 
     public void Set(MoneySummarySnapshot snapshot)
     {
         _snapshot = snapshot;
+        UpdateScrollExtent();
         Invalidate();
+    }
+
+    private int S(int px) => (int)Math.Round(px * DeviceDpi / 96F);
+
+    protected override void OnResize(EventArgs e)
+    {
+        base.OnResize(e);
+        UpdateScrollExtent();
+    }
+
+    /// <summary>Content taller than the panel becomes scrollable so no currency is silently dropped.</summary>
+    private void UpdateScrollExtent()
+    {
+        if (_updatingScroll) return;
+        _updatingScroll = true;
+        try
+        {
+            var compact = Height < S(120);
+            var headerHeight = compact ? S(36) : S(40);
+            var columnHeaderHeight = compact ? S(28) : S(30);
+            var rowHeight = compact ? S(28) : S(32);
+            var rows = Math.Max(1, _snapshot.Rows.Count);
+            var unconfirmed = _snapshot.Unconfirmed.Count > 0 ? S(26) + _snapshot.Unconfirmed.Count * S(26) : 0;
+            AutoScrollMinSize = new Size(0, headerHeight + columnHeaderHeight + rows * rowHeight + unconfirmed + S(8));
+        }
+        finally { _updatingScroll = false; }
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -114,14 +148,73 @@ internal sealed class MoneySummaryPanel : RoundedPanel
         base.OnPaint(e);
         var graphics = e.Graphics;
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        var dpi = DeviceDpi / 96F;
-        int S(int px) => (int)Math.Round(px * dpi);
         var compact = Height < S(120);
         var headerHeight = compact ? S(36) : S(40);
         var columnHeaderHeight = compact ? S(28) : S(30);
         var rowHeight = compact ? S(28) : S(32);
         var padX = S(16);
+        var bodyTop = headerHeight + columnHeaderHeight;
 
+        // Scrollable body: currency rows plus the per-currency unconfirmed block.
+        // Overflow becomes a real scrollbar instead of silently dropping currencies.
+        if (_snapshot.Rows.Count > 0 || _snapshot.Unconfirmed.Count > 0)
+        {
+            var state = graphics.Save();
+            graphics.SetClip(new Rectangle(0, bodyTop, Width, Math.Max(0, Height - bodyTop)));
+            graphics.TranslateTransform(0, AutoScrollPosition.Y);
+            var y = bodyTop;
+            using (var rowFont = Theme.MonoFont(13.5F, true))
+            {
+                foreach (var row in _snapshot.Rows)
+                {
+                    var rowColumns = ColumnRects(S(80), S(110), y, rowHeight);
+                    TextRenderer.DrawText(graphics, row.Currency, rowFont, rowColumns[0], Theme.Text, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+                    TextRenderer.DrawText(graphics, $"{row.BeforeCount} → {row.AfterCount}", rowFont, rowColumns[1], Theme.Ink2, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+                    TextRenderer.DrawText(graphics, row.Gross.ToString("N2"), rowFont, rowColumns[2], Theme.Text, TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+                    TextRenderer.DrawText(graphics, row.Net.ToString("N2"), rowFont, rowColumns[3], Theme.Text, TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+                    var deduction = row.Net - row.Gross;
+                    if (deduction == 0)
+                        TextRenderer.DrawText(graphics, "—", rowFont, rowColumns[4], Theme.Muted, TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+                    else
+                        TextRenderer.DrawText(graphics, deduction.ToString("N2"), rowFont, rowColumns[4], Theme.Danger, TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+                    y += rowHeight;
+                }
+            }
+            if (_snapshot.Unconfirmed.Count > 0)
+            {
+                y += S(4);
+                var header = new Rectangle(1, y, Width - 2, S(26));
+                using (var brush = new SolidBrush(UiTokens.Status.AttentionNotice)) graphics.FillRectangle(brush, header);
+                var icon = UiV2Icons.Load(Ui2.Alert, 16, DeviceDpi);
+                if (icon is not null)
+                {
+                    graphics.DrawImage(icon, padX, header.Y + (header.Height - icon.Height) / 2, icon.Width, icon.Height);
+                    icon.Dispose();
+                }
+                using (var noticeFont = Theme.UiFont(12F))
+                    TextRenderer.DrawText(graphics, "未确认金额（按币种分列，不计入确认合计）", noticeFont, new Rectangle(padX + S(22), header.Y, Width - padX * 2 - S(22), header.Height), Theme.Warning,
+                        TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
+                y += S(26);
+                using var noteFont = Theme.UiFont(12F);
+                foreach (var item in _snapshot.Unconfirmed)
+                {
+                    var text = $"{item.Currency} {item.Amount:N2} · {item.Count} 项未确认" +
+                               (string.IsNullOrWhiteSpace(item.File) ? "" : $" · {item.File}");
+                    TextRenderer.DrawText(graphics, text, noteFont, new Rectangle(padX + S(22), y, Width - padX * 2 - S(22), S(24)), Theme.Warning,
+                        TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
+                    y += S(26);
+                }
+            }
+            graphics.Restore(state);
+        }
+        else
+        {
+            DrawEmptyState(graphics, S, bodyTop);
+        }
+
+        // Fixed header (title, unit, column headers) is never scrolled away.
+        using (var background = new SolidBrush(Theme.Surface))
+            graphics.FillRectangle(background, 1, 0, Width - 2, bodyTop);
         using (var titleFont = Theme.UiFont(14F, FontStyle.Bold))
             TextRenderer.DrawText(graphics, "金额汇总", titleFont, new Rectangle(padX, 0, S(90), headerHeight), Theme.Text,
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
@@ -131,7 +224,6 @@ internal sealed class MoneySummaryPanel : RoundedPanel
         using (var unitFont = Theme.UiFont(12F))
             TextRenderer.DrawText(graphics, "单位：原币", unitFont, new Rectangle(Width - S(100), 0, S(100) - padX, headerHeight), Theme.Muted,
                 TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
-
         var columns = ColumnRects(S(80), S(110), headerHeight, columnHeaderHeight);
         using (var background = new SolidBrush(Theme.PanelSubtle))
             graphics.FillRectangle(background, 1, headerHeight, Width - 2, columnHeaderHeight);
@@ -142,50 +234,6 @@ internal sealed class MoneySummaryPanel : RoundedPanel
             DrawHeader(graphics, headerFont, columns[2], "去重前", ContentAlignment.MiddleRight);
             DrawHeader(graphics, headerFont, columns[3], "去重后（计入）", ContentAlignment.MiddleRight);
             DrawHeader(graphics, headerFont, columns[4], "重复扣减", ContentAlignment.MiddleRight);
-        }
-
-        if (_snapshot.Rows.Count == 0)
-        {
-            DrawEmptyState(graphics, S, headerHeight + columnHeaderHeight);
-            return;
-        }
-
-        var y = headerHeight + columnHeaderHeight;
-        using var rowFont = Theme.MonoFont(13.5F, true);
-        foreach (var row in _snapshot.Rows)
-        {
-            if (y + rowHeight > Height) break;
-            var rowColumns = ColumnRects(S(80), S(110), y, rowHeight);
-            TextRenderer.DrawText(graphics, row.Currency, rowFont, rowColumns[0], Theme.Text, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
-            TextRenderer.DrawText(graphics, $"{row.BeforeCount} → {row.AfterCount}", rowFont, rowColumns[1], Theme.Ink2, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
-            TextRenderer.DrawText(graphics, row.Gross.ToString("N2"), rowFont, rowColumns[2], Theme.Text, TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
-            TextRenderer.DrawText(graphics, row.Net.ToString("N2"), rowFont, rowColumns[3], Theme.Text, TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
-            var deduction = row.Net - row.Gross;
-            if (deduction == 0)
-                TextRenderer.DrawText(graphics, "—", rowFont, rowColumns[4], Theme.Muted, TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
-            else
-                TextRenderer.DrawText(graphics, deduction.ToString("N2"), rowFont, rowColumns[4], Theme.Danger, TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
-            y += rowHeight;
-        }
-
-        if (_snapshot.UnconfirmedCount > 0 && y + S(34) <= Height)
-        {
-            var notice = new Rectangle(1, y, Width - 2, Height - y - 1);
-            using var brush = new SolidBrush(UiTokens.Status.AttentionNotice);
-            graphics.FillRectangle(brush, notice);
-            var icon = UiV2Icons.Load(Ui2.Alert, 16, DeviceDpi);
-            if (icon is not null)
-            {
-                graphics.DrawImage(icon, padX, notice.Y + (notice.Height - icon.Height) / 2, icon.Width, icon.Height);
-                icon.Dispose();
-            }
-            using var noticeFont = Theme.UiFont(12F);
-            var summary = _snapshot.UnconfirmedAmount == 0
-                ? $"{_snapshot.UnconfirmedCount} 份记录的金额未确认，未计入合计"
-                : $"{_snapshot.UnconfirmedCount} 份金额未确认，未计入合计：{_snapshot.UnconfirmedCurrency} {_snapshot.UnconfirmedAmount:N2}" +
-                  (string.IsNullOrWhiteSpace(_snapshot.UnconfirmedFile) ? "" : $"（{_snapshot.UnconfirmedFile}）");
-            TextRenderer.DrawText(graphics, summary, noticeFont, new Rectangle(padX + S(22), notice.Y, Width - padX * 2 - S(22), notice.Height), Theme.Warning,
-                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
         }
     }
 

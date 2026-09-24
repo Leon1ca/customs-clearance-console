@@ -315,14 +315,9 @@ internal sealed partial class MainForm
                 _manualWidths[e.Column.Name] = e.Column.Width;
         };
         grid.ColumnHeaderMouseDoubleClick += (_, _) => { _manualWidths.Clear(); ApplyGridColumns(); };
-        grid.CellFormatting += (_, e) =>
-        {
-            if (e.RowIndex < 0 || e.ColumnIndex < 0) return;
-            if (e.ColumnIndex == grid.Columns["Index"].Index || e.ColumnIndex == grid.Columns["Status"].Index ||
-                e.ColumnIndex == grid.Columns["No"].Index || e.ColumnIndex == grid.Columns["Amount"].Index ||
-                e.ColumnIndex == grid.Columns["Detail"].Index || e.ColumnIndex == grid.Columns["Verify"].Index)
-                e.Value = string.Empty;
-        };
+        // No CellFormatting blanking: custom painting happens in CellPainting with
+        // e.Handled = true, so real cell values stay available for copy, tooltips and
+        // accessibility. Blanks would make No/Amount/Status copy as empty (R3-2).
         _copyMenu = new CopyContextMenu(CopySelectedCells);
         grid.Disposed += (_, _) => _copyMenu.Dispose();
         return grid;
@@ -351,7 +346,8 @@ internal sealed partial class MainForm
         int S(int px) => (int)Math.Round(px * dpi / 96.0);
         _body.Padding = new Padding(S(24), S(_layout.ContentPaddingY), S(24), S(_layout.ContentPaddingY));
         _body.RowStyles[0].Height = S(_layout.CompactHeight ? 56 : 62);
-        _body.RowStyles[1].Height = S(Math.Max(126, Math.Min(230, 96 + _moneySummary.RowCount * (_layout.AmountRow + 4))));
+        _body.RowStyles[1].Height = S(Math.Max(126, Math.Min(280,
+            96 + _moneySummary.RowCount * (_layout.AmountRow + 4) + (_moneySummary.UnconfirmedRowCount > 0 ? 26 + _moneySummary.UnconfirmedRowCount * 26 : 0))));
         _body.RowStyles[2].Height = _session is null ? 0 : S(_layout.CompactHeight ? 92 : 104);
         _body.RowStyles[3].Height = _session is null ? 0 : S(_layout.CompactHeight ? 34 : 38);
         _statsRow.ColumnStyles[0].Width = S(_layout.KpiPanelWidth);

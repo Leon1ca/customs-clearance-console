@@ -387,11 +387,14 @@ internal sealed partial class MainForm : Form
             row.Height = rowHeight;
             row.Tag = record;
             row.Cells["Index"].Value = ((_page - 1) * size + i + 1).ToString("D2");
+            row.Cells["Status"].Value = StatusLabel(record);
+            row.Cells["No"].Value = CopyNumberText(record);
             row.Cells["Consignee"].Value = Dash(record.Consignee);
             row.Cells["Contract"].Value = Dash(record.ContractNo);
             row.Cells["Port"].Value = Dash(record.ExitCustoms);
             row.Cells["Dest"].Value = Dash(record.DestinationCountry);
             row.Cells["PortDest"].Value = Dash(record.ExitCustoms) + "\n" + Dash(record.DestinationCountry);
+            row.Cells["Amount"].Value = CopyAmountText(record);
             row.Cells["Detail"].Value = "明细";
             row.Cells["Verify"].Value = record.HasScreenshot ? "已留存" : record.HasValidDeclarationNo ? "校验" : "不可核验";
             foreach (DataGridViewCell cell in row.Cells)
@@ -401,10 +404,15 @@ internal sealed partial class MainForm : Form
                 cell.Style.SelectionBackColor = UiTokens.Status.CellSelected;
                 cell.Style.SelectionForeColor = Theme.Text;
             }
-            row.Cells["No"].ToolTipText = (record.DeclarationNo.Length == 0 ? "未识别" : record.DeclarationNo) + "\n源文件：" + record.SourceName;
+            row.Cells["Index"].ToolTipText = "行号（本页内序号）";
+            row.Cells["Status"].ToolTipText = StatusLabel(record) + (record.AllWarnings.Length > 0 ? "\n" + record.AllWarnings : "");
+            row.Cells["No"].ToolTipText = CopyNumberText(record);
+            row.Cells["Amount"].ToolTipText = CopyAmountText(record);
             row.Cells["Consignee"].ToolTipText = Dash(record.Consignee);
             row.Cells["Contract"].ToolTipText = Dash(record.ContractNo);
-            row.Cells["Status"].ToolTipText = record.AllWarnings;
+            row.Cells["Port"].ToolTipText = Dash(record.ExitCustoms);
+            row.Cells["Dest"].ToolTipText = Dash(record.DestinationCountry);
+            row.Cells["PortDest"].ToolTipText = Dash(record.ExitCustoms) + "\n" + Dash(record.DestinationCountry);
             row.Cells["Detail"].ToolTipText = "打开只读关单明细";
             row.Cells["Verify"].ToolTipText = !record.HasValidDeclarationNo ? "未识别出有效报关单号，无法在线核验"
                 : record.HasScreenshot ? "已留存；点击可重新核验并保存新截图"
@@ -451,13 +459,20 @@ internal sealed partial class MainForm : Form
             var after = records.Count(x => x.IsCanonical && x.Totals.ContainsKey(currency));
             rows.Add(new MoneySummaryRow(currency, before, after, gross.GetValueOrDefault(currency), net.GetValueOrDefault(currency)));
         }
-        var unconfirmedRecords = records.Where(x => x.Totals.Count == 0 && x.LineTotals.Any(l => !l.IsReliable)).ToList();
-        var unconfirmed = unconfirmedRecords.SelectMany(x => x.LineTotals.Where(l => !l.IsReliable)).ToList();
-        var unconfirmedAmount = unconfirmed.Sum(x => x.Amount);
-        var unconfirmedCurrency = unconfirmed.FirstOrDefault()?.Currency ?? "";
-        _moneySummary.Set(new MoneySummarySnapshot(rows, unconfirmedAmount, unconfirmed.Count, unconfirmedCurrency,
-            unconfirmedRecords.FirstOrDefault()?.SourceName ?? ""));
-        _body.RowStyles[1].Height = UiScale.Px(this, Math.Max(126, Math.Min(230, 96 + rows.Count * (_layout.AmountRow + 4))));
+        // Any record with an unreliable line has unconfirmed money, not only records whose
+        // whole Totals map is empty. Amounts stay grouped by currency and are never summed
+        // across currencies under a single label.
+        var unconfirmedRows = records
+            .SelectMany(record => record.LineTotals.Where(line => !line.IsReliable)
+                .GroupBy(line => string.IsNullOrWhiteSpace(line.Currency) ? "—" : line.Currency, StringComparer.OrdinalIgnoreCase)
+                .Select(group => (Record: record, Currency: group.Key, Amount: group.Sum(line => line.Amount), Count: group.Count())))
+            .GroupBy(x => x.Currency, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(group => group.Key, StringComparer.Ordinal)
+            .Select(group => new UnconfirmedRow(group.Key, group.Sum(x => x.Amount), group.Sum(x => x.Count), group.First().Record.SourceName))
+            .ToList();
+        _moneySummary.Set(new MoneySummarySnapshot(rows, unconfirmedRows));
+        _body.RowStyles[1].Height = UiScale.Px(this, Math.Max(126, Math.Min(280,
+            96 + rows.Count * (_layout.AmountRow + 4) + (unconfirmedRows.Count > 0 ? 26 + unconfirmedRows.Count * 26 : 0))));
 
         var counts = new[] { records.Count, records.Count(x => !x.IsDuplicate && !x.NeedsAttention), records.Count(x => x.IsDuplicate), attention };
         _filterSegmented.Set(
@@ -565,14 +580,51 @@ internal sealed partial class MainForm : Form
         e.Handled = true;
     }
 
+    internal static string StatusLabel(DeclarationRecord record) =>
+        record.Status == "识别失败" ? "识别失败"
+        : record.IsDuplicate ? "重复"
+        : record.NeedsAttention ? "需关注"
+        : "正常";
+
+    /// <summary>Full text copied from the number cell: declaration number plus source file.</summary>
+    internal static string CopyNumberText(DeclarationRecord record) =>
+        (record.DeclarationNo.Length == 0 ? "未识别" : record.DeclarationNo) + "\n源文件：" + record.SourceName;
+
+    /// <summary>
+    /// Per-currency amounts for one record. Reliable and unconfirmed sums are kept on
+    /// separate lines and never combined across currencies.
+    /// </summary>
+    internal static IReadOnlyList<(string Currency, decimal Amount, bool Reliable)> AmountLines(DeclarationRecord record)
+    {
+        var lines = new List<(string, decimal, bool)>();
+        foreach (var total in record.Totals.OrderBy(x => x.Key, StringComparer.Ordinal))
+            lines.Add((total.Key, total.Value, true));
+        foreach (var group in record.LineTotals.Where(x => !x.IsReliable)
+                     .GroupBy(x => string.IsNullOrWhiteSpace(x.Currency) ? "—" : x.Currency, StringComparer.OrdinalIgnoreCase)
+                     .OrderBy(x => x.Key, StringComparer.Ordinal))
+            lines.Add((group.Key, group.Sum(x => x.Amount), false));
+        return lines;
+    }
+
+    /// <summary>Complete multi-currency text used for copying and tooltips.</summary>
+    internal static string CopyAmountText(DeclarationRecord record)
+    {
+        var lines = AmountLines(record);
+        if (lines.Count == 0) return "—";
+        return string.Join("\n", lines.Select(x => x.Reliable
+            ? $"{x.Currency} {x.Amount:N2}"
+            : $"{x.Currency} {x.Amount:N2}（未确认，未计入确认合计）"));
+    }
+
     private void DrawStatusTag(Graphics graphics, Rectangle bounds, DeclarationRecord record)
     {
         var dpi = DeviceDpi;
         int S(int px) => (int)Math.Round(px * dpi / 96.0);
-        var (label, palette) = record.Status == "识别失败" ? ("识别失败", UiTokens.Status.Failed)
-            : record.IsDuplicate ? ("重复", UiTokens.Status.Duplicate)
-            : record.NeedsAttention ? ("需关注", UiTokens.Status.Attention)
-            : ("正常", UiTokens.Status.Ok);
+        var label = StatusLabel(record);
+        var palette = label == "识别失败" ? UiTokens.Status.Failed
+            : label == "重复" ? UiTokens.Status.Duplicate
+            : label == "需关注" ? UiTokens.Status.Attention
+            : UiTokens.Status.Ok;
         using var font = Theme.UiFont(12F, FontStyle.Bold);
         var textWidth = TextRenderer.MeasureText(graphics, label, font, new Size(int.MaxValue, S(22)), TextFormatFlags.NoPadding).Width;
         var tag = new Rectangle(bounds.X + S(8), bounds.Y + (bounds.Height - S(22)) / 2, Math.Min(bounds.Width - S(16), textWidth + S(16)), S(22));
@@ -608,44 +660,43 @@ internal sealed partial class MainForm : Form
 
     private void DrawAmountCell(Graphics graphics, Rectangle bounds, DeclarationRecord record, Func<int, int> S)
     {
-        var totals = record.Totals.OrderBy(x => x.Key, StringComparer.Ordinal).ToList();
-        if (totals.Count == 0)
+        var lines = AmountLines(record);
+        if (lines.Count == 0)
         {
             using var dashFont = Theme.UiFont(13.5F);
             TextRenderer.DrawText(graphics, "—", dashFont, bounds, Theme.Muted, TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
             return;
         }
-        var unreliable = record.LineTotals.Where(x => !x.IsReliable).ToList();
-        if (unreliable.Count > 0)
+        // Every currency gets its own labelled line; overflow shows a count and the full
+        // list stays available in the tooltip and the scrolled money summary.
+        var visible = lines.Take(2).ToList();
+        var lineHeight = visible.Count == 1 ? bounds.Height : S(24);
+        var overflow = lines.Count > 2 ? S(14) : 0;
+        var startY = bounds.Y + Math.Max(0, (bounds.Height - visible.Count * lineHeight - overflow) / 2);
+        using var currencyFont = Theme.UiFont(11.5F);
+        for (var i = 0; i < visible.Count; i++)
         {
-            var line = unreliable.First();
-            using (var currencyFont = Theme.UiFont(11.5F))
-                TextRenderer.DrawText(graphics, line.Currency, currencyFont, new Rectangle(bounds.X, bounds.Y + S(9), bounds.Width - S(10), S(18)), Theme.Muted,
-                    TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+            var (currency, amount, reliable) = visible[i];
+            var lineY = startY + i * lineHeight;
+            var currencyWidth = TextRenderer.MeasureText(graphics, currency, currencyFont, new Size(int.MaxValue, S(20)), TextFormatFlags.NoPadding).Width;
             using (var amountFont = Theme.MonoFont(13.5F, true))
-                TextRenderer.DrawText(graphics, line.Amount.ToString("N2"), amountFont, new Rectangle(bounds.X, bounds.Y + S(9), bounds.Width - S(10), S(20)), Theme.Warning,
-                    TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
-            var underlineY = bounds.Y + S(9) + S(18);
-            using (var underline = new Pen(UiTokens.Status.AttentionUnderline, S(1)) { DashStyle = System.Drawing.Drawing2D.DashStyle.Dash })
-                graphics.DrawLine(underline, bounds.Right - S(74), underlineY, bounds.Right - S(10), underlineY);
-            using (var noteFont = Theme.UiFont(11F))
+                TextRenderer.DrawText(graphics, amount.ToString("N2"), amountFont, new Rectangle(bounds.X, lineY, Math.Max(S(10), bounds.Width - S(10) - currencyWidth - S(6)), lineHeight),
+                    reliable ? Theme.Text : Theme.Warning, TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+            TextRenderer.DrawText(graphics, currency, currencyFont, new Rectangle(bounds.Right - S(10) - currencyWidth, lineY, currencyWidth, lineHeight), Theme.Muted,
+                TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+            if (!reliable)
             {
-                var note = line.VerificationAmount is null
-                    ? "未确认 · 未计入合计"
-                    : $"未确认 · 另一引擎 {line.Currency} {line.VerificationAmount.Value:N2}";
-                TextRenderer.DrawText(graphics, note, noteFont, new Rectangle(bounds.X, bounds.Y + S(28), bounds.Width - S(10), S(16)), Theme.Warning,
-                    TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
+                var underlineY = lineY + lineHeight / 2 + S(8);
+                using var underline = new Pen(UiTokens.Status.AttentionUnderline, S(1)) { DashStyle = System.Drawing.Drawing2D.DashStyle.Dash };
+                graphics.DrawLine(underline, bounds.Right - S(10) - currencyWidth - S(64), underlineY, bounds.Right - S(10), underlineY);
             }
-            return;
         }
-        var total = totals[0];
-        using (var currencyFont = Theme.UiFont(11.5F))
-            TextRenderer.DrawText(graphics, total.Key, currencyFont, new Rectangle(bounds.X, bounds.Y, bounds.Width - S(10), bounds.Height), Theme.Muted,
-                TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
-        var currencyWidth = TextRenderer.MeasureText(graphics, total.Key, Theme.UiFont(11.5F), new Size(int.MaxValue, S(20)), TextFormatFlags.NoPadding).Width;
-        using (var amountFont = Theme.MonoFont(13.5F, true))
-            TextRenderer.DrawText(graphics, total.Value.ToString("N2"), amountFont, new Rectangle(bounds.X, bounds.Y, bounds.Width - S(10) - currencyWidth - S(6), bounds.Height), Theme.Text,
-                TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+        if (overflow > 0)
+        {
+            using var moreFont = Theme.UiFont(10.5F);
+            TextRenderer.DrawText(graphics, $"+{lines.Count - 2} 币种 · 悬停查看全部", moreFont, new Rectangle(bounds.X, bounds.Bottom - overflow, bounds.Width - S(10), overflow), Theme.Muted,
+                TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
+        }
     }
 
     private void DrawActionButton(Graphics graphics, Rectangle bounds, string text, Color back, Color fore, Color border, Func<int, int> S, bool enabled)
@@ -722,17 +773,27 @@ internal sealed partial class MainForm : Form
         _grid.CurrentCell = cell;
     }
 
-    private void CopySelectedCells()
+    /// <summary>
+    /// Extracts the current selection as tab/newline separated text. Reads the real
+    /// cell values (no CellFormatting blanks) so No/Amount/Status copy with full text.
+    /// </summary>
+    internal (int Count, string Text) ExtractCopySelection()
     {
         var selected = _grid.SelectedCells.Cast<DataGridViewCell>()
             .Where(x => x.RowIndex >= 0 && x.ColumnIndex >= 0 && x.Visible)
-            .Select(x => (x.RowIndex, x.ColumnIndex, Convert.ToString(x.FormattedValue) ?? ""))
+            .Select(x => (x.RowIndex, x.ColumnIndex, Convert.ToString(x.Value) ?? ""))
             .ToList();
-        if (selected.Count == 0) return;
+        return (selected.Count, selected.Count == 0 ? "" : FormatCellSelection(selected));
+    }
+
+    private void CopySelectedCells()
+    {
+        var (count, text) = ExtractCopySelection();
+        if (count == 0) return;
         try
         {
-            Clipboard.SetText(FormatCellSelection(selected));
-            ShowToast($"已复制 {selected.Count} 个单元格 · 制表符分隔，可直接粘贴到 Excel");
+            Clipboard.SetText(text);
+            ShowToast($"已复制 {count} 个单元格 · 制表符分隔，可直接粘贴到 Excel");
         }
         catch (Exception ex)
         {

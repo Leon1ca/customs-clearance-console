@@ -27,11 +27,12 @@ internal static class AppFonts
     internal static readonly string[] FontFiles =
     [
         "NotoSansSC-Regular.ttf", "NotoSansSC-Medium.ttf", "NotoSansSC-Bold.ttf",
-        "NotoSansSC-Variable.ttf",
         "JetBrainsMono-Regular.ttf", "JetBrainsMono-Medium.ttf", "JetBrainsMono-Bold.ttf"
     ];
 
-    public static void Initialize(string? fontDirectory = null)
+    internal static readonly string[] LicenseFiles = ["NotoSansSC-OFL.txt", "JetBrainsMono-OFL.txt"];
+
+    internal static void Initialize(string? fontDirectory = null)
     {
         if (_initialized) return;
         _initialized = true;
@@ -51,6 +52,49 @@ internal static class AppFonts
             }
         }
         foreach (var family in Collection.Families) Families[family.Name] = family;
+    }
+
+    /// <summary>
+    /// Verifies that the package ships real static Regular/Medium/Bold faces and that
+    /// GDI+ resolves the requested weights from the private collection. Returns a
+    /// failure detail instead of a silent fallback so the cloud build can fail on it.
+    /// </summary>
+    internal static (bool Ok, string Detail) VerifyShipset()
+    {
+        var fontDirectory = Path.Combine(AppContext.BaseDirectory, "fonts");
+        var missing = FontFiles.Where(name => !File.Exists(Path.Combine(fontDirectory, name))).ToList();
+        if (missing.Count > 0) return (false, "缺少随包静态字体：" + string.Join("、", missing));
+        var missingLicenses = LicenseFiles.Where(name => !File.Exists(Path.Combine(fontDirectory, name))).ToList();
+        if (missingLicenses.Count > 0) return (false, "缺少字体原始许可：" + string.Join("、", missingLicenses));
+        if (!HasUiFamily) return (false, "Noto Sans SC 未随包加载");
+        if (!HasMonoFamily) return (false, "JetBrains Mono 未随包加载");
+        if (FindFamily(UiFamily + " Medium") is null) return (false, "缺少 Noto Sans SC Medium 静态字重");
+        if (FindFamily(MonoFamily + " Medium") is null) return (false, "缺少 JetBrains Mono Medium 静态字重");
+        using (var regular = Ui(13F))
+        using (var bold = Ui(13F, UiWeight.Bold))
+        using (var medium = Ui(13F, UiWeight.Medium))
+        using (var mono = Mono(13F))
+        using (var monoMedium = Mono(13F, true))
+        {
+            if (!regular.FontFamily.Name.StartsWith(UiFamily, StringComparison.OrdinalIgnoreCase))
+                return (false, "正文未解析到 Noto Sans SC：" + regular.FontFamily.Name);
+            if (!bold.Bold || !bold.FontFamily.Name.StartsWith(UiFamily, StringComparison.OrdinalIgnoreCase))
+                return (false, "Noto Sans SC Bold 未解析为真实粗体：" + bold.FontFamily.Name + "/" + bold.Style);
+            if (!medium.FontFamily.Name.Contains("Medium", StringComparison.OrdinalIgnoreCase))
+                return (false, "Noto Sans SC Medium 未解析到静态 Medium：" + medium.FontFamily.Name);
+            if (!mono.FontFamily.Name.StartsWith(MonoFamily, StringComparison.OrdinalIgnoreCase))
+                return (false, "等宽未解析到 JetBrains Mono：" + mono.FontFamily.Name);
+            if (!monoMedium.FontFamily.Name.Contains("Medium", StringComparison.OrdinalIgnoreCase))
+                return (false, "JetBrains Mono Medium 未解析到静态 Medium：" + monoMedium.FontFamily.Name);
+            return (true, string.Join("；", new[]
+            {
+                $"regular={regular.FontFamily.Name}/{regular.Style}",
+                $"bold={bold.FontFamily.Name}/{bold.Style}",
+                $"medium={medium.FontFamily.Name}/{medium.Style}",
+                $"mono={mono.FontFamily.Name}/{mono.Style}",
+                $"monoMedium={monoMedium.FontFamily.Name}/{monoMedium.Style}"
+            }));
+        }
     }
 
     public static IReadOnlyList<string> LoadedFamilies => Families.Keys.OrderBy(x => x, StringComparer.Ordinal).ToList();
