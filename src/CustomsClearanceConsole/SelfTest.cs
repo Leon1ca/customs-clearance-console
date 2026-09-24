@@ -512,9 +512,14 @@ internal static class SelfTest
                 if (grid.Height < 120) throw new InvalidOperationException("记录区域高度不足。");
                 if (!controls.OfType<Button>().Any(x => x.AccessibleName == "导出列表") || !controls.OfType<Button>().Any(x => x.AccessibleName == "开始识别") || !controls.OfType<Button>().Any(x => x.AccessibleName == "设置"))
                     throw new InvalidOperationException("缺少标题行/顶栏按钮。");
-                foreach (var pair in new (DataGridView, Control)[] { (grid, kpi), (grid, money) })
-                    if (pair.Item1.Bounds.IntersectsWith(pair.Item2.Bounds))
+                foreach (var pair in new (DataGridView Grid, Control Other)[] { (grid, kpi), (grid, money) })
+                {
+                    // Bounds are relative to different parents; compare in form space.
+                    var gridRect = form.RectangleToClient(pair.Grid.Parent!.RectangleToScreen(pair.Grid.Bounds));
+                    var otherRect = form.RectangleToClient(pair.Other.Parent!.RectangleToScreen(pair.Other.Bounds));
+                    if (gridRect.IntersectsWith(otherRect))
                         throw new InvalidOperationException("记录区与统计区发生重叠。");
+                }
                 form.Close();
             }
         }

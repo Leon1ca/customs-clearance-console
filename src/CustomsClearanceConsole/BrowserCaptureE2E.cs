@@ -44,6 +44,12 @@ internal static class BrowserCaptureE2E
             checks.Add(await RunWriteRejectedAsync(outputFolder, browser, server));
             checks.Add(await RunRepeatCaptureAsync(outputFolder, browser, server));
             checks.Add(await RunIframeAsync(outputFolder, browser, server));
+            checks.Add(await RunNoClickAsync(outputFolder, browser, server));
+            checks.Add(await RunMissingNumberAsync(outputFolder, browser, server));
+            checks.Add(await RunStaleAsync(outputFolder, browser, server));
+            checks.Add(await RunFailureRetryAsync(outputFolder, browser, server));
+            checks.Add(await RunCrossOriginFrameAsync(outputFolder, browser, server));
+            checks.Add(await RunConcurrentSessionsAsync(outputFolder, browser, server));
         }
         catch (Exception ex)
         {
@@ -75,6 +81,9 @@ internal static class BrowserCaptureE2E
             if (image.Height < 2500) details.Add($"截图高度 {image.Height} 未覆盖整页（应 >= 2500）。");
             AssertPixel(image, 40, image.Height - 4, Color.FromArgb(0x12, 0x34, 0x56), "页脚标记", details);
             AssertPixel(image, 40, 40, Color.FromArgb(0x65, 0x43, 0x21), "页首标记", details);
+            if (!ColumnContainsColor(image, Color.FromArgb(0xCC, 0x00, 0xCC))) details.Add("内部滚动容器末端未出现在截图中。");
+            if (RegionContainsColor(image, new Rectangle(image.Width - 360, image.Height - 320, 360, 320), Color.FromArgb(0x13, 0x35, 0x5E)))
+                details.Add("截图右下出现卡片按钮颜色，控件未被排除。");
             var restore = await session.EvaluateRawAsync("JSON.stringify(window.__cccLastCapture||null)", CancellationToken.None);
             if (!restore.Contains("widgetWasHidden\":true", StringComparison.OrdinalIgnoreCase)) details.Add($"页面未记录控件隐藏/恢复：{restore}");
             var hosts = await session.CountWidgetHostsAsync(CancellationToken.None);
@@ -100,6 +109,8 @@ internal static class BrowserCaptureE2E
             if (image.Height < 14000) details.Add($"拼接高度 {image.Height} 不足（应覆盖 14000 以上）。");
             AssertPixel(image, 40, 11950, Color.FromArgb(0x00, 0xAA, 0x55), "接缝上侧", details);
             AssertPixel(image, 40, 12050, Color.FromArgb(0x00, 0xAA, 0x55), "接缝下侧", details);
+            AssertPixel(image, 40, 40, Color.FromArgb(0x65, 0x43, 0x21), "页首标记", details);
+            AssertPixel(image, 40, image.Height - 4, Color.FromArgb(0x12, 0x34, 0x56), "页尾标记", details);
         }
         return new Scenario("tiling-beyond-viewport", details.Count == 0, details.Count == 0 ? ["跨 12000px 分片拼接且接缝内容完整"] : details);
     }
@@ -250,6 +261,126 @@ internal static class BrowserCaptureE2E
         return new Scenario("same-origin-frame", details.Count == 0, details.Count == 0 ? ["同源 frame 内容与嵌套滚动被完整捕获"] : details);
     }
 
+    private static async Task<Scenario> RunNoClickAsync(string outputFolder, string browser, TestServer server)
+    {
+        var folder = Path.Combine(outputFolder, "no-click");
+        Directory.CreateDirectory(folder);
+        await using var session = new BrowserValidation("310120260000000012", folder,
+            server.Url("/page?content=1200&result=310120260000000012"), browser, headless: true);
+        await session.StartAsync(CancellationToken.None);
+        var details = new List<string>();
+        if (!await session.WaitForWidgetAsync(TimeSpan.FromSeconds(30), CancellationToken.None)) details.Add("控件未注入。");
+        var identity = await session.WaitForIdentitySettledAsync(TimeSpan.FromSeconds(30), CancellationToken.None);
+        if (identity.StartsWith("waiting|", StringComparison.Ordinal) || identity.Length == 0)
+            details.Add($"结果未就绪：{identity}");
+        await Task.Delay(1500);
+        if (Directory.EnumerateFiles(folder, "*.png").Any()) details.Add("未点击网页按钮却生成了截图。");
+        if (!await session.CanCaptureAsync(CancellationToken.None)) details.Add("未点击时卡片按钮不可用。");
+        return new Scenario("no-click-no-save", details.Count == 0, details.Count == 0 ? ["未点击网页按钮不保存文件"] : details);
+    }
+
+    private static async Task<Scenario> RunMissingNumberAsync(string outputFolder, string browser, TestServer server)
+    {
+        var folder = Path.Combine(outputFolder, "missing-number");
+        Directory.CreateDirectory(folder);
+        await using var session = new BrowserValidation("310120260000000013", folder,
+            server.Url("/page?content=1200&result=310120260000000013&nonumber=1"), browser, headless: true);
+        var result = await DriveAsync(session, null, waitForSettled: true);
+        var details = new List<string>();
+        if (result.State == "saved") details.Add("结果区域没有单号时仍保存了截图。");
+        if (Directory.EnumerateFiles(folder, "*.png").Any()) details.Add("结果区域没有单号时仍生成了文件。");
+        return new Scenario("missing-number-rejected", details.Count == 0, details.Count == 0 ? ["结果区域缺少单号时不保存"] : details);
+    }
+
+    private static async Task<Scenario> RunStaleAsync(string outputFolder, string browser, TestServer server)
+    {
+        var folder = Path.Combine(outputFolder, "stale");
+        Directory.CreateDirectory(folder);
+        // pre=1 renders the matching result before the query, so the query changes nothing
+        // and identity must report stale|unchanged instead of a false success.
+        await using var session = new BrowserValidation("310120260000000014", folder,
+            server.Url("/page?content=1200&result=310120260000000014&pre=1"), browser, headless: true);
+        var result = await DriveAsync(session, null, waitForSettled: true);
+        var details = new List<string>();
+        if (result.State == "saved") details.Add("旧结果未变化时仍保存了截图。");
+        if (Directory.EnumerateFiles(folder, "*.png").Any()) details.Add("旧结果未变化时仍生成了文件。");
+        return new Scenario("stale-result-rejected", details.Count == 0, details.Count == 0 ? ["旧结果未变化时拒绝保存"] : details);
+    }
+
+    private static async Task<Scenario> RunFailureRetryAsync(string outputFolder, string browser, TestServer server)
+    {
+        var parent = Path.Combine(outputFolder, "failure-retry");
+        Directory.CreateDirectory(parent);
+        var target = Path.Combine(parent, "blocked");
+        File.WriteAllText(target, "blocking file");
+        await using var session = new BrowserValidation("310120260000000015", target,
+            server.Url("/page?content=1200&result=310120260000000015"), browser, headless: true);
+        var details = new List<string>();
+        var first = await DriveAsync(session, null, waitForSettled: true);
+        if (first.State == "saved") details.Add("目录不可写时首次截图意外成功。");
+        File.Delete(target);
+        Directory.CreateDirectory(target);
+        if (!await session.CanCaptureAsync(CancellationToken.None)) details.Add("失败后卡片按钮不可重试。");
+        var completion = new TaskCompletionSource<BrowserCaptureResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        session.CaptureCompleted += (_, value) => completion.TrySetResult(value);
+        await session.ClickCaptureButtonAsync(CancellationToken.None);
+        var second = await completion.Task.WaitAsync(TimeSpan.FromSeconds(90));
+        if (second.State != "saved") details.Add($"解除阻塞后重试失败：{second.Message}");
+        if (!Directory.EnumerateFiles(target, "*.png").Any()) details.Add("重试成功后没有生成截图。");
+        return new Scenario("failure-retry", details.Count == 0, details.Count == 0 ? ["失败状态可重试并成功保存"] : details);
+    }
+
+    private static async Task<Scenario> RunCrossOriginFrameAsync(string outputFolder, string browser, TestServer server)
+    {
+        using var other = new TestServer();
+        other.Start();
+        var folder = Path.Combine(outputFolder, "cross-origin-frame");
+        Directory.CreateDirectory(folder);
+        const string number = "310120260000000016";
+        var frameUrl = other.Url($"/frame?content=800&result={number}&query=1");
+        var url = server.Url($"/page?content=300&result={number}&frame=cross&xhost={Uri.EscapeDataString(frameUrl)}");
+        await using var session = new BrowserValidation(number, folder, url, browser, headless: true);
+        var result = await DriveAsync(session, Path.Combine(outputFolder, "capture-cross-frame.png"), waitForSettled: true);
+        var details = new List<string>();
+        if (result.State != "saved") details.Add($"跨源 frame 截图失败：{result.Message}");
+        if (result.FilePath is null || !File.Exists(result.FilePath)) details.Add("未生成跨源 frame 截图。");
+        else
+        {
+            using var image = new Bitmap(result.FilePath);
+            if (!RegionContainsColor(image, new Rectangle(0, 0, image.Width, Math.Min(500, image.Height)), Color.FromArgb(0x00, 0x88, 0xCC)))
+                details.Add("跨源 frame 可见内容未出现在截图中。");
+        }
+        return new Scenario("cross-origin-frame", details.Count == 0, details.Count == 0 ? ["跨源 frame 内容被合成进截图"] : details);
+    }
+
+    private static async Task<Scenario> RunConcurrentSessionsAsync(string outputFolder, string browser, TestServer server)
+    {
+        var root = Path.Combine(outputFolder, "concurrent");
+        var folderA = Path.Combine(root, "a");
+        var folderB = Path.Combine(root, "b");
+        Directory.CreateDirectory(folderA);
+        Directory.CreateDirectory(folderB);
+        await using var a = new BrowserValidation("310120260000000017", folderA,
+            server.Url("/page?content=900&result=310120260000000017"), browser, headless: true);
+        await using var b = new BrowserValidation("310120260000000018", folderB,
+            server.Url("/page?content=900&result=310120260000000018"), browser, headless: true);
+        var results = await Task.WhenAll(
+            DriveAsync(a, null, waitForSettled: true),
+            DriveAsync(b, null, waitForSettled: true));
+        var details = new List<string>();
+        foreach (var (session, folder, result) in new[] { (a, folderA, results[0]), (b, folderB, results[1]) })
+        {
+            if (result.State != "saved") { details.Add($"{session.DeclarationNo} 截图失败：{result.Message}"); continue; }
+            var files = Directory.EnumerateFiles(folder, "*.png").ToList();
+            if (files.Count != 1) details.Add($"{session.DeclarationNo} 生成 {files.Count} 个文件。");
+            else if (!Path.GetFileName(files[0]).StartsWith(session.DeclarationNo, StringComparison.Ordinal))
+                details.Add($"{session.DeclarationNo} 文件名 {Path.GetFileName(files[0])} 串号。");
+        }
+        if (Directory.EnumerateFiles(folderA, "*.png").Any(f => !Path.GetFileName(f).Contains("017"))) details.Add("会话 A 目录混入其它单号截图。");
+        if (Directory.EnumerateFiles(folderB, "*.png").Any(f => !Path.GetFileName(f).Contains("018"))) details.Add("会话 B 目录混入其它单号截图。");
+        return new Scenario("concurrent-session-isolation", details.Count == 0, details.Count == 0 ? ["不同会话并发截图彼此隔离"] : details);
+    }
+
     private static async Task<BrowserCaptureResult> DriveAsync(BrowserValidation session, string? evidencePath, bool waitForSettled)
     {
         var completion = new TaskCompletionSource<BrowserCaptureResult>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -290,6 +421,21 @@ internal static class BrowserCaptureE2E
             var pixel = image.GetPixel(x, y);
             if (Math.Abs(pixel.R - expected.R) <= 6 && Math.Abs(pixel.G - expected.G) <= 6 && Math.Abs(pixel.B - expected.B) <= 6) return true;
         }
+        return false;
+    }
+
+    private static bool RegionContainsColor(Bitmap image, Rectangle region, Color expected)
+    {
+        var left = Math.Max(0, region.Left);
+        var top = Math.Max(0, region.Top);
+        var right = Math.Min(image.Width, region.Right);
+        var bottom = Math.Min(image.Height, region.Bottom);
+        for (var y = top; y < bottom; y += 2)
+            for (var x = left; x < right; x += 2)
+            {
+                var pixel = image.GetPixel(x, y);
+                if (Math.Abs(pixel.R - expected.R) <= 6 && Math.Abs(pixel.G - expected.G) <= 6 && Math.Abs(pixel.B - expected.B) <= 6) return true;
+            }
         return false;
     }
 
@@ -371,11 +517,13 @@ internal static class BrowserCaptureE2E
                 .ToDictionary(x => x[0], x => Uri.UnescapeDataString(x[1]), StringComparer.OrdinalIgnoreCase);
         }
 
-        private static string FormHtml(string decl, string result, bool autoQuery, string error)
+        private static string FormHtml(string decl, string result, bool autoQuery, string error, bool pre, bool nonumber)
         {
-            var resultRow = error.Length > 0
-                ? ""
-                : $"<tr><td>报关单号 {result} 申报日期 2026-09-24 放行日期 2026-09-24 海关状态 已放行</td></tr>";
+            var rowText = nonumber
+                ? "查询结果已返回 海关状态 已放行 申报日期 2026-09-24 放行日期 2026-09-24"
+                : $"报关单号 {result} 申报日期 2026-09-24 放行日期 2026-09-24 海关状态 已放行";
+            var resultRow = error.Length > 0 ? "" : $"<tr><td>{rowText}</td></tr>";
+            var initial = pre ? resultRow : "";
             var errorScript = autoQuery
                 ? $"setTimeout(function () {{ document.getElementById('query').click(); document.getElementById('result').innerHTML = {JsonSerializer.Serialize(resultRow)}; }}, 400);"
                 : "";
@@ -384,8 +532,8 @@ internal static class BrowserCaptureE2E
               <form onsubmit="return false"><label>报关单号 <input data-customs-declaration value="{{decl}}"></label>
               <button type="button" id="query">查询</button></form>
               <div id="error"></div><div id="loading" class="loading" hidden>加载中</div>
-              <div class="scroller"><div class="inner"></div></div>
-              <table><tbody id="result"></tbody></table>
+              <div class="scroller"><div class="inner"><div id="scrollband"></div></div></div>
+              <table><tbody id="result">{{initial}}</tbody></table>
               <script>
                 document.querySelector('input').value = {{JsonSerializer.Serialize(decl)}};
                 {{errorScript}}
@@ -403,34 +551,43 @@ internal static class BrowserCaptureE2E
             var autoQuery = !parameters.TryGetValue("query", out var q) || q != "0";
             var error = parameters.TryGetValue("error", out var e) ? e : "";
             var mid = parameters.TryGetValue("mid", out var m) && int.TryParse(m, out var midY) ? midY : 0;
-            var frame = parameters.TryGetValue("frame", out var f) && f == "1";
+            var frame = parameters.TryGetValue("frame", out var f) ? f : "";
+            var xhost = parameters.TryGetValue("xhost", out var xh) ? xh : "";
+            var pre = parameters.TryGetValue("pre", out var pv) && pv == "1";
+            var nonumber = parameters.TryGetValue("nonumber", out var nv) && nv == "1";
 
             if (path.StartsWith("/frame", StringComparison.OrdinalIgnoreCase))
             {
                 return $$"""
                 <!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>frame</title>
-                <style>html,body{margin:0;padding:0;background:#fff}.scroller{height:300px;overflow-y:auto;border:1px solid #ccc}
+                <style>html,body{margin:0;padding:0;background:#fff}#ftop{height:80px;background:#0088CC}
+                .scroller{height:300px;overflow-y:auto;border:1px solid #ccc}
                 .inner{height:1200px;background:linear-gradient(#eef3f8,#dde6f0)}table{width:100%;border-collapse:collapse}
                 td{padding:6px;font:13px system-ui;color:#0f1b2d}#fband{height:120px;background:#7700AA}</style></head><body>
-                {{FormHtml(decl, result, autoQuery, error)}}
+                <div id="ftop"></div>
+                {{FormHtml(decl, result, autoQuery, error, pre, nonumber)}}
                 <div id="fband"></div>
                 </body></html>
                 """;
             }
 
             var midDiv = mid > 0 ? $"<div id=\"mid\" style=\"position:absolute;left:0;top:{mid}px;width:100%;height:200px;background:#00AA55\"></div>" : "";
-            var body = frame
+            var isFrame = frame is "1" or "cross";
+            var frameSrc = frame == "cross" && xhost.Length > 0
+                ? xhost
+                : $"/frame?content=800&result={result}&query={(autoQuery ? "1" : "0")}";
+            var body = isFrame
                 ? $"""
                   <div id="top"></div>
-                  <iframe id="inner" src="/frame?content=800&result={result}&query={(autoQuery ? "1" : "0")}" style="width:100%;height:400px;border:0"></iframe>
+                  <iframe id="inner" src="{frameSrc}" style="width:100%;height:400px;border:0"></iframe>
                   <div id="bottom"></div>
                   """
                 : $"""
                   <div id="top"></div>
-                  <div id="content">{FormHtml(decl, result, autoQuery, error)}</div>
+                  <div id="content">{FormHtml(decl, result, autoQuery, error, pre, nonumber)}</div>
                   <div id="bottom"></div>
                   """;
-            var contentRule = frame ? "height:auto;" : $"height:{content}px;";
+            var contentRule = isFrame ? "height:auto;" : $"height:{content}px;";
             return $$"""
             <!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>受控核验页</title>
             <style>
@@ -439,6 +596,7 @@ internal static class BrowserCaptureE2E
               #content{ {{contentRule}}box-sizing:border-box;padding:16px}
               .scroller{height:400px;overflow-y:auto;border:1px solid #cccccc;margin-top:12px}
               .scroller .inner{height:1800px;background:linear-gradient(#eef3f8,#dde6f0)}
+              #scrollband{height:120px;background:#CC00CC;margin-top:1680px}
               #bottom{height:200px;background:#123456}
               table{width:100%;border-collapse:collapse}td{padding:8px;font:14px system-ui;color:#0f1b2d}
               iframe{display:block}
