@@ -288,4 +288,4 @@
 | 运行 | 提交 | 结论 |
 |---|---|---|
 | [35967517077](https://github.com/Leon1ca/customs-clearance-console/actions/runs/35967517077) | `13c1641` | 门禁 `success`，核心与构建/原生 UI/浏览器 E2E/导出/打包 `success`；浏览器 28/28，两个 OOPIF PNG 首尾与内部尾标齐备 |
-| 本轮 | 见最终报告 | 上述两处 P1 与测试缺口修复，待同一最终 SHA 云端全绿验证 |
+| [35968581532](https://github.com/Leon1ca/customs-clearance-console/actions/runs/35968581532) | `a2ddbb2` | 门禁 `success`；`core`、`build`、`uicontract`、`envreport`（DPI/字体）、`export`、`snapshots`、`browser`、`package`、`zipverify`、`smoke`（根启动器）全部原始 outcome `success`；浏览器 **30/30**。产物：`ui-v2-validation-evidence`（3,005,612 B，含 `capture-oopif-frame.png` 1256×1854、`capture-oopif-preexpanded.png` 1256×2000、`child-session-navigation/310120260000000025.png` 1256×1854、`oopif-viewport-read-failure/310120260000000029.png` 1256×1854，四图顶部蓝标/内部洋红尾标/结果行/底部紫标齐备）、`ui-v2-portable-package`（219,468,714 B）、`core-regression-log`。日志确认预展开场景走“前置可视 1600/∞”的免增长分支、注入 3 次视口读取失败后拒绝并在同一会话恢复保存 |
