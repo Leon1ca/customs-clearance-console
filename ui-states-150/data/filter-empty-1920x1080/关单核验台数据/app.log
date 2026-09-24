@@ -1,0 +1,18 @@
+﻿[2026-09-24 19:57:04] [UI-PHASE +7.02s] filter-empty-1920x1080 seeded
+[2026-09-24 19:57:04] [UI-PHASE +7.03s]   form.Show begin (1920x1080)
+[2026-09-24 19:57:04] [UI-PHASE +7.08s]   form.Show returned
+[2026-09-24 19:57:05] [UI-PHASE +7.16s]   form layout set · DoEvents begin
+[2026-09-24 19:57:05] [UI-PHASE +7.20s]   form DoEvents returned · client={Width=2880, Height=1620}
+[2026-09-24 19:57:05] [UI-PHASE +7.20s] filter-empty-1920x1080 form shown
+[2026-09-24 19:57:05] [UI-PHASE +7.22s] filter-empty-1920x1080 layout+DoEvents done · starting capture
+[2026-09-24 19:57:05] [UI-PHASE +7.22s]   geometry assert begin · client={Width=2880, Height=1620}
+[2026-09-24 19:57:05] [UI-PHASE +7.22s]   geometry assert passed
+[2026-09-24 19:57:05] [UI-PHASE +7.22s]   RenderForm PerformLayout begin
+[2026-09-24 19:57:05] [UI-PHASE +7.22s]   RenderForm DoEvents begin
+[2026-09-24 19:57:05] [UI-PHASE +7.23s]   RenderForm DrawToBitmap begin · {Width=2880, Height=1620}
+[2026-09-24 19:57:05] [UI-PHASE +7.26s]   RenderForm DrawToBitmap returned
+[2026-09-24 19:57:05] [UI-PHASE +7.26s]   save PNG begin · D:\a\customs-clearance-console\customs-clearance-console\artifacts\validation\ui-states-150\filter-empty-1920x1080.png
+[2026-09-24 19:57:05] [UI-PHASE +7.33s]   save PNG returned
+[2026-09-24 19:57:05] [UI-PHASE +7.33s]   screen info · bounds={X=0,Y=0,Width=1920,Height=1080} working={X=0,Y=0,Width=1920,Height=1008} desktop={X=0,Y=0,Width=1920,Height=1080} form={X=0,Y=0,Width=1946,Height=1106}
+[2026-09-24 19:57:05] [UI-PHASE +7.33s]   CopyFromScreen skipped · window not fully on screen
+[2026-09-24 19:57:05] [UI-PHASE +7.33s] filter-empty-1920x1080 done · realScreen=False

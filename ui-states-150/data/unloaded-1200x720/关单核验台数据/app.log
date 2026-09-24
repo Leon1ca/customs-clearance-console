@@ -1,0 +1,20 @@
+﻿[2026-09-24 19:56:58] [UI-PHASE +0.18s] unloaded-1200x720 seeded
+[2026-09-24 19:56:58] [UI-PHASE +0.33s]   form.Show begin (1200x720)
+[2026-09-24 19:56:58] [UI-PHASE +0.43s]   form.Show returned
+[2026-09-24 19:56:58] [UI-PHASE +0.47s]   form layout set · DoEvents begin
+[2026-09-24 19:56:59] [UI-PHASE +1.53s]   form DoEvents returned · client={Width=1800, Height=1080}
+[2026-09-24 19:56:59] [UI-PHASE +1.53s] unloaded-1200x720 form shown
+[2026-09-24 19:56:59] [UI-PHASE +1.53s] unloaded-1200x720 layout+DoEvents done · starting capture
+[2026-09-24 19:56:59] [UI-PHASE +1.53s]   geometry assert begin · client={Width=1800, Height=1080}
+[2026-09-24 19:56:59] [UI-PHASE +1.54s]   geometry assert passed
+[2026-09-24 19:56:59] [UI-PHASE +1.54s]   RenderForm PerformLayout begin
+[2026-09-24 19:56:59] [UI-PHASE +1.54s]   RenderForm DoEvents begin
+[2026-09-24 19:56:59] [UI-PHASE +1.54s]   RenderForm DrawToBitmap begin · {Width=1800, Height=1080}
+[2026-09-24 19:56:59] [UI-PHASE +1.87s]   RenderForm DrawToBitmap returned
+[2026-09-24 19:56:59] [UI-PHASE +1.87s]   save PNG begin · D:\a\customs-clearance-console\customs-clearance-console\artifacts\validation\ui-states-150\unloaded-1200x720.png
+[2026-09-24 19:56:59] [UI-PHASE +1.90s]   save PNG returned
+[2026-09-24 19:56:59] [UI-PHASE +1.90s]   screen info · bounds={X=0,Y=0,Width=1920,Height=1080} working={X=0,Y=0,Width=1920,Height=1008} desktop={X=0,Y=0,Width=1920,Height=1080} form={X=0,Y=0,Width=1800,Height=1080}
+[2026-09-24 19:56:59] [UI-PHASE +1.91s]   CopyFromScreen show/DoEvents begin
+[2026-09-24 19:56:59] [UI-PHASE +1.91s]   CopyFromScreen begin
+[2026-09-24 19:56:59] [UI-PHASE +1.99s]   CopyFromScreen returned
+[2026-09-24 19:56:59] [UI-PHASE +2.00s] unloaded-1200x720 done · realScreen=True

@@ -1,0 +1,21 @@
+﻿[2026-09-24 19:57:00] [UI-PHASE +2.41s] complete-1200x720 seeded
+[2026-09-24 19:57:00] [UI-PHASE +2.44s]   form.Show begin (1200x720)
+[2026-09-24 19:57:00] [UI-PHASE +2.49s]   form.Show returned
+[2026-09-24 19:57:00] [UI-PHASE +2.52s]   form layout set · DoEvents begin
+[2026-09-24 19:57:00] [UI-PHASE +2.94s]   form DoEvents returned · client={Width=1800, Height=1080}
+[2026-09-24 19:57:00] [UI-PHASE +2.94s] complete-1200x720 form shown
+[2026-09-24 19:57:00] [UI-PHASE +2.94s] complete-1200x720 layout+DoEvents done · starting capture
+[2026-09-24 19:57:00] [UI-PHASE +2.94s]   geometry assert begin · client={Width=1800, Height=1080}
+[2026-09-24 19:57:00] [UI-PHASE +2.94s]   geometry assert passed
+[2026-09-24 19:57:00] [UI-PHASE +2.94s]   RenderForm PerformLayout begin
+[2026-09-24 19:57:00] [UI-PHASE +2.94s]   RenderForm DoEvents begin
+[2026-09-24 19:57:00] [UI-PHASE +2.95s]   RenderForm DrawToBitmap begin · {Width=1800, Height=1080}
+[2026-09-24 19:57:00] [UI-PHASE +3.00s]   RenderForm DrawToBitmap returned
+[2026-09-24 19:57:00] [UI-PHASE +3.00s]   save PNG begin · D:\a\customs-clearance-console\customs-clearance-console\artifacts\validation\ui-states-150\complete-1200x720.png
+[2026-09-24 19:57:00] [UI-PHASE +3.03s]   save PNG returned
+[2026-09-24 19:57:00] [UI-PHASE +3.03s]   screen info · bounds={X=0,Y=0,Width=1920,Height=1080} working={X=0,Y=0,Width=1920,Height=1008} desktop={X=0,Y=0,Width=1920,Height=1080} form={X=0,Y=0,Width=1800,Height=1080}
+[2026-09-24 19:57:00] [UI-PHASE +3.03s]   CopyFromScreen show/DoEvents begin
+[2026-09-24 19:57:00] [UI-PHASE +3.03s]   CopyFromScreen begin
+[2026-09-24 19:57:00] [UI-PHASE +3.11s]   CopyFromScreen returned
+[2026-09-24 19:57:01] [UI-PHASE +3.18s]   seam check self-proof · leaked smoothing detected=True (194,738) seam=ffc0b8b8 left=fffff6f5 right=fffff6f5
+[2026-09-24 19:57:01] [UI-PHASE +3.25s] complete-1200x720 done · realScreen=True

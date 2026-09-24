@@ -1,0 +1,417 @@
+[UI-PHASE +0.00s] CaptureAllStates start · folder=D:\a\customs-clearance-console\customs-clearance-console\artifacts\validation\ui-states-150 · appLog=C:\Users\runneradmin\AppData\Local\关单核验台\app.log
+[UI-PHASE +0.02s] DPI probe begin
+[UI-PHASE +0.10s] DPI probe done · formDpi=144 windowDpi=144 systemDpi=144
+[UI-PHASE +0.11s] desktop size ensure begin
+[UI-PHASE +0.11s]   EnumDisplaySettings done · 13 modes · found=False
+[UI-PHASE +0.11s] desktop size ensure done · configured=False · 没有 >= 2880x1620 的显示模式（当前 1920x1080）
+[UI-PHASE +0.11s] unloaded-1200x720 begin
+[UI-PHASE +0.18s] unloaded-1200x720 seeded
+[UI-PHASE +0.33s]   form.Show begin (1200x720)
+[UI-PHASE +0.43s]   form.Show returned
+[UI-PHASE +0.47s]   form layout set · DoEvents begin
+[UI-PHASE +1.53s]   form DoEvents returned · client={Width=1800, Height=1080}
+[UI-PHASE +1.53s] unloaded-1200x720 form shown
+[UI-PHASE +1.53s] unloaded-1200x720 layout+DoEvents done · starting capture
+[UI-PHASE +1.53s]   geometry assert begin · client={Width=1800, Height=1080}
+[UI-PHASE +1.54s]   geometry assert passed
+[UI-PHASE +1.54s]   RenderForm PerformLayout begin
+[UI-PHASE +1.54s]   RenderForm DoEvents begin
+[UI-PHASE +1.54s]   RenderForm DrawToBitmap begin · {Width=1800, Height=1080}
+[UI-PHASE +1.87s]   RenderForm DrawToBitmap returned
+[UI-PHASE +1.87s]   save PNG begin · D:\a\customs-clearance-console\customs-clearance-console\artifacts\validation\ui-states-150\unloaded-1200x720.png
+[UI-PHASE +1.90s]   save PNG returned
+[UI-PHASE +1.90s]   screen info · bounds={X=0,Y=0,Width=1920,Height=1080} working={X=0,Y=0,Width=1920,Height=1008} desktop={X=0,Y=0,Width=1920,Height=1080} form={X=0,Y=0,Width=1800,Height=1080}
+[UI-PHASE +1.91s]   CopyFromScreen show/DoEvents begin
+[UI-PHASE +1.91s]   CopyFromScreen begin
+[UI-PHASE +1.99s]   CopyFromScreen returned
+[UI-PHASE +2.00s] unloaded-1200x720 done · realScreen=True
+[UI-PHASE +2.02s] ready-1200x720 begin
+[UI-PHASE +2.02s] ready-1200x720 seeded
+[UI-PHASE +2.03s]   form.Show begin (1200x720)
+[UI-PHASE +2.07s]   form.Show returned
+[UI-PHASE +2.10s]   form layout set · DoEvents begin
+[UI-PHASE +2.23s]   form DoEvents returned · client={Width=1800, Height=1080}
+[UI-PHASE +2.23s] ready-1200x720 form shown
+[UI-PHASE +2.23s] ready-1200x720 layout+DoEvents done · starting capture
+[UI-PHASE +2.23s]   geometry assert begin · client={Width=1800, Height=1080}
+[UI-PHASE +2.23s]   geometry assert passed
+[UI-PHASE +2.23s]   RenderForm PerformLayout begin
+[UI-PHASE +2.23s]   RenderForm DoEvents begin
+[UI-PHASE +2.23s]   RenderForm DrawToBitmap begin · {Width=1800, Height=1080}
+[UI-PHASE +2.26s]   RenderForm DrawToBitmap returned
+[UI-PHASE +2.26s]   save PNG begin · D:\a\customs-clearance-console\customs-clearance-console\artifacts\validation\ui-states-150\ready-1200x720.png
+[UI-PHASE +2.29s]   save PNG returned
+[UI-PHASE +2.30s]   screen info · bounds={X=0,Y=0,Width=1920,Height=1080} working={X=0,Y=0,Width=1920,Height=1008} desktop={X=0,Y=0,Width=1920,Height=1080} form={X=0,Y=0,Width=1800,Height=1080}
+[UI-PHASE +2.30s]   CopyFromScreen show/DoEvents begin
+[UI-PHASE +2.30s]   CopyFromScreen begin
+[UI-PHASE +2.37s]   CopyFromScreen returned
+[UI-PHASE +2.37s] ready-1200x720 done · realScreen=True
+[UI-PHASE +2.38s] complete-1200x720 begin
+[UI-PHASE +2.41s] complete-1200x720 seeded
+[UI-PHASE +2.44s]   form.Show begin (1200x720)
+[UI-PHASE +2.49s]   form.Show returned
+[UI-PHASE +2.52s]   form layout set · DoEvents begin
+[UI-PHASE +2.94s]   form DoEvents returned · client={Width=1800, Height=1080}
+[UI-PHASE +2.94s] complete-1200x720 form shown
+[UI-PHASE +2.94s] complete-1200x720 layout+DoEvents done · starting capture
+[UI-PHASE +2.94s]   geometry assert begin · client={Width=1800, Height=1080}
+[UI-PHASE +2.94s]   geometry assert passed
+[UI-PHASE +2.94s]   RenderForm PerformLayout begin
+[UI-PHASE +2.94s]   RenderForm DoEvents begin
+[UI-PHASE +2.95s]   RenderForm DrawToBitmap begin · {Width=1800, Height=1080}
+[UI-PHASE +3.00s]   RenderForm DrawToBitmap returned
+[UI-PHASE +3.00s]   save PNG begin · D:\a\customs-clearance-console\customs-clearance-console\artifacts\validation\ui-states-150\complete-1200x720.png
+[UI-PHASE +3.03s]   save PNG returned
+[UI-PHASE +3.03s]   screen info · bounds={X=0,Y=0,Width=1920,Height=1080} working={X=0,Y=0,Width=1920,Height=1008} desktop={X=0,Y=0,Width=1920,Height=1080} form={X=0,Y=0,Width=1800,Height=1080}
+[UI-PHASE +3.03s]   CopyFromScreen show/DoEvents begin
+[UI-PHASE +3.03s]   CopyFromScreen begin
+[UI-PHASE +3.11s]   CopyFromScreen returned
+[UI-PHASE +3.18s]   seam check self-proof · leaked smoothing detected=True (194,738) seam=ffc0b8b8 left=fffff6f5 right=fffff6f5
+[UI-PHASE +3.25s] complete-1200x720 done · realScreen=True
+[UI-PHASE +3.26s] filter-empty-1200x720 begin
+[UI-PHASE +3.27s] filter-empty-1200x720 seeded
+[UI-PHASE +3.28s]   form.Show begin (1200x720)
+[UI-PHASE +3.32s]   form.Show returned
+[UI-PHASE +3.36s]   form layout set · DoEvents begin
+[UI-PHASE +3.40s]   form DoEvents returned · client={Width=1800, Height=1080}
+[UI-PHASE +3.40s] filter-empty-1200x720 form shown
+[UI-PHASE +3.53s] filter-empty-1200x720 layout+DoEvents done · starting capture
+[UI-PHASE +3.53s]   geometry assert begin · client={Width=1800, Height=1080}
+[UI-PHASE +3.53s]   geometry assert passed
+[UI-PHASE +3.53s]   RenderForm PerformLayout begin
+[UI-PHASE +3.53s]   RenderForm DoEvents begin
+[UI-PHASE +3.53s]   RenderForm DrawToBitmap begin · {Width=1800, Height=1080}
+[UI-PHASE +3.56s]   RenderForm DrawToBitmap returned
+[UI-PHASE +3.57s]   save PNG begin · D:\a\customs-clearance-console\customs-clearance-console\artifacts\validation\ui-states-150\filter-empty-1200x720.png
+[UI-PHASE +3.60s]   save PNG returned
+[UI-PHASE +3.60s]   screen info · bounds={X=0,Y=0,Width=1920,Height=1080} working={X=0,Y=0,Width=1920,Height=1008} desktop={X=0,Y=0,Width=1920,Height=1080} form={X=0,Y=0,Width=1800,Height=1080}
+[UI-PHASE +3.60s]   CopyFromScreen show/DoEvents begin
+[UI-PHASE +3.61s]   CopyFromScreen begin
+[UI-PHASE +3.68s]   CopyFromScreen returned
+[UI-PHASE +3.69s] filter-empty-1200x720 done · realScreen=True
+[UI-PHASE +3.70s] unloaded-1280x800 begin
+[UI-PHASE +3.70s] unloaded-1280x800 seeded
+[UI-PHASE +3.72s]   form.Show begin (1280x800)
+[UI-PHASE +3.76s]   form.Show returned
+[UI-PHASE +3.81s]   form layout set · DoEvents begin
+[UI-PHASE +3.85s]   form DoEvents returned · client={Width=1920, Height=1200}
+[UI-PHASE +3.85s] unloaded-1280x800 form shown
+[UI-PHASE +3.85s] unloaded-1280x800 layout+DoEvents done · starting capture
+[UI-PHASE +3.85s]   geometry assert begin · client={Width=1920, Height=1200}
+[UI-PHASE +3.85s]   geometry assert passed
+[UI-PHASE +3.85s]   RenderForm PerformLayout begin
+[UI-PHASE +3.85s]   RenderForm DoEvents begin
+[UI-PHASE +3.85s]   RenderForm DrawToBitmap begin · {Width=1920, Height=1200}
+[UI-PHASE +3.90s]   RenderForm DrawToBitmap returned
+[UI-PHASE +3.90s]   save PNG begin · D:\a\customs-clearance-console\customs-clearance-console\artifacts\validation\ui-states-150\unloaded-1280x800.png
+[UI-PHASE +3.94s]   save PNG returned
+[UI-PHASE +3.94s]   screen info · bounds={X=0,Y=0,Width=1920,Height=1080} working={X=0,Y=0,Width=1920,Height=1008} desktop={X=0,Y=0,Width=1920,Height=1080} form={X=0,Y=0,Width=1920,Height=1106}
+[UI-PHASE +3.94s]   CopyFromScreen skipped · window not fully on screen
+[UI-PHASE +3.94s] unloaded-1280x800 done · realScreen=False
+[UI-PHASE +3.96s] ready-1280x800 begin
+[UI-PHASE +3.97s] ready-1280x800 seeded
+[UI-PHASE +3.98s]   form.Show begin (1280x800)
+[UI-PHASE +4.02s]   form.Show returned
+[UI-PHASE +4.07s]   form layout set · DoEvents begin
+[UI-PHASE +4.10s]   form DoEvents returned · client={Width=1920, Height=1200}
+[UI-PHASE +4.10s] ready-1280x800 form shown
+[UI-PHASE +4.10s] ready-1280x800 layout+DoEvents done · starting capture
+[UI-PHASE +4.10s]   geometry assert begin · client={Width=1920, Height=1200}
+[UI-PHASE +4.10s]   geometry assert passed
+[UI-PHASE +4.10s]   RenderForm PerformLayout begin
+[UI-PHASE +4.10s]   RenderForm DoEvents begin
+[UI-PHASE +4.10s]   RenderForm DrawToBitmap begin · {Width=1920, Height=1200}
+[UI-PHASE +4.14s]   RenderForm DrawToBitmap returned
+[UI-PHASE +4.14s]   save PNG begin · D:\a\customs-clearance-console\customs-clearance-console\artifacts\validation\ui-states-150\ready-1280x800.png
+[UI-PHASE +4.17s]   save PNG returned
+[UI-PHASE +4.17s]   screen info · bounds={X=0,Y=0,Width=1920,Height=1080} working={X=0,Y=0,Width=1920,Height=1008} desktop={X=0,Y=0,Width=1920,Height=1080} form={X=0,Y=0,Width=1920,Height=1106}
+[UI-PHASE +4.18s]   CopyFromScreen skipped · window not fully on screen
+[UI-PHASE +4.18s] ready-1280x800 done · realScreen=False
+[UI-PHASE +4.20s] complete-1280x800 begin
+[UI-PHASE +4.21s] complete-1280x800 seeded
+[UI-PHASE +4.21s]   form.Show begin (1280x800)
+[UI-PHASE +4.25s]   form.Show returned
+[UI-PHASE +4.32s]   form layout set · DoEvents begin
+[UI-PHASE +4.44s]   form DoEvents returned · client={Width=1920, Height=1200}
+[UI-PHASE +4.44s] complete-1280x800 form shown
+[UI-PHASE +4.44s] complete-1280x800 layout+DoEvents done · starting capture
+[UI-PHASE +4.44s]   geometry assert begin · client={Width=1920, Height=1200}
+[UI-PHASE +4.45s]   geometry assert passed
+[UI-PHASE +4.45s]   RenderForm PerformLayout begin
+[UI-PHASE +4.45s]   RenderForm DoEvents begin
+[UI-PHASE +4.45s]   RenderForm DrawToBitmap begin · {Width=1920, Height=1200}
+[UI-PHASE +4.49s]   RenderForm DrawToBitmap returned
+[UI-PHASE +4.49s]   save PNG begin · D:\a\customs-clearance-console\customs-clearance-console\artifacts\validation\ui-states-150\complete-1280x800.png
+[UI-PHASE +4.53s]   save PNG returned
+[UI-PHASE +4.53s]   screen info · bounds={X=0,Y=0,Width=1920,Height=1080} working={X=0,Y=0,Width=1920,Height=1008} desktop={X=0,Y=0,Width=1920,Height=1080} form={X=0,Y=0,Width=1920,Height=1106}
+[UI-PHASE +4.53s]   CopyFromScreen skipped · window not fully on screen
+[UI-PHASE +4.53s] complete-1280x800 done · realScreen=False
+[UI-PHASE +4.55s] filter-empty-1280x800 begin
+[UI-PHASE +4.56s] filter-empty-1280x800 seeded
+[UI-PHASE +4.57s]   form.Show begin (1280x800)
+[UI-PHASE +4.61s]   form.Show returned
+[UI-PHASE +4.67s]   form layout set · DoEvents begin
+[UI-PHASE +4.71s]   form DoEvents returned · client={Width=1920, Height=1200}
+[UI-PHASE +4.71s] filter-empty-1280x800 form shown
+[UI-PHASE +4.74s] filter-empty-1280x800 layout+DoEvents done · starting capture
+[UI-PHASE +4.74s]   geometry assert begin · client={Width=1920, Height=1200}
+[UI-PHASE +4.74s]   geometry assert passed
+[UI-PHASE +4.74s]   RenderForm PerformLayout begin
+[UI-PHASE +4.74s]   RenderForm DoEvents begin
+[UI-PHASE +4.74s]   RenderForm DrawToBitmap begin · {Width=1920, Height=1200}
+[UI-PHASE +4.77s]   RenderForm DrawToBitmap returned
+[UI-PHASE +4.77s]   save PNG begin · D:\a\customs-clearance-console\customs-clearance-console\artifacts\validation\ui-states-150\filter-empty-1280x800.png
+[UI-PHASE +4.82s]   save PNG returned
+[UI-PHASE +4.82s]   screen info · bounds={X=0,Y=0,Width=1920,Height=1080} working={X=0,Y=0,Width=1920,Height=1008} desktop={X=0,Y=0,Width=1920,Height=1080} form={X=0,Y=0,Width=1920,Height=1106}
+[UI-PHASE +4.82s]   CopyFromScreen skipped · window not fully on screen
+[UI-PHASE +4.82s] filter-empty-1280x800 done · realScreen=False
+[UI-PHASE +4.84s] unloaded-1440x900 begin
+[UI-PHASE +4.84s] unloaded-1440x900 seeded
+[UI-PHASE +4.85s]   form.Show begin (1440x900)
+[UI-PHASE +4.89s]   form.Show returned
+[UI-PHASE +4.97s]   form layout set · DoEvents begin
+[UI-PHASE +5.00s]   form DoEvents returned · client={Width=2160, Height=1350}
+[UI-PHASE +5.00s] unloaded-1440x900 form shown
+[UI-PHASE +5.00s] unloaded-1440x900 layout+DoEvents done · starting capture
+[UI-PHASE +5.00s]   geometry assert begin · client={Width=2160, Height=1350}
+[UI-PHASE +5.00s]   geometry assert passed
+[UI-PHASE +5.00s]   RenderForm PerformLayout begin
+[UI-PHASE +5.00s]   RenderForm DoEvents begin
+[UI-PHASE +5.00s]   RenderForm DrawToBitmap begin · {Width=2160, Height=1350}
+[UI-PHASE +5.04s]   RenderForm DrawToBitmap returned
+[UI-PHASE +5.04s]   save PNG begin · D:\a\customs-clearance-console\customs-clearance-console\artifacts\validation\ui-states-150\unloaded-1440x900.png
+[UI-PHASE +5.09s]   save PNG returned
+[UI-PHASE +5.09s]   screen info · bounds={X=0,Y=0,Width=1920,Height=1080} working={X=0,Y=0,Width=1920,Height=1008} desktop={X=0,Y=0,Width=1920,Height=1080} form={X=0,Y=0,Width=1946,Height=1106}
+[UI-PHASE +5.09s]   CopyFromScreen skipped · window not fully on screen
+[UI-PHASE +5.09s] unloaded-1440x900 done · realScreen=False
+[UI-PHASE +5.11s] ready-1440x900 begin
+[UI-PHASE +5.11s] ready-1440x900 seeded
+[UI-PHASE +5.12s]   form.Show begin (1440x900)
+[UI-PHASE +5.17s]   form.Show returned
+[UI-PHASE +5.25s]   form layout set · DoEvents begin
+[UI-PHASE +5.29s]   form DoEvents returned · client={Width=2160, Height=1350}
+[UI-PHASE +5.29s] ready-1440x900 form shown
+[UI-PHASE +5.29s] ready-1440x900 layout+DoEvents done · starting capture
+[UI-PHASE +5.29s]   geometry assert begin · client={Width=2160, Height=1350}
+[UI-PHASE +5.29s]   geometry assert passed
+[UI-PHASE +5.29s]   RenderForm PerformLayout begin
+[UI-PHASE +5.29s]   RenderForm DoEvents begin
+[UI-PHASE +5.29s]   RenderForm DrawToBitmap begin · {Width=2160, Height=1350}
+[UI-PHASE +5.33s]   RenderForm DrawToBitmap returned
+[UI-PHASE +5.33s]   save PNG begin · D:\a\customs-clearance-console\customs-clearance-console\artifacts\validation\ui-states-150\ready-1440x900.png
+[UI-PHASE +5.38s]   save PNG returned
+[UI-PHASE +5.38s]   screen info · bounds={X=0,Y=0,Width=1920,Height=1080} working={X=0,Y=0,Width=1920,Height=1008} desktop={X=0,Y=0,Width=1920,Height=1080} form={X=0,Y=0,Width=1946,Height=1106}
+[UI-PHASE +5.38s]   CopyFromScreen skipped · window not fully on screen
+[UI-PHASE +5.38s] ready-1440x900 done · realScreen=False
+[UI-PHASE +5.40s] complete-1440x900 begin
+[UI-PHASE +5.41s] complete-1440x900 seeded
+[UI-PHASE +5.42s]   form.Show begin (1440x900)
+[UI-PHASE +5.46s]   form.Show returned
+[UI-PHASE +5.54s]   form layout set · DoEvents begin
+[UI-PHASE +5.58s]   form DoEvents returned · client={Width=2160, Height=1350}
+[UI-PHASE +5.58s] complete-1440x900 form shown
+[UI-PHASE +5.58s] complete-1440x900 layout+DoEvents done · starting capture
+[UI-PHASE +5.58s]   geometry assert begin · client={Width=2160, Height=1350}
+[UI-PHASE +5.58s]   geometry assert passed
+[UI-PHASE +5.58s]   RenderForm PerformLayout begin
+[UI-PHASE +5.58s]   RenderForm DoEvents begin
+[UI-PHASE +5.59s]   RenderForm DrawToBitmap begin · {Width=2160, Height=1350}
+[UI-PHASE +5.65s]   RenderForm DrawToBitmap returned
+[UI-PHASE +5.65s]   save PNG begin · D:\a\customs-clearance-console\customs-clearance-console\artifacts\validation\ui-states-150\complete-1440x900.png
+[UI-PHASE +5.70s]   save PNG returned
+[UI-PHASE +5.70s]   screen info · bounds={X=0,Y=0,Width=1920,Height=1080} working={X=0,Y=0,Width=1920,Height=1008} desktop={X=0,Y=0,Width=1920,Height=1080} form={X=0,Y=0,Width=1946,Height=1106}
+[UI-PHASE +5.70s]   CopyFromScreen skipped · window not fully on screen
+[UI-PHASE +5.70s] complete-1440x900 done · realScreen=False
+[UI-PHASE +5.72s] filter-empty-1440x900 begin
+[UI-PHASE +5.73s] filter-empty-1440x900 seeded
+[UI-PHASE +5.74s]   form.Show begin (1440x900)
+[UI-PHASE +5.78s]   form.Show returned
+[UI-PHASE +5.86s]   form layout set · DoEvents begin
+[UI-PHASE +5.89s]   form DoEvents returned · client={Width=2160, Height=1350}
+[UI-PHASE +5.89s] filter-empty-1440x900 form shown
+[UI-PHASE +5.91s] filter-empty-1440x900 layout+DoEvents done · starting capture
+[UI-PHASE +5.91s]   geometry assert begin · client={Width=2160, Height=1350}
+[UI-PHASE +5.91s]   geometry assert passed
+[UI-PHASE +5.91s]   RenderForm PerformLayout begin
+[UI-PHASE +5.91s]   RenderForm DoEvents begin
+[UI-PHASE +5.91s]   RenderForm DrawToBitmap begin · {Width=2160, Height=1350}
+[UI-PHASE +5.95s]   RenderForm DrawToBitmap returned
+[UI-PHASE +5.95s]   save PNG begin · D:\a\customs-clearance-console\customs-clearance-console\artifacts\validation\ui-states-150\filter-empty-1440x900.png
+[UI-PHASE +5.99s]   save PNG returned
+[UI-PHASE +5.99s]   screen info · bounds={X=0,Y=0,Width=1920,Height=1080} working={X=0,Y=0,Width=1920,Height=1008} desktop={X=0,Y=0,Width=1920,Height=1080} form={X=0,Y=0,Width=1946,Height=1106}
+[UI-PHASE +5.99s]   CopyFromScreen skipped · window not fully on screen
+[UI-PHASE +5.99s] filter-empty-1440x900 done · realScreen=False
+[UI-PHASE +6.01s] unloaded-1920x1080 begin
+[UI-PHASE +6.02s] unloaded-1920x1080 seeded
+[UI-PHASE +6.02s]   form.Show begin (1920x1080)
+[UI-PHASE +6.06s]   form.Show returned
+[UI-PHASE +6.14s]   form layout set · DoEvents begin
+[UI-PHASE +6.18s]   form DoEvents returned · client={Width=2880, Height=1620}
+[UI-PHASE +6.18s] unloaded-1920x1080 form shown
+[UI-PHASE +6.18s] unloaded-1920x1080 layout+DoEvents done · starting capture
+[UI-PHASE +6.18s]   geometry assert begin · client={Width=2880, Height=1620}
+[UI-PHASE +6.19s]   geometry assert passed
+[UI-PHASE +6.19s]   RenderForm PerformLayout begin
+[UI-PHASE +6.19s]   RenderForm DoEvents begin
+[UI-PHASE +6.19s]   RenderForm DrawToBitmap begin · {Width=2880, Height=1620}
+[UI-PHASE +6.23s]   RenderForm DrawToBitmap returned
+[UI-PHASE +6.23s]   save PNG begin · D:\a\customs-clearance-console\customs-clearance-console\artifacts\validation\ui-states-150\unloaded-1920x1080.png
+[UI-PHASE +6.30s]   save PNG returned
+[UI-PHASE +6.31s]   screen info · bounds={X=0,Y=0,Width=1920,Height=1080} working={X=0,Y=0,Width=1920,Height=1008} desktop={X=0,Y=0,Width=1920,Height=1080} form={X=0,Y=0,Width=1946,Height=1106}
+[UI-PHASE +6.31s]   CopyFromScreen skipped · window not fully on screen
+[UI-PHASE +6.31s] unloaded-1920x1080 done · realScreen=False
+[UI-PHASE +6.33s] ready-1920x1080 begin
+[UI-PHASE +6.33s] ready-1920x1080 seeded
+[UI-PHASE +6.34s]   form.Show begin (1920x1080)
+[UI-PHASE +6.38s]   form.Show returned
+[UI-PHASE +6.45s]   form layout set · DoEvents begin
+[UI-PHASE +6.48s]   form DoEvents returned · client={Width=2880, Height=1620}
+[UI-PHASE +6.48s] ready-1920x1080 form shown
+[UI-PHASE +6.48s] ready-1920x1080 layout+DoEvents done · starting capture
+[UI-PHASE +6.48s]   geometry assert begin · client={Width=2880, Height=1620}
+[UI-PHASE +6.48s]   geometry assert passed
+[UI-PHASE +6.48s]   RenderForm PerformLayout begin
+[UI-PHASE +6.48s]   RenderForm DoEvents begin
+[UI-PHASE +6.49s]   RenderForm DrawToBitmap begin · {Width=2880, Height=1620}
+[UI-PHASE +6.52s]   RenderForm DrawToBitmap returned
+[UI-PHASE +6.52s]   save PNG begin · D:\a\customs-clearance-console\customs-clearance-console\artifacts\validation\ui-states-150\ready-1920x1080.png
+[UI-PHASE +6.60s]   save PNG returned
+[UI-PHASE +6.60s]   screen info · bounds={X=0,Y=0,Width=1920,Height=1080} working={X=0,Y=0,Width=1920,Height=1008} desktop={X=0,Y=0,Width=1920,Height=1080} form={X=0,Y=0,Width=1946,Height=1106}
+[UI-PHASE +6.61s]   CopyFromScreen skipped · window not fully on screen
+[UI-PHASE +6.61s] ready-1920x1080 done · realScreen=False
+[UI-PHASE +6.63s] complete-1920x1080 begin
+[UI-PHASE +6.64s] complete-1920x1080 seeded
+[UI-PHASE +6.65s]   form.Show begin (1920x1080)
+[UI-PHASE +6.69s]   form.Show returned
+[UI-PHASE +6.77s]   form layout set · DoEvents begin
+[UI-PHASE +6.81s]   form DoEvents returned · client={Width=2880, Height=1620}
+[UI-PHASE +6.81s] complete-1920x1080 form shown
+[UI-PHASE +6.81s] complete-1920x1080 layout+DoEvents done · starting capture
+[UI-PHASE +6.81s]   geometry assert begin · client={Width=2880, Height=1620}
+[UI-PHASE +6.81s]   geometry assert passed
+[UI-PHASE +6.81s]   RenderForm PerformLayout begin
+[UI-PHASE +6.81s]   RenderForm DoEvents begin
+[UI-PHASE +6.82s]   RenderForm DrawToBitmap begin · {Width=2880, Height=1620}
+[UI-PHASE +6.92s]   RenderForm DrawToBitmap returned
+[UI-PHASE +6.92s]   save PNG begin · D:\a\customs-clearance-console\customs-clearance-console\artifacts\validation\ui-states-150\complete-1920x1080.png
+[UI-PHASE +6.99s]   save PNG returned
+[UI-PHASE +7.00s]   screen info · bounds={X=0,Y=0,Width=1920,Height=1080} working={X=0,Y=0,Width=1920,Height=1008} desktop={X=0,Y=0,Width=1920,Height=1080} form={X=0,Y=0,Width=1946,Height=1106}
+[UI-PHASE +7.00s]   CopyFromScreen skipped · window not fully on screen
+[UI-PHASE +7.00s] complete-1920x1080 done · realScreen=False
+[UI-PHASE +7.02s] filter-empty-1920x1080 begin
+[UI-PHASE +7.02s] filter-empty-1920x1080 seeded
+[UI-PHASE +7.03s]   form.Show begin (1920x1080)
+[UI-PHASE +7.08s]   form.Show returned
+[UI-PHASE +7.16s]   form layout set · DoEvents begin
+[UI-PHASE +7.20s]   form DoEvents returned · client={Width=2880, Height=1620}
+[UI-PHASE +7.20s] filter-empty-1920x1080 form shown
+[UI-PHASE +7.22s] filter-empty-1920x1080 layout+DoEvents done · starting capture
+[UI-PHASE +7.22s]   geometry assert begin · client={Width=2880, Height=1620}
+[UI-PHASE +7.22s]   geometry assert passed
+[UI-PHASE +7.22s]   RenderForm PerformLayout begin
+[UI-PHASE +7.22s]   RenderForm DoEvents begin
+[UI-PHASE +7.23s]   RenderForm DrawToBitmap begin · {Width=2880, Height=1620}
+[UI-PHASE +7.26s]   RenderForm DrawToBitmap returned
+[UI-PHASE +7.26s]   save PNG begin · D:\a\customs-clearance-console\customs-clearance-console\artifacts\validation\ui-states-150\filter-empty-1920x1080.png
+[UI-PHASE +7.33s]   save PNG returned
+[UI-PHASE +7.33s]   screen info · bounds={X=0,Y=0,Width=1920,Height=1080} working={X=0,Y=0,Width=1920,Height=1008} desktop={X=0,Y=0,Width=1920,Height=1080} form={X=0,Y=0,Width=1946,Height=1106}
+[UI-PHASE +7.33s]   CopyFromScreen skipped · window not fully on screen
+[UI-PHASE +7.33s] filter-empty-1920x1080 done · realScreen=False
+[UI-PHASE +7.35s] processing-1280x800 begin
+[UI-PHASE +7.36s] processing-1280x800 seeded
+[UI-PHASE +7.37s]   form.Show begin (1280x800)
+[UI-PHASE +7.41s]   form.Show returned
+[UI-PHASE +7.46s]   form layout set · DoEvents begin
+[UI-PHASE +7.49s]   form DoEvents returned · client={Width=1920, Height=1200}
+[UI-PHASE +7.49s] processing-1280x800 form shown
+[UI-PHASE +7.60s] processing-1280x800 layout+DoEvents done · starting capture
+[UI-PHASE +7.60s]   geometry assert begin · client={Width=1920, Height=1200}
+[UI-PHASE +7.60s]   geometry assert passed
+[UI-PHASE +7.61s]   RenderForm PerformLayout begin
+[UI-PHASE +7.61s]   RenderForm DoEvents begin
+[UI-PHASE +7.61s]   RenderForm DrawToBitmap begin · {Width=1920, Height=1200}
+[UI-PHASE +7.64s]   RenderForm DrawToBitmap returned
+[UI-PHASE +7.64s]   save PNG begin · D:\a\customs-clearance-console\customs-clearance-console\artifacts\validation\ui-states-150\processing-1280x800.png
+[UI-PHASE +7.68s]   save PNG returned
+[UI-PHASE +7.68s]   screen info · bounds={X=0,Y=0,Width=1920,Height=1080} working={X=0,Y=0,Width=1920,Height=1008} desktop={X=0,Y=0,Width=1920,Height=1080} form={X=0,Y=0,Width=1920,Height=1106}
+[UI-PHASE +7.68s]   CopyFromScreen skipped · window not fully on screen
+[UI-PHASE +7.68s] processing-1280x800 done · realScreen=False
+[UI-PHASE +7.70s] processing-1440x900 begin
+[UI-PHASE +7.70s] processing-1440x900 seeded
+[UI-PHASE +7.71s]   form.Show begin (1440x900)
+[UI-PHASE +7.76s]   form.Show returned
+[UI-PHASE +7.83s]   form layout set · DoEvents begin
+[UI-PHASE +7.86s]   form DoEvents returned · client={Width=2160, Height=1350}
+[UI-PHASE +7.86s] processing-1440x900 form shown
+[UI-PHASE +7.90s] processing-1440x900 layout+DoEvents done · starting capture
+[UI-PHASE +7.90s]   geometry assert begin · client={Width=2160, Height=1350}
+[UI-PHASE +7.90s]   geometry assert passed
+[UI-PHASE +7.90s]   RenderForm PerformLayout begin
+[UI-PHASE +7.90s]   RenderForm DoEvents begin
+[UI-PHASE +7.90s]   RenderForm DrawToBitmap begin · {Width=2160, Height=1350}
+[UI-PHASE +7.94s]   RenderForm DrawToBitmap returned
+[UI-PHASE +7.94s]   save PNG begin · D:\a\customs-clearance-console\customs-clearance-console\artifacts\validation\ui-states-150\processing-1440x900.png
+[UI-PHASE +7.99s]   save PNG returned
+[UI-PHASE +7.99s]   screen info · bounds={X=0,Y=0,Width=1920,Height=1080} working={X=0,Y=0,Width=1920,Height=1008} desktop={X=0,Y=0,Width=1920,Height=1080} form={X=0,Y=0,Width=1946,Height=1106}
+[UI-PHASE +7.99s]   CopyFromScreen skipped · window not fully on screen
+[UI-PHASE +7.99s] processing-1440x900 done · realScreen=False
+[UI-PHASE +8.01s] menus begin
+[UI-PHASE +8.03s]   form.Show begin (1280x800)
+[UI-PHASE +8.07s]   form.Show returned
+[UI-PHASE +8.12s]   form layout set · DoEvents begin
+[UI-PHASE +8.15s]   form DoEvents returned · client={Width=1920, Height=1200}
+[UI-PHASE +8.15s] menus form ready
+[UI-PHASE +8.16s]   menu-export PerformClick begin
+[UI-PHASE +8.19s]   menu-export PerformClick+DoEvents returned
+[UI-PHASE +8.19s]   menu-export popup DrawToBitmap begin · {Width=372, Height=138}
+[UI-PHASE +8.20s]   menu-export popup DrawToBitmap returned
+[UI-PHASE +8.20s]   RenderForm PerformLayout begin
+[UI-PHASE +8.20s]   RenderForm DoEvents begin
+[UI-PHASE +8.20s]   RenderForm DrawToBitmap begin · {Width=1920, Height=1200}
+[UI-PHASE +8.24s]   RenderForm DrawToBitmap returned
+[UI-PHASE +8.28s]   menu-export popup Close begin
+[UI-PHASE +8.29s]   menu-export popup Close returned
+[UI-PHASE +8.29s]   menu-cleanup PerformClick begin
+[UI-PHASE +8.39s]   menu-cleanup PerformClick+DoEvents returned
+[UI-PHASE +8.40s]   menu-cleanup popup DrawToBitmap begin · {Width=372, Height=257}
+[UI-PHASE +8.40s]   menu-cleanup popup DrawToBitmap returned
+[UI-PHASE +8.40s]   RenderForm PerformLayout begin
+[UI-PHASE +8.40s]   RenderForm DoEvents begin
+[UI-PHASE +8.40s]   RenderForm DrawToBitmap begin · {Width=1920, Height=1106}
+[UI-PHASE +8.44s]   RenderForm DrawToBitmap returned
+[UI-PHASE +8.47s]   menu-cleanup popup Close begin
+[UI-PHASE +8.48s]   menu-cleanup popup Close returned
+[UI-PHASE +8.48s] menus done
+[UI-PHASE +8.50s] dialogs begin
+[UI-PHASE +8.50s]   dialog settings begin · D:\a\customs-clearance-console\customs-clearance-console\artifacts\validation\ui-states-150\dialog-settings.png
+[UI-PHASE +8.71s]   dialog settings shown+DoEvents
+[UI-PHASE +8.71s]   dialog settings DrawToBitmap begin · {Width=780, Height=600}
+[UI-PHASE +8.72s]   dialog settings DrawToBitmap returned
+[UI-PHASE +8.74s]   dialog settings done
+[UI-PHASE +8.74s]   dialog detail begin · D:\a\customs-clearance-console\customs-clearance-console\artifacts\validation\ui-states-150\dialog-detail.png
+[UI-PHASE +8.99s]   dialog detail shown+DoEvents
+[UI-PHASE +8.99s]   dialog detail DrawToBitmap begin · {Width=900, Height=720}
+[UI-PHASE +9.00s]   dialog detail DrawToBitmap returned
+[UI-PHASE +9.02s]   dialog detail done
+[UI-PHASE +9.03s]   dialog detail-conflict begin · D:\a\customs-clearance-console\customs-clearance-console\artifacts\validation\ui-states-150\dialog-detail-conflict.png
+[UI-PHASE +9.19s]   dialog detail-conflict shown+DoEvents
+[UI-PHASE +9.19s]   dialog detail-conflict DrawToBitmap begin · {Width=900, Height=720}
+[UI-PHASE +9.20s]   dialog detail-conflict DrawToBitmap returned
+[UI-PHASE +9.22s]   dialog detail-conflict done
+[UI-PHASE +9.23s]   dialog cleanup-docs-1 begin · D:\a\customs-clearance-console\customs-clearance-console\artifacts\validation\ui-states-150\dialog-cleanup-docs-step1.png
+[UI-PHASE +9.35s]   dialog cleanup-docs-1 shown+DoEvents
+[UI-PHASE +9.35s]   dialog cleanup-docs-1 DrawToBitmap begin · {Width=660, Height=390}
+[UI-PHASE +9.36s]   dialog cleanup-docs-1 DrawToBitmap returned
+[UI-PHASE +9.37s]   dialog cleanup-docs-1 done
+[UI-PHASE +9.37s]   dialog cleanup-docs-2 begin · D:\a\customs-clearance-console\customs-clearance-console\artifacts\validation\ui-states-150\dialog-cleanup-docs-step2.png
+[UI-PHASE +9.45s]   dialog cleanup-docs-2 shown+DoEvents
+[UI-PHASE +9.45s]   dialog cleanup-docs-2 DrawToBitmap begin · {Width=660, Height=390}
+[UI-PHASE +9.46s]   dialog cleanup-docs-2 DrawToBitmap returned
+[UI-PHASE +9.48s]   dialog cleanup-docs-2 done
+[UI-PHASE +9.48s]   dialog cleanup-list begin · D:\a\customs-clearance-console\customs-clearance-console\artifacts\validation\ui-states-150\dialog-cleanup-list.png
+[UI-PHASE +9.54s]   dialog cleanup-list shown+DoEvents
+[UI-PHASE +9.54s]   dialog cleanup-list DrawToBitmap begin · {Width=660, Height=390}
+[UI-PHASE +9.55s]   dialog cleanup-list DrawToBitmap returned
+[UI-PHASE +9.56s]   dialog cleanup-list done
+[UI-PHASE +9.56s] dialogs done · 28 states captured
+[UI-PHASE +9.57s] report written · total elapsed 9.57s
