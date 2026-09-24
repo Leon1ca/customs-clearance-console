@@ -31,8 +31,23 @@ internal static partial class AppLog
                 var path = FilePath;
                 var directory = Path.GetDirectoryName(path);
                 if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
+                RotateIfLarge(path);
                 File.AppendAllText(path, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {message}{Environment.NewLine}", Encoding.UTF8);
             }
+        }
+        catch { }
+    }
+
+    private const long MaximumLogBytes = 5L * 1024 * 1024;
+
+    /// <summary>Keeps the log bounded: past the limit the current file becomes app.log.1 (one generation).</summary>
+    private static void RotateIfLarge(string path)
+    {
+        try
+        {
+            var info = new FileInfo(path);
+            if (!info.Exists || info.Length < MaximumLogBytes) return;
+            File.Move(path, path + ".1", overwrite: true);
         }
         catch { }
     }

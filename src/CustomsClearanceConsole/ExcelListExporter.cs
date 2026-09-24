@@ -1,6 +1,8 @@
 using System.Globalization;
 using System.IO.Compression;
+using System.Text;
 using System.Text.RegularExpressions;
+using System.Xml;
 using System.Xml.Linq;
 
 namespace CustomsClearanceConsole;
@@ -138,11 +140,11 @@ internal static class ExcelListExporter
                 {
                     var record = sorted[i];
                     var row = rows1[i + 1];
-                    if (CellText(row.GetValueOrDefault(2)) != record.DeclarationNo) issues.Add($"第 {i + 1} 行报关单号与本批顺序不一致：{CellText(row.GetValueOrDefault(2))}");
+                    if (CellText(row.GetValueOrDefault(2)) != XmlSafe(record.DeclarationNo)) issues.Add($"第 {i + 1} 行报关单号与本批顺序不一致：{CellText(row.GetValueOrDefault(2))}");
                     if (record.HasValidDeclarationNo && row.GetValueOrDefault(2)?.Type != "inlineStr") issues.Add($"报关单号 {record.DeclarationNo} 不是文本单元。");
-                    if (CellText(row.GetValueOrDefault(3)) != record.Consignee) issues.Add($"第 {i + 1} 行收货人丢失：{CellText(row.GetValueOrDefault(3))}");
-                    if (CellText(row.GetValueOrDefault(4)) != record.ContractNo) issues.Add($"第 {i + 1} 行合同号丢失或转义错误：{CellText(row.GetValueOrDefault(4))}");
-                    if (CellText(row.GetValueOrDefault(8)) != record.SourceName) issues.Add($"第 {i + 1} 行源文件丢失。");
+                    if (CellText(row.GetValueOrDefault(3)) != XmlSafe(record.Consignee)) issues.Add($"第 {i + 1} 行收货人丢失：{CellText(row.GetValueOrDefault(3))}");
+                    if (CellText(row.GetValueOrDefault(4)) != XmlSafe(record.ContractNo)) issues.Add($"第 {i + 1} 行合同号丢失或转义错误：{CellText(row.GetValueOrDefault(4))}");
+                    if (CellText(row.GetValueOrDefault(8)) != XmlSafe(record.SourceName)) issues.Add($"第 {i + 1} 行源文件丢失。");
                 }
 
                 // Leading zeros and formula-like text survive verbatim.
@@ -181,7 +183,7 @@ internal static class ExcelListExporter
                         if (line.UnitPrice is not null && row.TryGetValue(9, out var unitPriceCell) &&
                             (!decimal.TryParse(unitPriceCell.Value, NumberStyles.Any, CultureInfo.InvariantCulture, out var unitPriceValue) || unitPriceValue != line.UnitPrice.Value))
                             issues.Add($"单价精度丢失：期望 {line.UnitPrice.Value}，实际 {unitPriceCell.Value}。");
-                        if (!string.IsNullOrWhiteSpace(line.VerificationUnit) && CellText(row.GetValueOrDefault(16)) != line.VerificationUnit)
+                        if (!string.IsNullOrWhiteSpace(line.VerificationUnit) && CellText(row.GetValueOrDefault(16)) != XmlSafe(line.VerificationUnit))
                             issues.Add($"复核单位未导出：期望 {line.VerificationUnit}。");
                         // The overall verdict must never call a row consistent when the
                         // amount differs or when the second engine did not verify it.
@@ -576,8 +578,36 @@ internal static class ExcelListExporter
     private readonly record struct Cell(string? Text, decimal? Number, int Style, bool HasValue)
     {
         public static Cell Empty => new(null, null, StyleText, false);
-        public static Cell OfText(string? value, int style = StyleBody) => new(value, null, style, !string.IsNullOrEmpty(value));
+        public static Cell OfText(string? value, int style = StyleBody)
+        {
+            var text = XmlSafe(value);
+            return new(text, null, style, text.Length > 0);
+        }
         public static Cell OfNumber(decimal value, int style) => new(null, value, style, true);
+    }
+
+    /// <summary>
+    /// Drops characters XML 1.0 cannot carry (C0 controls other than tab/CR/LF, lone surrogates,
+    /// U+FFFE/U+FFFF). A PDF text layer can emit such control codes; one of them in any field
+    /// made XDocument throw and the whole export fail. Valid surrogate pairs are kept.
+    /// </summary>
+    internal static string XmlSafe(string? value)
+    {
+        if (string.IsNullOrEmpty(value)) return value ?? "";
+        StringBuilder? builder = null;
+        for (var i = 0; i < value.Length; i++)
+        {
+            var c = value[i];
+            if (char.IsHighSurrogate(c) && i + 1 < value.Length && char.IsLowSurrogate(value[i + 1]))
+            {
+                builder?.Append(c).Append(value[i + 1]);
+                i++;
+                continue;
+            }
+            if (XmlConvert.IsXmlChar(c)) { builder?.Append(c); continue; }
+            builder ??= new StringBuilder(value.Length).Append(value, 0, i);
+        }
+        return builder?.ToString() ?? value;
     }
 
     private static XDocument BuildSheet(IReadOnlyList<IReadOnlyList<Cell>> rows, IReadOnlyList<int> widths)

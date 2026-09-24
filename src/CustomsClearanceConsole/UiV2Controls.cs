@@ -541,7 +541,10 @@ internal sealed class RecordStatePanel : Control
             TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
         if (_message.PrimaryAction is not null)
         {
-            var buttonWidth = Math.Max(S(150), TextRenderer.MeasureText(graphics, _message.PrimaryAction, Theme.UiFont(14F, FontStyle.Bold), new Size(int.MaxValue, actionHeight), TextFormatFlags.NoPadding).Width + S(54));
+            int buttonTextWidth;
+            using (var measureFont = Theme.UiFont(14F, FontStyle.Bold))
+                buttonTextWidth = TextRenderer.MeasureText(graphics, _message.PrimaryAction, measureFont, new Size(int.MaxValue, actionHeight), TextFormatFlags.NoPadding).Width;
+            var buttonWidth = Math.Max(S(150), buttonTextWidth + S(54));
             var button = new Rectangle(centerX - buttonWidth / 2, top + iconSize + S(78), buttonWidth, actionHeight);
             var hovered = _hover == 0;
             using (var path = Theme.RoundedPath(button, S(6)))
@@ -582,7 +585,9 @@ internal sealed class ToastControl : Control
     {
         _message = message;
         var dpi = DeviceDpi / 96F;
-        var width = TextRenderer.MeasureText(message, Theme.UiFont(12.5F)).Width + (int)(70 * dpi);
+        int textWidth;
+        using (var measureFont = Theme.UiFont(12.5F)) textWidth = TextRenderer.MeasureText(message, measureFont).Width;
+        var width = textWidth + (int)(70 * dpi);
         Size = new Size(Math.Min(width, (Parent?.Width ?? 800) - 40), (int)(34 * dpi));
         Visible = true;
         BringToFront();

@@ -331,12 +331,20 @@ internal sealed partial class MainForm : Form
             .Where(File.Exists).Where(x => extensions.Contains(Path.GetExtension(x))).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
     }
 
-    private void GridDragEnter(object? sender, DragEventArgs e) => e.Effect = DroppedSupportedFiles(e).Length > 0 ? DragDropEffects.Copy : DragDropEffects.None;
+    // DragOver fires continuously while the mouse moves; the dropped set cannot change during one
+    // drag, so the file-system checks run once on enter instead of on every mouse move.
+    private string[]? _dragFiles;
+
+    private void GridDragEnter(object? sender, DragEventArgs e)
+    {
+        _dragFiles = DroppedSupportedFiles(e);
+        e.Effect = _dragFiles.Length > 0 ? DragDropEffects.Copy : DragDropEffects.None;
+    }
 
     private void GridDragOver(object? sender, DragEventArgs e)
     {
         if (_session is not null) { e.Effect = DragDropEffects.None; return; }
-        var files = DroppedSupportedFiles(e);
+        var files = _dragFiles ??= DroppedSupportedFiles(e);
         var message = files.Length == 0 ? "未找到可识别的关单文件"
             : files.Length > BatchScanner.MaximumFiles ? $"本批 {files.Length} 个文件，超过每批 {BatchScanner.MaximumFiles} 个上限，整批停止"
             : $"可载入 {files.Length} 个文件，松开后作为新批次识别";
@@ -347,6 +355,7 @@ internal sealed partial class MainForm : Form
     private async void GridDragDrop(object? sender, DragEventArgs e)
     {
         HideDropFeedback();
+        _dragFiles = null;
         var files = DroppedSupportedFiles(e);
         if (files.Length == 0) return;
         if (files.Length > BatchScanner.MaximumFiles)
@@ -359,6 +368,7 @@ internal sealed partial class MainForm : Form
 
     private void ShowDropFeedback(string message, bool allowed)
     {
+        if (_dropBanner.Visible && _dropBanner.Text == message) return;
         _dropBanner.Text = message;
         _dropBanner.ForeColor = allowed ? Theme.Primary : Theme.Warning;
         _dropBanner.BackColor = allowed ? Color.FromArgb(240, 246, 253) : UiTokens.Status.AttentionNotice;
@@ -366,7 +376,11 @@ internal sealed partial class MainForm : Form
         _dropBanner.BringToFront();
     }
 
-    private void HideDropFeedback() => _dropBanner.Visible = false;
+    private void HideDropFeedback()
+    {
+        _dragFiles = null;
+        _dropBanner.Visible = false;
+    }
 
     // ---- filtering / paging ----
 
@@ -475,13 +489,11 @@ internal sealed partial class MainForm : Form
             row.Cells["Amount"].Value = CopyAmountText(record);
             row.Cells["Detail"].Value = "明细";
             row.Cells["Verify"].Value = record.HasScreenshot ? "已留存" : record.HasValidDeclarationNo ? "校验" : "不可核验";
+            // One shared style per row state instead of a private style object on every cell:
+            // the row style outranks the alternating/column styles, so rendering is unchanged.
+            row.DefaultCellStyle = record.IsDuplicate ? DuplicateRowStyle : record.NeedsAttention ? AttentionRowStyle : NormalRowStyle;
             foreach (DataGridViewCell cell in row.Cells)
-            {
                 cell.ToolTipText = Convert.ToString(cell.FormattedValue) ?? "";
-                cell.Style.BackColor = record.IsDuplicate ? UiTokens.Status.Duplicate.Row : record.NeedsAttention ? UiTokens.Status.Attention.Row : Theme.Surface;
-                cell.Style.SelectionBackColor = UiTokens.Status.CellSelected;
-                cell.Style.SelectionForeColor = Theme.Text;
-            }
             row.Cells["Index"].ToolTipText = "行号（本页内序号）";
             row.Cells["Status"].ToolTipText = StatusLabel(record) + (record.AllWarnings.Length > 0 ? "\n" + record.AllWarnings : "");
             row.Cells["No"].ToolTipText = CopyNumberText(record);
@@ -498,6 +510,19 @@ internal sealed partial class MainForm : Form
         }
         UpdateSummary(items.Count);
     }
+
+    // Per form, not static: a cell style remembers every grid that uses it, so a static one would
+    // keep closed windows (for example the snapshot self-test forms) reachable.
+    private readonly DataGridViewCellStyle NormalRowStyle = RowStyle(Theme.Surface);
+    private readonly DataGridViewCellStyle DuplicateRowStyle = RowStyle(UiTokens.Status.Duplicate.Row);
+    private readonly DataGridViewCellStyle AttentionRowStyle = RowStyle(UiTokens.Status.Attention.Row);
+
+    private static DataGridViewCellStyle RowStyle(Color back) => new()
+    {
+        BackColor = back,
+        SelectionBackColor = UiTokens.Status.CellSelected,
+        SelectionForeColor = Theme.Text
+    };
 
     private static string Dash(string value) => string.IsNullOrWhiteSpace(value) ? "—" : value;
 
@@ -737,7 +762,10 @@ internal sealed partial class MainForm : Form
             case "Verify":
                 if (record.HasScreenshot) DrawKeptTag(graphics, bounds, S);
                 else if (!record.HasValidDeclarationNo)
-                    TextRenderer.DrawText(graphics, "不可核验", Theme.UiFont(12.5F), bounds, Theme.DisabledText, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+                {
+                    using var disabledFont = Theme.UiFont(12.5F);
+                    TextRenderer.DrawText(graphics, "不可核验", disabledFont, bounds, Theme.DisabledText, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+                }
                 else DrawVerifyButton(graphics, bounds, S);
                 break;
         }

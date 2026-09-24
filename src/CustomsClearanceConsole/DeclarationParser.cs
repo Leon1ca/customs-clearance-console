@@ -6,6 +6,14 @@ namespace CustomsClearanceConsole;
 
 internal sealed partial class DeclarationParser
 {
+    // The parser and reconciler use ~30 distinct patterns through the static Regex helpers,
+    // many inside per-token loops. The framework caches only 15 by default, so patterns were
+    // evicted and re-parsed continuously; a larger cache keeps every pattern constructed once.
+    static DeclarationParser()
+    {
+        if (Regex.CacheSize < 64) Regex.CacheSize = 64;
+    }
+
     private static readonly string[] KnownLabels =
     [
         "预录入编号", "海关编号", "境内发货人", "出境关别", "出口日期", "申报日期", "备案号",

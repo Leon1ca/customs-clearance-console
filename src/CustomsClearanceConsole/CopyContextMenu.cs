@@ -107,9 +107,10 @@ internal sealed class CopyContextMenu : ToolStripDropDown
             TextRenderer.DrawText(e.Graphics, "复制选中的内容", Font,
                 new Rectangle(14, 0, Width - 92, Height), foreground,
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
-            TextRenderer.DrawText(e.Graphics, "Ctrl+C", Theme.UiFont(12F),
-                new Rectangle(Width - 76, 0, 62, Height), shortcut,
-                TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+            using (var shortcutFont = Theme.UiFont(12F))
+                TextRenderer.DrawText(e.Graphics, "Ctrl+C", shortcutFont,
+                    new Rectangle(Width - 76, 0, 62, Height), shortcut,
+                    TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
 
             if (Focused && ShowFocusCues)
             {

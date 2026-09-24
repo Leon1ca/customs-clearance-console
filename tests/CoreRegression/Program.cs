@@ -209,6 +209,11 @@ Check(migrated.UiSchemaVersion == AppState.CurrentUiSchemaVersion && migrated.Re
 // Old history without the new line fields loads with empty values.
 File.WriteAllText(statePath, "{\"UiSchemaVersion\":4,\"Records\":[{\"DeclarationNo\":\"310120260000000009\",\"Status\":\"识别完成\",\"LineTotals\":[{\"PageNumber\":1,\"ItemNo\":\"1\",\"Currency\":\"USD\",\"Amount\":12.5}]}]}");
 var legacy = store.Load();
+
+// An unreadable history is kept aside before the next save could overwrite it.
+File.WriteAllText(statePath, "{ not json");
+var corruptLoaded = store.Load();
+Check(corruptLoaded.Records.Count == 0 && Directory.EnumerateFiles(workspace.Path, "history.json.corrupt-*").Any(), "无法读取的历史记录先备份再重置");
 Check(legacy.Records[0].LineTotals[0].ProductName == "" && legacy.Records[0].LineTotals[0].Quantity is null && legacy.Records[0].LineTotals[0].UnitPrice is null, "旧历史缺少新字段时照常加载为空值");
 
 var scanPlan = ScanPlan.FromFiles(new[] { path, FileAt("two.pdf") });
@@ -255,6 +260,17 @@ Check(exportReport.Pass, $"Excel/Markdown 整批导出校验通过（{string.Joi
 Check(exportReport.RecordCount >= 60 && exportReport.DetailRows > 0, "整批导出包含全部记录与分项");
 var xlsx = Path.Combine(workspace.Path, "export-samples", "关单列表_合成样例.xlsx");
 Check(ExcelListExporter.Validate(xlsx).Count == 0, "xlsx 重新解析无问题");
+
+// A PDF text layer can emit XML-illegal control codes; they must not abort the whole export.
+var controlRecord = new DeclarationRecord
+{
+    DeclarationNo = no, Consignee = "青岛\u0002海\u0001洋 😀", ContractNo = "HT\u001F-01", SourcePath = "ctrl.pdf",
+    LineTotals = agreeing, Totals = DeclarationParser.SumReliableLineTotals(agreeing)
+};
+var controlXlsx = Path.Combine(workspace.Path, "control-chars.xlsx");
+ExcelListExporter.Save(controlXlsx, [controlRecord], new DateTime(2026, 9, 9));
+Check(ExcelListExporter.Validate(controlXlsx, [controlRecord]).Count == 0, "含控制字符的记录仍可导出且校验通过");
+Check(ExcelListExporter.XmlSafe(controlRecord.Consignee) == "青岛海洋 😀" && ExcelListExporter.XmlSafe("\uD800x") == "x", "XML 非法字符被剔除且保留合法代理对");
 using (var archive = System.IO.Compression.ZipFile.OpenRead(xlsx))
 {
     var sheet1 = archive.GetEntry("xl/worksheets/sheet1.xml")!;

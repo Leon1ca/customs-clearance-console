@@ -51,6 +51,13 @@ internal static class Program
                 AppLog.Write(e.ExceptionObject as Exception ?? new Exception("未知错误"));
         }
 
+        // Fire-and-forget work (browser disposal, background cleanup) must not fail silently.
+        TaskScheduler.UnobservedTaskException += (_, e) =>
+        {
+            AppLog.Write(e.Exception);
+            e.SetObserved();
+        };
+
         AppFonts.Initialize();
         TryInitializePdfium();
 
@@ -63,6 +70,9 @@ internal static class Program
             FailCommandLine($"命令 {args[0]} 失败", ex);
         }
 
+        // OCR work folders are removed after each file; a crash or power loss can leave rendered
+        // pages behind. Only folders older than a day are swept, never a running scan's.
+        _ = Task.Run(() => TemporaryDirectory.PurgeStale(AppPaths.TempRoot, TimeSpan.FromDays(1)));
         Application.Run(new MainForm());
     }
 
