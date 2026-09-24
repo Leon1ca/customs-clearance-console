@@ -6,6 +6,14 @@ namespace CustomsClearanceConsole;
 
 internal sealed partial class DeclarationParser
 {
+    // The parser and reconciler use ~30 distinct patterns through the static Regex helpers,
+    // many inside per-token loops. The framework caches only 15 by default, so patterns were
+    // evicted and re-parsed continuously; a larger cache keeps every pattern constructed once.
+    static DeclarationParser()
+    {
+        if (Regex.CacheSize < 64) Regex.CacheSize = 64;
+    }
+
     private static readonly string[] KnownLabels =
     [
         "预录入编号", "海关编号", "境内发货人", "出境关别", "出口日期", "申报日期", "备案号",
@@ -272,30 +280,41 @@ internal sealed partial class DeclarationParser
                     .Where(t => t.Top > header.Bottom && t.Top < bottom)
                     .ToList();
                 var lines = Lines(column, Math.Max(2.5, page.Height * .0048)).ToList();
+                double? previousRowBottom = null;
                 for (var i = 0; i < lines.Count; i++)
                 {
                     var currency = NormalizeCurrencyInPriceColumn(page, lines[i], header);
                     if (currency is null) continue;
 
+                    IReadOnlyList<TextToken>? totalLine = null;
                     decimal? total = TryAmountFromLine(lines[i], out var sameLineAmount) && sameLineAmount != 0
                         ? sameLineAmount
                         : null;
+                    if (total is not null) totalLine = lines[i];
 
                     var currencyY = lines[i].Average(x => x.CenterY);
                     for (var j = i - 1; total is null && j >= 0; j--)
                     {
                         var candidateY = lines[j].Average(x => x.CenterY);
                         if (currencyY - candidateY > page.Height * .06) break;
-                        if (TryAmountFromLine(lines[j], out var value)) total = value;
+                        if (TryAmountFromLine(lines[j], out var value)) { total = value; totalLine = lines[j]; }
                     }
-                    if (total is null) continue;
-                    pageTotals.Add(new DeclarationLineTotal
+                    if (total is null || totalLine is null) continue;
+                    var searchTop = previousRowBottom ?? header.Bottom;
+                    var itemToken = FindItemNoToken(page, searchTop, currencyY);
+                    // Anchor the row at its own item number when present so wrapped
+                    // product/unit lines from the previous row cannot leak into it.
+                    var rowTop = itemToken?.Top ?? searchTop;
+                    var line = new DeclarationLineTotal
                     {
                         PageNumber = page.PageNumber,
-                        ItemNo = FindItemNo(page, header.Bottom, currencyY),
+                        ItemNo = itemToken?.Text.Trim() ?? "",
                         Currency = currency,
                         Amount = total.Value
-                    });
+                    };
+                    AttachRowDetails(page, line, left, right, rowTop, currencyY, totalLine.Average(x => x.CenterY));
+                    pageTotals.Add(line);
+                    previousRowBottom = Math.Max(lines[i].Max(x => x.Bottom), itemToken?.Bottom ?? 0);
                 }
             }
 
@@ -335,6 +354,7 @@ internal sealed partial class DeclarationParser
             .Where(t => NormalizeCurrencyInPriceColumn(page, [t], null) is not null)
             .ToList();
 
+        double? previousRowBottom = null;
         foreach (var currencyLine in Lines(currencyTokens, Math.Max(2.5, page.Height * .0048)))
         {
             var currency = NormalizeCurrencyInPriceColumn(page, currencyLine, null);
@@ -352,30 +372,176 @@ internal sealed partial class DeclarationParser
             foreach (var amountLine in amountLines)
             {
                 if (!TryAmountFromLine(amountLine, out var total) || total <= 0) continue;
-                result.Add(new DeclarationLineTotal
+                var searchTop = previousRowBottom ?? page.Height * .30;
+                var itemToken = FindItemNoToken(page, searchTop, currencyY);
+                var rowTop = itemToken?.Top ?? searchTop;
+                var line = new DeclarationLineTotal
                 {
                     PageNumber = page.PageNumber,
-                    ItemNo = FindItemNo(page, page.Height * .30, currencyY),
+                    ItemNo = itemToken?.Text.Trim() ?? "",
                     Currency = currency,
                     Amount = total
-                });
+                };
+                AttachRowDetails(page, line, left, right, rowTop, currencyY, amountLine.Average(x => x.CenterY));
+                result.Add(line);
+                previousRowBottom = Math.Max(currencyLine.Max(x => x.Bottom), itemToken?.Bottom ?? 0);
                 break;
             }
         }
         return result;
     }
 
-    private static string FindItemNo(TextPage page, double tableTop, double currencyY)
+    private static readonly HashSet<string> KnownUnits = new(StringComparer.OrdinalIgnoreCase)
     {
-        var candidate = page.Tokens
+        "KG", "KGS", "千克", "公斤", "台", "个", "件", "套", "米", "吨", "辆", "只", "张", "双", "支",
+        "箱", "包", "卷", "对", "副", "PCS", "PCE", "SET", "CTN", "M", "平方米", "立方米", "升", "克"
+    };
+
+    /// <summary>
+    /// Unit evidence for the quantity column. A token counts only when it is a complete known
+    /// unit, optionally attached to a leading number such as "12.5KG" or "12.5千克"; substring
+    /// matches are never accepted, so a word like "HEADSET" cannot be read as the unit "SET".
+    /// </summary>
+    private static bool IsKnownUnitToken(string text)
+    {
+        var candidate = text.Trim().Trim('(', ')', '（', '）', '/', '：', ':');
+        if (candidate.Length == 0) return false;
+        if (KnownUnits.Contains(candidate)) return true;
+        // "12.5KG" / "12.5千克": the remainder after the numeric prefix must itself be a
+        // complete known unit. Substring matching is never used, so "HEADSET"/"RESET"
+        // (which merely contain "SET") are not accepted as unit evidence.
+        var numeric = Regex.Match(candidate, @"^[0-9][0-9,.]*");
+        return numeric.Success && numeric.Length < candidate.Length && KnownUnits.Contains(candidate[numeric.Length..]);
+    }
+
+    /// <summary>
+    /// Horizontal band of the "数量" column, taken from its table header. When the header
+    /// also covers the unit ("数量及单位"), only its leading part is treated as the
+    /// quantity column so the unit sub-column cannot admit a number.
+    /// </summary>
+    private static (double Left, double Right)? FindQuantityColumn(TextPage page, double rowTop)
+    {
+        var header = page.Tokens
+            .Where(t => t.Text.Contains("数量", StringComparison.Ordinal))
+            .Where(t => t.Bottom <= rowTop + Math.Max(4, page.Height * .012))
+            .OrderByDescending(t => t.Bottom)
+            .FirstOrDefault();
+        if (header is null) return null;
+        var quantityFraction = header.Text.Contains("单位", StringComparison.Ordinal) ? .6 : 1.0;
+        return (header.Left - page.Width * .005,
+                header.Left + (header.Right - header.Left) * quantityFraction + page.Width * .01);
+    }
+
+    /// <summary>
+    /// Best-effort extraction of product name, quantity, unit and unit price for one
+    /// already-reconciled total row. Nothing is ever derived from the total amount:
+    /// a value that cannot be located in the source stays empty and renders as “—”.
+    /// </summary>
+    private static void AttachRowDetails(TextPage page, DeclarationLineTotal line,
+        double priceLeft, double priceRight, double rowTop, double currencyY, double totalLineY)
+    {
+        if (priceLeft >= priceRight) return;
+        var tolerance = Math.Max(2.5, page.Height * .0048);
+        var itemNoRight = page.Width * .085;
+        var bandBottom = currencyY + page.Height * .008;
+
+        // Unit price: the closest numeric line strictly above the total inside the row band.
+        var unitPriceTokens = page.Tokens
+            .Where(t => t.CenterX >= priceLeft - 1 && t.CenterX <= priceRight + 1)
+            .Where(t => t.CenterY >= rowTop && t.CenterY < totalLineY - Math.Max(1, page.Height * .0015))
+            .ToList();
+        foreach (var candidate in Lines(unitPriceTokens, tolerance).OrderByDescending(l => l.Average(x => x.CenterY)))
+        {
+            if (!TryAmountFromLine(candidate, out var value) || value <= 0) continue;
+            line.UnitPrice = value;
+            break;
+        }
+
+        // Quantity and unit: a number is only promoted to a quantity when there is
+        // explicit column evidence — it sits inside the "数量" header band, or a unit
+        // token follows it on the same visual line. Otherwise a right-aligned model
+        // number inside the product name (e.g. "2026") would be misattributed as the
+        // quantity, so the field deliberately stays empty.
+        var leftTokens = page.Tokens
+            .Where(t => t.CenterX >= itemNoRight && t.CenterX < priceLeft - 1)
+            .Where(t => t.CenterY >= rowTop && t.CenterY <= bandBottom)
+            .ToList();
+        var quantityColumn = FindQuantityColumn(page, rowTop);
+        double? quantityLeft = null;
+        var maxFragmentGap = page.Width * .015;
+        foreach (var visualLine in Lines(leftTokens, tolerance).OrderByDescending(l => l.Max(t => t.CenterX)))
+        {
+            var ordered = visualLine.OrderBy(t => t.Left).ToList();
+            for (var k = ordered.Count - 1; k >= 0; k--)
+            {
+                var anchor = ordered[k];
+                if (!Regex.IsMatch(anchor.Text.Trim(), @"^[0-9][0-9,.]*$")) continue;
+                // The quantity sits in the column immediately left of the price column;
+                // a number further left belongs to the product name/specification.
+                if (anchor.CenterX < priceLeft - page.Width * .18) break;
+                var fragments = new List<string>();
+                var lastLeft = anchor.Left;
+                for (var m = k; m >= 0; m--)
+                {
+                    var token = ordered[m];
+                    var text = token.Text.Trim();
+                    if (!Regex.IsMatch(text, @"^[0-9][0-9,.]*$")) break;
+                    // Only merge fragments that are actually adjacent; never join two
+                    // numbers separated by a gap (e.g. a model year and a quantity).
+                    if (m < k && token.Right < lastLeft - maxFragmentGap) break;
+                    fragments.Insert(0, text);
+                    lastLeft = token.Left;
+                }
+                if (!TryAmount(string.Concat(fragments), out var quantity) || quantity <= 0) break;
+                var inQuantityColumn = quantityColumn is { } column &&
+                    anchor.CenterX >= column.Left && anchor.Right <= column.Right;
+                // Unit evidence is adjacency based: the very next token must be a complete
+                // unit and must sit right next to the number. Any later token on the line is
+                // ignored, so a product word can never promote a model number to a quantity.
+                var following = ordered.Count > k + 1 ? ordered[k + 1] : null;
+                var adjacentUnit = following is not null &&
+                    following.Left - anchor.Right <= maxFragmentGap &&
+                    IsKnownUnitToken(following.Text);
+                if (!inQuantityColumn && !adjacentUnit) break;
+                line.Quantity = quantity;
+                quantityLeft = anchor.Left;
+                // Only a recognized unit token may be written; when the quantity came from
+                // the header column alone the row keeps an empty unit.
+                line.Unit = ordered.Skip(k + 1)
+                    .Select(t => t.Text.Trim())
+                    .FirstOrDefault(t => t.Length > 0 && IsKnownUnitToken(t)) ?? "";
+                break;
+            }
+            if (line.Quantity is not null) break;
+        }
+
+        // Product name: everything else between the item number and the quantity/price column.
+        var productRight = quantityLeft ?? priceLeft;
+        var productTokens = page.Tokens
+            .Where(t => t.CenterX >= itemNoRight && t.CenterX < productRight - 1)
+            .Where(t => t.CenterY >= rowTop && t.CenterY <= bandBottom)
+            .ToList();
+        var product = string.Join(" ", Lines(productTokens, tolerance)
+            .Select(Join)
+            .Select(value => value.Trim())
+            .Where(value => value.Length > 0 && !Regex.IsMatch(value, @"^[\p{P}\p{S}\s]+$")));
+        line.ProductName = Regex.Replace(product, @"\s+", " ").Trim();
+
+        // A quantity without a recognized unit token leaves the unit empty so the dialog
+        // and exports show “—”; an arbitrary following word is never stored as the unit.
+        if (line.Quantity is null) line.Unit = "";
+        if (line.Unit.Length > 0 && KnownUnits.Contains(line.Unit)) line.Unit = line.Unit.ToUpperInvariant();
+    }
+
+    private static TextToken? FindItemNoToken(TextPage page, double tableTop, double currencyY)
+    {
+        return page.Tokens
             .Where(t => t.CenterX <= page.Width * .085 && t.CenterY > tableTop)
             .Where(t => t.CenterY <= currencyY + page.Height * .012 && currencyY - t.CenterY <= page.Height * .12)
-            .Select(t => (Token: t, Match: Regex.Match(t.Text.Trim(), @"^(\d{1,3})$")))
-            .Where(x => x.Match.Success)
-            .OrderBy(x => Math.Abs(x.Token.CenterY - currencyY))
-            .ThenByDescending(x => x.Token.CenterY)
+            .Where(t => Regex.IsMatch(t.Text.Trim(), @"^(\d{1,3})$"))
+            .OrderBy(t => Math.Abs(t.CenterY - currencyY))
+            .ThenByDescending(t => t.CenterY)
             .FirstOrDefault();
-        return candidate.Match?.Groups[1].Value ?? "";
     }
 
     internal static Dictionary<string, decimal> SumReliableLineTotals(IEnumerable<DeclarationLineTotal> lines)

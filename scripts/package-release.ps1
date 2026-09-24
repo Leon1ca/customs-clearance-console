@@ -15,8 +15,15 @@ foreach ($relative in @('关单核验台.exe', 'app\关单核验台.dll')) {
     $file = Get-Item -LiteralPath (Join-Path $SourceRoot $relative)
     if ($file.VersionInfo.FileVersion -ne "$version.0") { throw "版本不一致：$relative" }
 }
-foreach ($relative in @('runtime\dotnet.exe', 'tools\tesseract\tesseract.exe', "更新说明-v$version.md", 'app\ocr-models\ppocrv5_dict.txt')) {
+foreach ($relative in @('runtime\dotnet.exe', 'tools\tesseract\tesseract.exe', "更新说明-v$version.md", 'app\ocr-models\ppocrv5_dict.txt',
+        'LICENSE', 'AboutAndLicenses.txt', 'third-party-notices\ONNXRuntime-MIT.txt', 'third-party-notices\EmguCV-GPLv3-or-Commercial.txt',
+        'app\AboutAndLicenses.txt', 'app\fonts\NotoSansSC-Regular.ttf', 'app\fonts\NotoSansSC-Medium.ttf', 'app\fonts\NotoSansSC-Bold.ttf',
+        'app\fonts\JetBrainsMono-Regular.ttf', 'app\fonts\JetBrainsMono-Medium.ttf', 'app\fonts\JetBrainsMono-Bold.ttf',
+        'app\fonts\NotoSansSC-OFL.txt', 'app\fonts\JetBrainsMono-OFL.txt', 'app\fonts\MANIFEST.json')) {
     if (-not (Test-Path -LiteralPath (Join-Path $SourceRoot $relative))) { throw "发布包缺少：$relative" }
+}
+if (Test-Path -LiteralPath (Join-Path $SourceRoot 'app\fonts\NotoSansSC-Variable.ttf')) {
+    throw '发布包仍包含可变字体，违反静态字体要求。'
 }
 
 $outputRoot = Join-Path $repoRoot "artifacts\releases\v$version"

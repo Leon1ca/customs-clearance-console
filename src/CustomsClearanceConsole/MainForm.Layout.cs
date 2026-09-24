@@ -2,192 +2,453 @@ namespace CustomsClearanceConsole;
 
 internal sealed partial class MainForm
 {
-    private void BuildWorkspace(out TextBox search, out ModernDropDown pageSize, out Button scan,
-        out DataGridView grid, out Panel empty, out Button previous, out Label pageLabel,
-        out Button next, out Label footer, out Label recordCount, out MetricCard file,
-        out MetricCard duplicate, out MoneySummaryPanel money)
+    private void BuildWorkspace()
     {
-        AutoScaleDimensions = new SizeF(96F, 96F);
-        var root = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, ColumnCount = 1, Margin = Padding.Empty };
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 56));
+        var root = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, ColumnCount = 1, Margin = Padding.Empty, BackColor = Theme.Canvas };
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, UiTokens.Metrics.Header));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.Controls.Add(BuildHeader(), 0, 0);
-        _body = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 6, Padding = new Padding(32, 16, 32, 22), Margin = Padding.Empty };
-        foreach (var height in new[] { 72, 52, 126, 20, 0 }) _body.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
-        _body.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        var heading = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, Padding = new Padding(0, 4, 0, 14), Margin = Padding.Empty };
-        heading.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        heading.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 138));
-        heading.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 142));
-        var headline = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty };
-        headline.Controls.Add(new Label { Text = "关单工作台", Location = new Point(0, 0), Size = new Size(360, 30), Font = Theme.UiFont(25, FontStyle.Bold), ForeColor = Theme.Text });
-        headline.Controls.Add(new Label { Text = "批量识别、重复检查与网页核验", Location = new Point(1, 34), Size = new Size(460, 20), Font = Theme.UiFont(13), ForeColor = Theme.Muted });
-        _export = Theme.IconButton("导出列表", UiIcon.Export); _export.Dock = DockStyle.Fill; _export.Margin = new Padding(0, 6, 12, 4); _export.Click += (_, _) => ExportList();
-        scan = Theme.IconButton("开始识别", UiIcon.Start, primary: true); scan.Dock = DockStyle.Fill; scan.Margin = new Padding(0, 6, 0, 4);
-        heading.Controls.Add(headline, 0, 0); heading.Controls.Add(_export, 1, 0); heading.Controls.Add(scan, 2, 0);
-        _body.Controls.Add(heading, 0, 0);
-        var directories = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, Margin = new Padding(0, 0, 0, 10), Padding = Padding.Empty };
-        directories.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); directories.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
-        _directoryPaths = new Label { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Font = Theme.UiFont(12), ForeColor = Theme.Muted, AutoEllipsis = true, Margin = Padding.Empty };
-        _directories = Theme.IconButton("目录设置", UiIcon.Directory); _directories.Dock = DockStyle.Fill; _directories.Margin = Padding.Empty; _directories.Click += (_, _) => ShowDirectorySettings();
-        directories.Controls.Add(_directoryPaths, 0, 0); directories.Controls.Add(_directories, 1, 0); _body.Controls.Add(directories, 0, 1);
-        var metrics = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, Margin = Padding.Empty };
-        metrics.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 190)); metrics.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 190)); metrics.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        file = new MetricCard("本批关单", "份", MetricIcon.File) { Dock = DockStyle.Fill, Margin = new Padding(0, 0, 14, 0) };
-        duplicate = new MetricCard("重复单号", "组", MetricIcon.Duplicate) { Dock = DockStyle.Fill, Margin = new Padding(0, 0, 14, 0) };
-        money = new MoneySummaryPanel { Dock = DockStyle.Fill, Margin = Padding.Empty };
-        metrics.Controls.Add(file, 0, 0); metrics.Controls.Add(duplicate, 1, 0); metrics.Controls.Add(money, 2, 0); _body.Controls.Add(metrics, 0, 2);
-        var progress = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, ColumnCount = 1, Margin = new Padding(0, 0, 0, 10) };
-        progress.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); progress.RowStyles.Add(new RowStyle(SizeType.Absolute, 5));
-        _progressText = new Label { Dock = DockStyle.Fill, Font = Theme.UiFont(13), ForeColor = Theme.Blue, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
-        _progressBar = new ProgressBar { Dock = DockStyle.Fill, Style = ProgressBarStyle.Continuous, Margin = Padding.Empty, AccessibleName = "批次识别进度" };
-        progress.Controls.Add(_progressText, 0, 0); progress.Controls.Add(_progressBar, 0, 1); _body.Controls.Add(progress, 0, 4);
-        var records = new RoundedPanel { Dock = DockStyle.Fill, BackColor = Theme.Surface, Margin = Padding.Empty };
-        var content = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, Padding = new Padding(1), Margin = Padding.Empty };
-        foreach (var height in new[] { 60, 58 }) content.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
-        content.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); content.RowStyles.Add(new RowStyle(SizeType.Absolute, 62));
-        var recordHeading = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, Padding = new Padding(20, 10, 20, 8), Margin = Padding.Empty };
-        recordHeading.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120)); recordHeading.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); recordHeading.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 115));
-        recordHeading.Controls.Add(new Label { Text = "关单记录", Dock = DockStyle.Fill, Font = Theme.UiFont(18, FontStyle.Bold), ForeColor = Theme.Text, TextAlign = ContentAlignment.MiddleLeft }, 0, 0);
-        recordCount = new Label { Dock = DockStyle.Fill, Font = Theme.UiFont(12), ForeColor = Theme.Muted, TextAlign = ContentAlignment.MiddleLeft };
-        _cleanup = Theme.IconButton("清理 ▾", UiIcon.Clean); _cleanup.Dock = DockStyle.Fill; _cleanup.Margin = Padding.Empty;
-        var menu = new ContextMenuStrip { Font = Theme.UiFont(14), ShowImageMargin = false, Padding = new Padding(6) };
-        menu.Items.Add("清理当前列表", null, (_, _) => ClearList()); menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("清理关单源文件…", null, (_, _) => CleanDeclarationFolder()); menu.Items.Add("清理核验截图…", null, (_, _) => CleanScreenshotFolder());
-        _cleanup.Click += (_, _) => { if (_session is null) menu.Show(_cleanup, new Point(0, _cleanup.Height)); };
-        _cleanup.Disposed += (_, _) => menu.Dispose();
-        recordHeading.Controls.Add(recordCount, 1, 0); recordHeading.Controls.Add(_cleanup, 2, 0); content.Controls.Add(recordHeading, 0, 0);
-        var toolbar = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, Padding = new Padding(20, 4, 20, 12), Margin = Padding.Empty };
-        toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 462)); toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 310));
-        var tabs = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, Margin = Padding.Empty };
-        for (var i = 0; i < 4; i++)
+
+        _body = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, Margin = Padding.Empty, BackColor = Theme.Canvas };
+        _body.RowStyles.Add(new RowStyle(SizeType.Absolute, 62));   // title row
+        _body.RowStyles.Add(new RowStyle(SizeType.Absolute, 130));  // stats row
+        _body.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));    // progress strip
+        _body.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));    // lock bar
+        _body.RowStyles.Add(new RowStyle(SizeType.Percent, 100));   // records panel
+
+        _body.Controls.Add(BuildTitleRow(), 0, 0);
+        _body.Controls.Add(BuildStatsRow(), 0, 1);
+
+        _progressStrip = new ProgressStrip { Dock = DockStyle.Fill, Margin = new Padding(0, 0, 0, 12) };
+        _body.Controls.Add(_progressStrip, 0, 2);
+        _lockBar = new LockBar { Dock = DockStyle.Fill, Margin = new Padding(0, 0, 0, 12) };
+        _body.Controls.Add(_lockBar, 0, 3);
+
+        _body.Controls.Add(BuildRecordsPanel(), 0, 4);
+        root.Controls.Add(_body, 0, 1);
+        Controls.Add(root);
+
+        _toast = new ToastControl { Anchor = AnchorStyles.Bottom, Location = new Point(0, ClientSize.Height - 50) };
+        Controls.Add(_toast);
+        _toast.BringToFront();
+        ClientSizeChanged += (_, _) =>
         {
-            var index = i; var button = Theme.SecondaryButton(""); button.Size = new Size(105, 38); button.Margin = new Padding(0, 0, 8, 0);
-            button.AccessibleName = new[] { "全部记录", "正常记录", "重复记录", "需关注记录" }[i];
-            button.Click += (_, _) => { _filterIndex = index; _page = 1; RefreshGrid(); }; _filterTabs.Add(button); tabs.Controls.Add(button);
-        }
-        search = new TextBox { PlaceholderText = "搜索单号、文件、收货人或合同", BorderStyle = BorderStyle.None, Font = Theme.UiFont(14), AccessibleName = "搜索关单记录" };
-        toolbar.Controls.Add(tabs, 0, 0); toolbar.Controls.Add(new SearchField(search) { Dock = DockStyle.Fill, Margin = Padding.Empty, Padding = new Padding(46, 10, 10, 4) }, 2, 0); content.Controls.Add(toolbar, 0, 1);
-        grid = BuildGrid(); empty = BuildEmptyState(); var gridHost = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty, AllowDrop = true }; gridHost.Controls.Add(grid); gridHost.Controls.Add(empty);
-        foreach (var target in new Control[] { gridHost, grid, empty }) { target.AllowDrop = true; target.DragEnter += GridDragEnter; target.DragDrop += GridDragDrop; }
-        content.Controls.Add(gridHost, 0, 2);
-        var bottom = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, Margin = Padding.Empty };
-        bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150)); bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        pageSize = new ModernDropDown { Dock = DockStyle.Fill, Margin = new Padding(20, 11, 0, 11), AccessibleName = "每页显示条数" }; pageSize.Items.AddRange(["20 条", "50 条", "100 条"]);
-        bottom.Controls.Add(pageSize, 0, 0); bottom.Controls.Add(BuildPagination(out previous, out pageLabel, out next, out footer), 1, 0); content.Controls.Add(bottom, 0, 3);
-        records.Controls.Add(content); _body.Controls.Add(records, 0, 5); root.Controls.Add(_body, 0, 1); Controls.Add(root);
+            ApplyResponsiveLayout();
+            _toast.Location = new Point((ClientSize.Width - _toast.Width) / 2, ClientSize.Height - _toast.Height - 18);
+        };
     }
 
     private Control BuildHeader()
     {
-        var header = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty, BackColor = Theme.Navy, AccessibleName = "应用标题栏" };
-        var title = new Label { Text = "关单核验台", Location = new Point(66, 0), Size = new Size(300, 56), Font = Theme.UiFont(17, FontStyle.Bold), ForeColor = Color.White, TextAlign = ContentAlignment.MiddleLeft };
-        var logo = new PictureBox { Image = Icon?.ToBitmap(), Location = new Point(28, 13), Size = new Size(30, 30), SizeMode = PictureBoxSizeMode.Zoom };
-        header.Controls.AddRange([logo, title]);
-        var actions = new FlowLayoutPanel { Dock = DockStyle.Right, Width = 168, FlowDirection = FlowDirection.LeftToRight, Margin = Padding.Empty };
+        var header = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty, BackColor = Theme.HeaderBg, AccessibleName = "应用标题栏" };
+        var logoBack = new RoundedPanel { Location = new Point(20, 10), Size = new Size(28, 28), Radius = 6, BackColor = Theme.Accent, BorderColor = Theme.Accent };
+        var logo = new PictureBox { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Transparent };
+        var appIcon = LoadApplicationIcon();
+        if (appIcon is not null) logo.Image = appIcon;
+        logoBack.Controls.Add(logo);
+        header.Controls.Add(logoBack);
+        var title = new Label
+        {
+            Text = "关单核验台",
+            Location = new Point(60, 0),
+            Size = new Size(160, UiTokens.Metrics.Header),
+            Font = AppFonts.Ui(15F, UiWeight.Bold),
+            ForeColor = Color.White,
+            TextAlign = ContentAlignment.MiddleLeft,
+            BackColor = Color.Transparent
+        };
+        header.Controls.Add(title);
+        _headerTitle = title;
+        // The title label used to stay 160px wide from x=60 (right edge 220) and covered the
+        // fixed divider (x=186) and version (x=197); the real composited window then clipped
+        // the version to "5.0" even though DrawToBitmap looked fine. Size the label to its
+        // real text and place the divider/version strictly after it (P2).
+        var titleWidth = Math.Max(1, TextRenderer.MeasureText(title.Text, title.Font).Width);
+        title.Size = new Size(titleWidth, UiTokens.Metrics.Header);
+        var divider = new Panel
+        {
+            Location = new Point(title.Right + 16, 14),
+            Size = new Size(1, 20),
+            BackColor = ColorTranslator.FromHtml("#5C6D82")
+        };
+        header.Controls.Add(divider);
+        _headerDivider = divider;
+        var version = new Label
+        {
+            Text = "v" + (Application.ProductVersion.Split('+')[0]),
+            Location = new Point(divider.Right + 10, 0),
+            Size = new Size(90, UiTokens.Metrics.Header),
+            Font = AppFonts.Mono(12F),
+            ForeColor = ColorTranslator.FromHtml("#C9D6E8"),
+            TextAlign = ContentAlignment.MiddleLeft,
+            BackColor = Color.Transparent
+        };
+        header.Controls.Add(version);
+        _headerVersion = version;
+
+        var actions = new FlowLayoutPanel { Dock = DockStyle.Right, AutoSize = true, FlowDirection = FlowDirection.LeftToRight, Margin = Padding.Empty, BackColor = Color.Transparent, Padding = new Padding(0, 9, 10, 9) };
+        _settings = Theme.IconButton("设置", new RoundedButton
+        {
+            BackColor = ColorTranslator.FromHtml("#213855"),
+            BorderColor = ColorTranslator.FromHtml("#5C6D82"),
+            ForeColor = Color.White,
+            HoverBackColor = ColorTranslator.FromHtml("#354A65"),
+            PressedBackColor = ColorTranslator.FromHtml("#40566F"),
+            DisabledFill = Theme.HeaderBg,
+            Radius = 6,
+            Size = new Size(78, 30),
+            Font = AppFonts.Ui(13F, UiWeight.Medium)
+        }, Ui2.SettingsWhite, 16, DeviceDpi);
+        _settings.Click += (_, _) => ShowDirectorySettings();
+        actions.Controls.Add(_settings);
         foreach (var glyph in new[] { CaptionGlyph.Minimize, CaptionGlyph.Maximize, CaptionGlyph.Close })
         {
-            var button = new WindowCaptionButton(glyph) { Margin = Padding.Empty };
-            button.Click += (_, _) => { if (glyph == CaptionGlyph.Close) Close(); else if (glyph == CaptionGlyph.Minimize) WindowState = FormWindowState.Minimized; else { ToggleMaximize(); button.RefreshWindowState(); } };
+            var button = new WindowCaptionButton(glyph) { Margin = new Padding(0), Size = new Size(46, 30) };
+            var captured = glyph;
+            button.Click += (_, _) =>
+            {
+                if (captured == CaptionGlyph.Close) Close();
+                else if (captured == CaptionGlyph.Minimize) WindowState = FormWindowState.Minimized;
+                else { ToggleMaximize(); button.RefreshWindowState(); }
+            };
             actions.Controls.Add(button);
         }
         header.Controls.Add(actions);
-        foreach (var control in new Control[] { header, title, logo }) { control.MouseDown += (_, e) => { if (e.Button == MouseButtons.Left) BeginWindowDrag(); }; control.DoubleClick += (_, _) => ToggleMaximize(); }
+        foreach (var control in new Control[] { header, title, version, divider, logoBack })
+            control.MouseDown += (_, e) => { if (e.Button == MouseButtons.Left) BeginWindowDrag(); };
+        foreach (var control in new Control[] { header, title, version, logoBack })
+            control.DoubleClick += (_, _) => ToggleMaximize();
         return header;
     }
 
-    private void PaintRecordCell(object? sender, DataGridViewCellPaintingEventArgs e)
+    private static Bitmap? LoadApplicationIcon()
     {
-        if (e.RowIndex < 0 || e.ColumnIndex < 0 || _grid.Rows[e.RowIndex].Tag is not DeclarationRecord record) return;
-        if (_grid.Columns[e.ColumnIndex].Name != "No") return;
-        e.Paint(e.CellBounds, DataGridViewPaintParts.All & ~DataGridViewPaintParts.ContentForeground);
-        var selected = (e.State & DataGridViewElementStates.Selected) != 0;
-        var text = selected ? Theme.Text : record.IsDuplicate ? Theme.Danger : Theme.Text;
-        var bounds = e.CellBounds;
-        using var numberFont = Theme.MonoFont(14);
-        using var sourceFont = Theme.UiFont(11);
-        TextRenderer.DrawText(e.Graphics!, record.DeclarationNo.Length == 0 ? "未识别" : record.DeclarationNo, numberFont, new Rectangle(bounds.X + ScalePixels(10), bounds.Y + ScalePixels(12), bounds.Width - ScalePixels(20), ScalePixels(22)), text, TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
-        TextRenderer.DrawText(e.Graphics!, record.SourceName, sourceFont, new Rectangle(bounds.X + ScalePixels(10), bounds.Y + ScalePixels(36), bounds.Width - ScalePixels(20), ScalePixels(18)), Theme.Muted, TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
-        if (record.IsDuplicate) { using var stripe = new SolidBrush(Theme.Danger); e.Graphics!.FillRectangle(stripe, bounds.X, bounds.Y + ScalePixels(10), ScalePixels(3), bounds.Height - ScalePixels(20)); }
-        e.Handled = true;
+        try
+        {
+            var path = Path.Combine(AppContext.BaseDirectory, "assets", "ui-v2", "icons", "app", "app-icon-48.png");
+            if (File.Exists(path)) { using var source = new Bitmap(path); return new Bitmap(source); }
+            var ico = Path.Combine(AppContext.BaseDirectory, "app.ico");
+            if (File.Exists(ico)) { using var icon = new Icon(ico); return icon.ToBitmap(); }
+        }
+        catch (Exception ex) { AppLog.Write(ex); }
+        return null;
+    }
+
+    private Control BuildTitleRow()
+    {
+        var row = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1, Margin = Padding.Empty, BackColor = Theme.Canvas };
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 158));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
+        _titleBlock = new TitleBlock { Dock = DockStyle.Fill, Margin = new Padding(0, 0, 12, 0) };
+        row.Controls.Add(_titleBlock, 0, 0);
+        _exportButton = Theme.IconButton("导出列表", Theme.SecondaryButton(""), Ui2.Export, 16, DeviceDpi);
+        _exportButton.Dock = DockStyle.Fill;
+        _exportButton.Margin = new Padding(0, 11, 10, 11);
+        _exportButton.AccessibleName = "导出列表";
+        _exportButton.Click += (_, _) => ShowExportMenu();
+        _exportButton.Disposed += (_, _) => _exportMenu?.Dispose();
+        row.Controls.Add(_exportButton, 1, 0);
+        _scan = Theme.IconButton("开始识别", Theme.PrimaryButton(""), Ui2.Play, 16, DeviceDpi);
+        _scan.Dock = DockStyle.Fill;
+        _scan.Margin = new Padding(0, 11, 0, 11);
+        _scan.AccessibleName = "开始识别";
+        _scan.Click += async (_, _) => { if (_session is null) await ScanAsync(); else _session.Cancel(); };
+        row.Controls.Add(_scan, 2, 0);
+        return row;
+    }
+
+    private Control BuildStatsRow()
+    {
+        var row = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty, BackColor = Theme.Canvas };
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 480));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        _statsRow = row;
+        _kpi = new KpiPanel { Dock = DockStyle.Fill, Margin = new Padding(0, 0, 16, 0) };
+        _moneySummary = new MoneySummaryPanel { Dock = DockStyle.Fill, Margin = Padding.Empty };
+        row.Controls.Add(_kpi, 0, 0);
+        row.Controls.Add(_moneySummary, 1, 0);
+        return row;
+    }
+
+    private Control BuildRecordsPanel()
+    {
+        var panel = new RoundedPanel { Dock = DockStyle.Fill, BackColor = Theme.Surface, BorderColor = Theme.Border, Radius = 8, Margin = Padding.Empty };
+        var content = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, Padding = new Padding(1), Margin = Padding.Empty, BackColor = Theme.Surface };
+        _recordsContent = content;
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 56));
+        content.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
+
+        var toolbar = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, RowCount = 1, Margin = Padding.Empty, Padding = new Padding(16, 0, 16, 0), BackColor = Theme.Surface };
+        // A single explicit Percent row keeps the nested toolbar inside its fixed 56/50 slot.
+        // Without it the implicit AutoSize row inflates to the tallest child's preferred size
+        // (a bare Panel defaults to 100px), pushing the cleanup anchor and the search/filter
+        // row far outside the visible slot (R4-2).
+        toolbar.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 372));
+        toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 348));
+        toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 112));
+        _toolbar = toolbar;
+        _filterSegmented = new FilterSegmented { Dock = DockStyle.Fill, Margin = new Padding(0, 11, 0, 11) };
+        _filterSegmented.SegmentSelected += (_, index) => { _filterIndex = index; _page = 1; RefreshGrid(); };
+        _filterSegmented.Disposed += (_, _) => { };
+        toolbar.Controls.Add(_filterSegmented, 0, 0);
+        _search = new TextBox { PlaceholderText = "搜索单号、文件名、收货人、合同号", BorderStyle = BorderStyle.None, Font = Theme.UiFont(13F), AccessibleName = "搜索关单记录", BackColor = Color.White };
+        _searchHost = new SearchField(_search) { Dock = DockStyle.Fill, Margin = new Padding(0, 11, 0, 11) };
+        toolbar.Controls.Add(_searchHost, 1, 0);
+        _cleanupButton = Theme.IconButton("清理", Theme.QuietButton(""), Ui2.TrashInk, 16, DeviceDpi);
+        _cleanupButton.Dock = DockStyle.Fill;
+        _cleanupButton.Margin = new Padding(0, 11, 0, 11);
+        _cleanupButton.AccessibleName = "清理";
+        _cleanupButton.Click += (_, _) => { if (_session is null) _cleanupMenu.Show(_cleanupButton, _cleanupButton.Height + 6, true); };
+        _cleanupButton.Disposed += (_, _) => _cleanupMenu.Dispose();
+        toolbar.Controls.Add(_cleanupButton, 3, 0);
+        content.Controls.Add(toolbar, 0, 0);
+
+        _grid = BuildGrid();
+        _recordState = new RecordStatePanel { Visible = false, Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom };
+        _recordState.ActionInvoked += (_, action) => { if (action == "选择关单目录") ShowDirectorySettings(); };
+        _gridHost = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty, AllowDrop = true };
+        _gridHost.Controls.Add(_grid);
+        _gridHost.Controls.Add(_recordState);
+        foreach (var target in new Control[] { _gridHost, _grid, _recordState })
+        {
+            target.AllowDrop = true;
+            target.DragEnter += GridDragEnter;
+            target.DragOver += GridDragOver;
+            target.DragDrop += GridDragDrop;
+            target.DragLeave += (_, _) => HideDropFeedback();
+        }
+        content.Controls.Add(_gridHost, 0, 1);
+        content.Controls.Add(BuildFooter(), 0, 2);
+        panel.Controls.Add(content);
+        return panel;
+    }
+
+    private Control BuildFooter()
+    {
+        var footer = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 6, RowCount = 1, Margin = Padding.Empty, Padding = new Padding(16, 0, 16, 0), BackColor = Theme.Surface };
+        // Same explicit row as the toolbar: paging buttons and the page-size dropdown must
+        // stay inside the fixed 44px footer instead of expanding it (R4-2).
+        footer.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        _footerPanel = footer;
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 72));
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 64));
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 72));
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 44));
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 104));
+        _footer = new Label { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, ForeColor = Theme.Muted, Font = Theme.UiFont(12.5F), AutoEllipsis = true };
+        _previous = Theme.QuietButton("上一页");
+        _previous.Dock = DockStyle.Fill;
+        _previous.Margin = new Padding(0, 8, 6, 8);
+        _previous.Click += (_, _) => { if (_page > 1) { _page--; RefreshGrid(); } };
+        _pageLabel = new Label { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, ForeColor = Theme.Text, Font = Theme.MonoFont(12.5F, true) };
+        _next = Theme.QuietButton("下一页");
+        _next.Dock = DockStyle.Fill;
+        _next.Margin = new Padding(6, 8, 0, 8);
+        _next.Click += (_, _) => { if (_page < PageCount()) { _page++; RefreshGrid(); } };
+        var perPage = new Label { Text = "每页", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight, ForeColor = Theme.Muted, Font = Theme.UiFont(12.5F) };
+        _pageSize = new ModernDropDown { Dock = DockStyle.Fill, Margin = new Padding(8, 8, 0, 8), ItemHeight = 30, OpenUpward = true, UseMonoValue = true, AccessibleName = "每页显示条数" };
+        _pageSize.Items.AddRange(["50 条", "100 条", "200 条"]);
+        _pageSize.SelectedIndexChanged += (_, _) => { _page = 1; RefreshGrid(); };
+        footer.Controls.Add(_footer, 0, 0);
+        footer.Controls.Add(_previous, 1, 0);
+        footer.Controls.Add(_pageLabel, 2, 0);
+        footer.Controls.Add(_next, 3, 0);
+        footer.Controls.Add(perPage, 4, 0);
+        footer.Controls.Add(_pageSize, 5, 0);
+        return footer;
     }
 
     private DataGridView BuildGrid()
     {
-        var grid = new DataGridView
+        var grid = new RecordGrid
         {
-            Dock = DockStyle.Fill, BackgroundColor = Theme.Surface, BorderStyle = BorderStyle.None,
-            AllowUserToAddRows = false, AllowUserToDeleteRows = false, AllowUserToResizeRows = false, AllowUserToResizeColumns = true,
-            AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill, ReadOnly = true, RowHeadersVisible = false, AutoGenerateColumns = false,
-            SelectionMode = DataGridViewSelectionMode.CellSelect, MultiSelect = true, EnableHeadersVisualStyles = false,
-            ColumnHeadersHeight = 46, ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing,
-            RowTemplate = { Height = 66 }, ClipboardCopyMode = DataGridViewClipboardCopyMode.Disable
+            Dock = DockStyle.Fill,
+            BackgroundColor = Theme.Surface,
+            BorderStyle = BorderStyle.None,
+            AllowUserToAddRows = false,
+            AllowUserToDeleteRows = false,
+            AllowUserToResizeRows = false,
+            AllowUserToResizeColumns = true,
+            AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None,
+            ReadOnly = true,
+            RowHeadersVisible = false,
+            AutoGenerateColumns = false,
+            SelectionMode = DataGridViewSelectionMode.CellSelect,
+            MultiSelect = true,
+            EnableHeadersVisualStyles = false,
+            ColumnHeadersHeight = 38,
+            ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing,
+            RowTemplate = { Height = 54 },
+            ClipboardCopyMode = DataGridViewClipboardCopyMode.Disable,
+            ScrollBars = ScrollBars.Both,
+            AllowUserToOrderColumns = false
         };
-        grid.ColumnHeadersDefaultCellStyle = new DataGridViewCellStyle { BackColor = Theme.HeaderSoft, ForeColor = Theme.Text, Font = Theme.UiFont(13F, FontStyle.Bold), Alignment = DataGridViewContentAlignment.MiddleCenter, SelectionBackColor = Theme.HeaderSoft, SelectionForeColor = Theme.Text };
-        grid.DefaultCellStyle = new DataGridViewCellStyle { BackColor = Theme.Surface, ForeColor = Theme.Text, Font = Theme.UiFont(14F), SelectionBackColor = ColorTranslator.FromHtml("#E6EEF4"), SelectionForeColor = Theme.Text, Padding = new Padding(8, 0, 8, 0), Alignment = DataGridViewContentAlignment.MiddleLeft, NullValue = "—" };
-        grid.AlternatingRowsDefaultCellStyle.BackColor = ColorTranslator.FromHtml("#FAFBFC"); grid.GridColor = Theme.Border;
-        AddTextColumn(grid, "Index", "序号", 7, 48, DataGridViewContentAlignment.MiddleCenter); AddTextColumn(grid, "No", "报关单编号", 19, 200); AddTextColumn(grid, "Consignee", "境外收货人", 17, 155); AddTextColumn(grid, "Contract", "合同协议号", 13, 120); AddTextColumn(grid, "Customs", "出境关别", 11, 84); AddTextColumn(grid, "Country", "目的国", 10, 70); AddTextColumn(grid, "Total", "关单总货值", 16, 170, DataGridViewContentAlignment.MiddleRight); AddTextColumn(grid, "Status", "状态", 10, 106, DataGridViewContentAlignment.MiddleCenter);
-        grid.Columns.Add(new DataGridViewButtonColumn { Name = "Verify", HeaderText = "网页核验", Text = "核验", UseColumnTextForButtonValue = false, FillWeight = 8, MinimumWidth = 90, Resizable = DataGridViewTriState.True, FlatStyle = FlatStyle.Flat });
-        grid.DefaultCellStyle.WrapMode = DataGridViewTriState.True;
-        grid.Columns["No"].DefaultCellStyle.WrapMode = DataGridViewTriState.False;
-        grid.Columns["Total"].DefaultCellStyle.Font = Theme.MonoFont(14F);
-        grid.Columns["Consignee"].DefaultCellStyle.Font = Theme.UiFont(13F);
+        grid.ColumnHeadersDefaultCellStyle = new DataGridViewCellStyle
+        {
+            BackColor = Theme.PanelSubtle,
+            ForeColor = Theme.Muted,
+            Font = Theme.UiFont(12.5F, FontStyle.Bold),
+            Alignment = DataGridViewContentAlignment.MiddleLeft,
+            SelectionBackColor = Theme.PanelSubtle,
+            SelectionForeColor = Theme.Muted,
+            // Zero here: DataGridViewCellStyle inheritance skips a Padding.Empty at a lower
+            // level (DataGridViewColumnHeaderCell.GetInheritedStyle falls through cell ->
+            // ColumnHeadersDefaultCellStyle -> DefaultCellStyle), so the real zero must be the
+            // shared base. Non-index columns opt back into the 8px inset below (P2).
+            Padding = Padding.Empty
+        };
+        grid.DefaultCellStyle = new DataGridViewCellStyle
+        {
+            BackColor = Theme.Surface,
+            ForeColor = Theme.Text,
+            Font = Theme.UiFont(13.5F),
+            SelectionBackColor = UiTokens.Status.CellSelected,
+            SelectionForeColor = Theme.Text,
+            // Data cells keep their 8px inset through each column's DefaultCellStyle; the
+            // shared default is zero so the narrow index header can inherit a true zero.
+            Padding = Padding.Empty,
+            Alignment = DataGridViewContentAlignment.MiddleLeft,
+            NullValue = "—",
+            WrapMode = DataGridViewTriState.False
+        };
+        grid.AlternatingRowsDefaultCellStyle.BackColor = Theme.Surface;
+        grid.GridColor = Theme.Divider;
+        AddColumn(grid, "Index", "#", DataGridViewContentAlignment.MiddleCenter);
+        AddColumn(grid, "Status", "状态", DataGridViewContentAlignment.MiddleCenter);
+        AddColumn(grid, "No", "报关单号 / 来源文件", DataGridViewContentAlignment.MiddleLeft);
+        AddColumn(grid, "Consignee", "境外收货人", DataGridViewContentAlignment.MiddleLeft);
+        AddColumn(grid, "Contract", "合同协议号", DataGridViewContentAlignment.MiddleLeft);
+        AddColumn(grid, "Port", "出境关别", DataGridViewContentAlignment.MiddleLeft);
+        AddColumn(grid, "Dest", "目的国", DataGridViewContentAlignment.MiddleLeft);
+        AddColumn(grid, "PortDest", "出境关别 / 目的国", DataGridViewContentAlignment.MiddleLeft);
+        AddColumn(grid, "Amount", "关单总货值", DataGridViewContentAlignment.MiddleRight);
+        AddColumn(grid, "Detail", "查看", DataGridViewContentAlignment.MiddleCenter);
+        AddColumn(grid, "Verify", "网页核验", DataGridViewContentAlignment.MiddleCenter);
+
+        // The shared header padding is a true zero so the 28px index column can inherit it
+        // and centre-draw the full "#". A local Padding.Empty on the index header would be
+        // ignored by DataGridViewCellStyle.ApplyStyle and silently fall back to the inherited
+        // 8px inset, which clipped the glyph to a sliver on real screens (P2). Every other
+        // column opts back into the 8px inset explicitly, keeping their previous appearance.
+        var indexHeader = grid.Columns["Index"].HeaderCell.Style;
+        indexHeader.Alignment = DataGridViewContentAlignment.MiddleCenter;
+        foreach (DataGridViewColumn column in grid.Columns)
+            if (column.Name != "Index")
+                column.HeaderCell.Style.Padding = new Padding(8, 0, 8, 0);
+
         grid.CellPainting += PaintRecordCell;
-        var menu = new CopyContextMenu(CopySelectedCells);
-        grid.Disposed += (_, _) => menu.Dispose();
-        grid.CellMouseDown += (_, e) =>
+        grid.CellClick += GridCellClick;
+        grid.CellDoubleClick += GridCellDoubleClick;
+        grid.CellMouseDown += (_, e) => { SelectCellForContextMenu(e); if (e.Button == MouseButtons.Right && e.RowIndex >= 0 && e.ColumnIndex >= 0) _copyMenu.ShowAt(Cursor.Position, grid.SelectedCells.Count > 0); };
+        grid.KeyDown += GridKeyDown;
+        grid.ColumnWidthChanged += (_, e) =>
         {
-            SelectCellForContextMenu(e);
-            if (e.Button == MouseButtons.Right && e.RowIndex >= 0 && e.ColumnIndex >= 0)
-                menu.ShowAt(Cursor.Position, grid.SelectedCells.Count > 0);
+            if (_applyingWidths || e.Column is null || !e.Column.Visible) return;
+            if (e.Column.Name == "Consignee")
+                _manualWidths[e.Column.Name] = e.Column.Width;
+            else
+                _manualWidths[e.Column.Name] = e.Column.Width;
         };
-        grid.KeyDown += (_, e) =>
-        {
-            if (e.Control && e.KeyCode == Keys.C)
-            {
-                CopySelectedCells(); e.Handled = true; e.SuppressKeyPress = true;
-            }
-            else if ((e.Shift && e.KeyCode == Keys.F10) || e.KeyCode == Keys.Apps)
-            {
-                var cell = grid.CurrentCell;
-                var point = cell is null ? new Point(20, 20) : new Point(
-                    grid.GetCellDisplayRectangle(cell.ColumnIndex, cell.RowIndex, true).Left + 16,
-                    grid.GetCellDisplayRectangle(cell.ColumnIndex, cell.RowIndex, true).Bottom - 4);
-                menu.ShowAt(grid.PointToScreen(point), grid.SelectedCells.Count > 0);
-                e.Handled = true; e.SuppressKeyPress = true;
-            }
-        };
+        grid.ColumnHeaderMouseDoubleClick += (_, _) => { _manualWidths.Clear(); ApplyGridColumns(); };
+        // No CellFormatting blanking: custom painting happens in CellPainting with
+        // e.Handled = true, so real cell values stay available for copy, tooltips and
+        // accessibility. Blanks would make No/Amount/Status copy as empty (R3-2).
+        _copyMenu = new CopyContextMenu(CopySelectedCells);
+        grid.Disposed += (_, _) => _copyMenu.Dispose();
         return grid;
     }
 
-    private static void AddTextColumn(DataGridView grid, string name, string header, float weight, int minimumWidth, DataGridViewContentAlignment alignment = DataGridViewContentAlignment.MiddleLeft) =>
-        grid.Columns.Add(new DataGridViewTextBoxColumn { Name = name, HeaderText = header, FillWeight = weight, MinimumWidth = minimumWidth, Resizable = DataGridViewTriState.True, DefaultCellStyle = new DataGridViewCellStyle { Alignment = alignment, NullValue = "—" } });
-
-    private Panel BuildEmptyState()
-    {
-        var panel = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Surface, Visible = false };
-        var icon = new PictureBox { Image = UiIcons.Create(UiIcon.Start, Theme.Muted, 40), SizeMode = PictureBoxSizeMode.CenterImage, Size = new Size(48, 48), AccessibleName = "空列表图标" };
-        var label = new Label { Text = "暂无关单记录", TextAlign = ContentAlignment.MiddleCenter, ForeColor = Theme.Muted, Font = Theme.UiFont(14F), Size = new Size(540, 54), AccessibleName = "暂无关单记录，可拖入文件识别" };
-        void CenterContent()
+    private static void AddColumn(DataGridView grid, string name, string header, DataGridViewContentAlignment alignment) =>
+        grid.Columns.Add(new DataGridViewTextBoxColumn
         {
-            var left = Math.Max(0, (panel.ClientSize.Width - label.Width) / 2);
-            var top = Math.Max(8, (panel.ClientSize.Height - 92) / 2);
-            icon.Location = new Point((panel.ClientSize.Width - icon.Width) / 2, top);
-            label.Location = new Point(left, top + 52);
-        }
-        _emptyLabel = label; panel.Controls.AddRange([icon, label]); panel.Resize += (_, _) => CenterContent(); CenterContent();
-        return panel;
-    }
+            Name = name,
+            HeaderText = header,
+            SortMode = DataGridViewColumnSortMode.NotSortable,
+            Resizable = DataGridViewTriState.True,
+            MinimumWidth = name switch { "Index" => 28, "Status" => 64, "No" => 150, _ => 48 },
+            DefaultCellStyle = new DataGridViewCellStyle { Alignment = alignment, NullValue = "—", Padding = new Padding(8, 0, 8, 0) }
+        });
 
-    private Control BuildPagination(out Button previous, out Label pageLabel, out Button next, out Label footer)
+    private void ApplyResponsiveLayout()
     {
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(24, 9, 24, 9), ColumnCount = 4, RowCount = 1, BackColor = Theme.Surface };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 104)); layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 124)); layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 104));
-        footer = new Label { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, ForeColor = Theme.Muted, Font = Theme.UiFont(14F), AutoEllipsis = true };
-        previous = Theme.SecondaryButton("上一页"); previous.Dock = DockStyle.Fill; previous.Margin = new Padding(0, 0, 8, 0);
-        pageLabel = new Label { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, ForeColor = Theme.Text, Font = Theme.UiFont(14F) };
-        next = Theme.SecondaryButton("下一页"); next.Dock = DockStyle.Fill; next.Margin = new Padding(8, 0, 0, 0);
-        layout.Controls.Add(footer, 0, 0); layout.Controls.Add(previous, 1, 0); layout.Controls.Add(pageLabel, 2, 0); layout.Controls.Add(next, 3, 0); return layout;
+        if (IsDisposed || _body is null || _grid is null || _recordsContent is null) return;
+        SuspendLayout();
+        _body.SuspendLayout();
+        var dpi = DeviceDpi;
+        var logicalWidth = (int)Math.Round(ClientSize.Width * 96.0 / dpi);
+        var logicalHeight = (int)Math.Round(ClientSize.Height * 96.0 / dpi);
+        _layout = Responsive.Compute(logicalWidth, logicalHeight);
+        int S(int px) => (int)Math.Round(px * dpi / 96.0);
+        _body.Padding = new Padding(S(24), S(_layout.ContentPaddingY), S(24), S(_layout.ContentPaddingY));
+        _body.RowStyles[0].Height = S(_layout.CompactHeight ? 56 : 62);
+        _body.RowStyles[1].Height = StatsRowHeight();
+        _body.RowStyles[2].Height = _session is null ? 0 : S(_layout.CompactHeight ? 92 : 104);
+        _body.RowStyles[3].Height = _session is null ? 0 : S(_layout.CompactHeight ? 34 : 38);
+        _statsRow.ColumnStyles[0].Width = S(_layout.KpiPanelWidth);
+        _toolbar.ColumnStyles[0].Width = S(372);
+        _toolbar.ColumnStyles[1].Width = S(_layout.SearchWidth + 8);
+        _recordsContent.RowStyles[0].Height = S(_layout.Toolbar);
+        _grid.ColumnHeadersHeight = S(38);
+        _grid.RowTemplate.Height = S(_layout.TableRow);
+        ApplyGridColumns();
+        ResumeLayout(true);
+        _body.ResumeLayout(true);
     }
 
+    private void ApplyGridColumns()
+    {
+        if (_grid.Columns.Count == 0) return;
+        var dpi = DeviceDpi;
+        int S(int px) => (int)Math.Round(px * dpi / 96.0);
+        var table = _layout.Table;
+        _applyingWidths = true;
+        try
+        {
+            var merged = table.PortDestMerged;
+            _grid.Columns["Port"].Visible = !merged;
+            _grid.Columns["Dest"].Visible = !merged;
+            _grid.Columns["PortDest"].Visible = merged;
+            var inner = ClientSize.Width == 0 ? S(1100) : ClientSize.Width - S(48) - S(2) - S(32);
+            void Set(string name, int logical, bool fill = false)
+            {
+                var column = _grid.Columns[name];
+                if (!column.Visible) return;
+                if (_manualWidths.TryGetValue(name, out var manual) && !fill) { column.Width = Math.Max(column.MinimumWidth, manual); return; }
+                column.Width = Math.Max(column.MinimumWidth, S(logical));
+            }
+            Set("Index", table.Index);
+            Set("Status", table.Status);
+            Set("No", table.Number);
+            Set("Contract", table.Contract);
+            Set("Port", table.Port);
+            Set("Dest", table.Dest);
+            Set("PortDest", table.PortDest);
+            Set("Amount", table.Amount);
+            Set("Detail", table.Detail);
+            Set("Verify", table.Verify);
+            var used = new[] { "Index", "Status", "No", "Contract", "Port", "Dest", "PortDest", "Amount", "Detail", "Verify" }
+                .Where(name => _grid.Columns[name].Visible)
+                .Sum(name => _grid.Columns[name].Width);
+            var consignee = _grid.Columns["Consignee"];
+            if (_manualWidths.TryGetValue("Consignee", out var manualConsignee))
+                consignee.Width = Math.Max(consignee.MinimumWidth, manualConsignee);
+            else
+                consignee.Width = Math.Max(consignee.MinimumWidth, inner - used);
+        }
+        finally { _applyingWidths = false; }
+    }
+
+    /// <summary>Double-buffered grid so repaints during resize do not flicker.</summary>
+    private sealed class RecordGrid : DataGridView
+    {
+        public RecordGrid()
+        {
+            DoubleBuffered = true;
+        }
+    }
 }

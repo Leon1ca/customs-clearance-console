@@ -26,13 +26,21 @@ internal sealed class StateStore
                 record.Status = "需关注";
                 record.Warning = string.Join("；", new[] { record.Warning, "历史重复记录的识别状态不完整，请重新识别源文件" }.Where(x => !string.IsNullOrWhiteSpace(x)));
             }
-            state.UiSchemaVersion = 5;
+            state.UiSchemaVersion = AppState.CurrentUiSchemaVersion;
             BatchScanner.MarkDuplicates(state.Records);
             return state;
         }
         catch (Exception ex)
         {
             AppLog.Write(ex);
+            // The next Save would silently replace an unreadable history with an empty one.
+            // Keep the original bytes next to it so the records can still be recovered.
+            try
+            {
+                if (File.Exists(StatePath))
+                    File.Copy(StatePath, $"{StatePath}.corrupt-{DateTime.Now:yyyyMMdd-HHmmss}", overwrite: false);
+            }
+            catch (Exception backupError) { AppLog.Write($"备份无法读取的历史记录失败：{backupError.Message}"); }
             return new AppState();
         }
     }
@@ -41,7 +49,13 @@ internal sealed class StateStore
     {
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(StatePath))!);
         var temp = StatePath + ".tmp";
-        File.WriteAllText(temp, JsonSerializer.Serialize(state, JsonOptions));
+        // Flush the new content to disk before the atomic replace, so a power loss or crash
+        // right after saving can never leave a truncated history.json behind.
+        using (var stream = new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None))
+        {
+            JsonSerializer.Serialize(stream, state, JsonOptions);
+            stream.Flush(flushToDisk: true);
+        }
         File.Move(temp, StatePath, true);
     }
 

@@ -29,8 +29,12 @@ public sealed class DeclarationRecord
     [JsonIgnore]
     public bool HasScreenshot => !string.IsNullOrWhiteSpace(ScreenshotPath) && File.Exists(ScreenshotPath);
     [JsonIgnore]
+    public bool HasLineDetails => LineTotals.Count > 0;
+    [JsonIgnore]
     public string DisplayStatus => string.Join(Environment.NewLine,
         new[] { IsDuplicate ? "重复单号" : "", NeedsAttention ? Status == "识别失败" ? "识别失败" : "需关注" : "", !IsDuplicate && !NeedsAttention ? "识别完成" : "" }.Where(x => x.Length > 0));
+    [JsonIgnore]
+    public string PrimaryStatus => Status == "识别失败" ? "识别失败" : IsDuplicate ? "重复" : NeedsAttention ? "需关注" : "正常";
     [JsonIgnore]
     public string AllWarnings => string.Join("；", new[] { Warning, DuplicateWarning }.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct());
 
@@ -48,11 +52,30 @@ public sealed class DeclarationLineTotal
     public int Sequence { get; set; }
     public int PageNumber { get; set; }
     public string ItemNo { get; set; } = "";
+    public string ProductName { get; set; } = "";
+    public decimal? Quantity { get; set; }
+    public string Unit { get; set; } = "";
+    public decimal? UnitPrice { get; set; }
     public string Currency { get; set; } = "";
     public decimal Amount { get; set; }
     public decimal? VerificationAmount { get; set; }
+    public string VerificationProductName { get; set; } = "";
+    public decimal? VerificationQuantity { get; set; }
+    public string VerificationUnit { get; set; } = "";
+    public decimal? VerificationUnitPrice { get; set; }
     public bool IsReliable { get; set; } = true;
     public string Note { get; set; } = "";
+
+    /// <summary>
+    /// Descriptor fields that were copied from the verification engine because the primary
+    /// engine left them empty. Such a field was never independently read by two engines and
+    /// therefore must not count as fully verified. Serialized so provenance survives reload;
+    /// absent in old JSON, where it defaults to empty.
+    /// </summary>
+    public HashSet<string> BackfilledFields { get; set; } = new();
+
+    /// <summary>True when the row amount itself came only from the verification engine.</summary>
+    public bool AmountOnlyFromSecondary { get; set; }
 
     [JsonIgnore]
     public string DisplayAmount => $"{Currency} {Amount:N2}";
@@ -61,11 +84,89 @@ public sealed class DeclarationLineTotal
     public string DisplayVerification => VerificationAmount is null
         ? "—"
         : $"{Currency} {VerificationAmount.Value:N2}";
+
+    [JsonIgnore]
+    public string DisplayProduct => string.IsNullOrWhiteSpace(ProductName) ? "未识别" : ProductName;
+
+    // Display and tooltip text must never round a source value: a non-zero quantity
+    // such as 0.0004 has to stay readable, never collapse to a bare "0".
+    [JsonIgnore]
+    public string DisplayQuantity => Quantity is null ? "—" : NumberFormats.Exact(Quantity.Value);
+
+    [JsonIgnore]
+    public string ExactQuantity => Quantity is null ? "—" : NumberFormats.Exact(Quantity.Value);
+
+    [JsonIgnore]
+    public string DisplayUnit => string.IsNullOrWhiteSpace(Unit) ? "—" : Unit;
+
+    [JsonIgnore]
+    public string DisplayQuantityUnit => Quantity is null
+        ? "—"
+        : string.IsNullOrWhiteSpace(Unit) ? DisplayQuantity : $"{DisplayQuantity} {Unit}";
+
+    [JsonIgnore]
+    public string ExactQuantityUnit => Quantity is null
+        ? "—"
+        : string.IsNullOrWhiteSpace(Unit) ? ExactQuantity : $"{ExactQuantity} {Unit}";
+
+    // No rounding here either: 0.1234567 must not display as 0.123457.
+    [JsonIgnore]
+    public string DisplayUnitPrice => UnitPrice is null ? "—" : NumberFormats.Exact(UnitPrice.Value);
+
+    [JsonIgnore]
+    public string ExactUnitPrice => UnitPrice is null ? "—" : NumberFormats.Exact(UnitPrice.Value);
+
+    [JsonIgnore]
+    public bool HasSecondaryDifference =>
+        !string.IsNullOrWhiteSpace(VerificationProductName) && !string.Equals(VerificationProductName, ProductName, StringComparison.Ordinal) ||
+        VerificationQuantity is not null && VerificationQuantity != Quantity ||
+        !string.IsNullOrWhiteSpace(VerificationUnit) && !string.Equals(VerificationUnit, Unit, StringComparison.Ordinal) ||
+        VerificationUnitPrice is not null && VerificationUnitPrice != UnitPrice;
+
+    /// <summary>The verification engine produced an amount and it differs from the primary one.</summary>
+    [JsonIgnore]
+    public bool HasAmountDifference => VerificationAmount is not null && VerificationAmount.Value != Amount;
+
+    /// <summary>Any primary/secondary disagreement, amount included. Feeds the overall verdict.</summary>
+    [JsonIgnore]
+    public bool HasValueDifference => HasAmountDifference || HasSecondaryDifference;
+
+    /// <summary>
+    /// A line is only "fully verified" when the second engine independently supplied every
+    /// comparable field. A field that the primary engine only received by backfilling from
+    /// the secondary engine is not independent evidence, and a single-engine legacy row is
+    /// never reported as consistent.
+    /// </summary>
+    [JsonIgnore]
+    public bool IsFullyVerified =>
+        VerificationAmount is not null &&
+        VerificationQuantity is not null &&
+        VerificationUnitPrice is not null &&
+        !string.IsNullOrWhiteSpace(VerificationProductName) &&
+        !string.IsNullOrWhiteSpace(VerificationUnit) &&
+        !BackfilledFields.Contains("ProductName") &&
+        !BackfilledFields.Contains("UnitPrice") &&
+        !BackfilledFields.Contains("Quantity") &&
+        !BackfilledFields.Contains("Unit");
+
+    /// <summary>
+    /// Three-state verdict shared by the detail dialog, Excel and Markdown so an amount
+    /// conflict can never be exported as "一致" and an unverified row is never "一致".
+    /// </summary>
+    [JsonIgnore]
+    public string ItemConsistency => HasValueDifference ? "存在差异" : IsFullyVerified ? "一致" : "未完整复核";
+
+    /// <summary>Per-amount verdict; distinguishes a real amount conflict from "not verified".</summary>
+    [JsonIgnore]
+    public string AmountVerification => HasAmountDifference
+        ? "金额不一致"
+        : VerificationAmount is null || AmountOnlyFromSecondary ? "金额未复核" : "金额一致";
 }
 
 public sealed class AppState
 {
-    public int UiSchemaVersion { get; set; } = 5;
+    public const int CurrentUiSchemaVersion = 6;
+    public int UiSchemaVersion { get; set; } = CurrentUiSchemaVersion;
     public string LastFolder { get; set; } = "";
     public string ScreenshotFolder { get; set; } = "";
     public int PageSize { get; set; } = 50;
@@ -124,4 +225,37 @@ internal static class Formatters
         ? "—"
         : string.Join(Environment.NewLine, values.OrderBy(x => x.Key).Select(x => $"{x.Key} {x.Value.ToString("N2", CultureInfo.CurrentCulture)}"));
 
+}
+
+/// <summary>
+/// Lossless decimal text with thousands separators, used by exports so a value is
+/// never rounded to a display-oriented number of decimal places.
+/// </summary>
+internal static class NumberFormats
+{
+    public static string Exact(decimal value)
+    {
+        var text = value.ToString("0.############################", CultureInfo.InvariantCulture);
+        var separator = text.IndexOf('.');
+        var integerPart = separator < 0 ? text : text[..separator];
+        var fraction = separator < 0 ? "" : text[(separator + 1)..];
+        if (decimal.TryParse(integerPart, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var integer))
+            integerPart = integer.ToString("#,0", CultureInfo.InvariantCulture);
+        return fraction.Length == 0 ? integerPart : integerPart + "." + fraction;
+    }
+}
+
+/// <summary>
+/// Decides whether a completed capture may be written back. A queued completion from an
+/// invalidated session (batch switch / list clear / exit) is filtered by the session
+/// registry, while this guards the value identity: only a saved capture whose declaration
+/// number matches the session may update the current batch. A previously saved session
+/// keeps its original screenshot on any later failure.
+/// </summary>
+internal static class BrowserCapturePolicy
+{
+    public static bool CanBackfill(string sessionDeclarationNo, string resultState, string resultDeclarationNo) =>
+        resultState == "saved" &&
+        !string.IsNullOrWhiteSpace(sessionDeclarationNo) &&
+        string.Equals(sessionDeclarationNo, resultDeclarationNo, StringComparison.Ordinal);
 }

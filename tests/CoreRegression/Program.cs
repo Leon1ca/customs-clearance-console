@@ -28,6 +28,156 @@ Check(Reconcile(Lines(100), identified).All(x => !x.IsReliable), "明确不同�
 var agreeing = Reconcile(Lines(100, 200), Lines(100, 201));
 Check(DeclarationParser.SumReliableLineTotals(agreeing).GetValueOrDefault("USD") == 100, "仅可靠金额进入汇总");
 
+// New descriptive fields: primary wins, missing values are recovered, no derivation.
+var detailed = Lines(100, 200, 300, 400);
+detailed[0].ProductName = "冷冻鳕鱼片"; detailed[0].Quantity = 100; detailed[0].Unit = "KG"; detailed[0].UnitPrice = 1m;
+var secondaryDetailed = Lines(100);
+secondaryDetailed[0].ProductName = "冷冻鳕鱼片（复核）"; secondaryDetailed[0].Quantity = 99; secondaryDetailed[0].Unit = "KG"; secondaryDetailed[0].UnitPrice = 1.01m;
+var mergedLine = Reconcile(detailed, secondaryDetailed);
+Check(mergedLine[0].ProductName == "冷冻鳕鱼片" && mergedLine[0].VerificationProductName.Contains("复核"), "主引擎明细字段优先且保留复核值");
+Check(mergedLine[0].HasSecondaryDifference, "复核明细差异被标记");
+var recoveredFields = Reconcile(Lines(100), secondaryDetailed);
+Check(recoveredFields[0].ProductName == "冷冻鳕鱼片（复核）" && recoveredFields[0].Quantity == 99 && recoveredFields[0].UnitPrice == 1.01m, "主引擎缺失时用复核字段补全");
+var bare = Lines(100);
+var bareReconciled = Reconcile(bare, Lines(100));
+Check(bareReconciled[0].ProductName == "" && bareReconciled[0].Quantity is null && bareReconciled[0].UnitPrice is null, "无法定位的明细字段保持空值，不推算");
+var mixedPrimary = Lines(100); mixedPrimary[0].Quantity = 10;
+var mismatchedUnit = Lines(100); mismatchedUnit[0].Quantity = 20; mismatchedUnit[0].Unit = "KG";
+var mixed = Reconcile(mixedPrimary, mismatchedUnit);
+Check(mixed[0].Quantity == 10 && mixed[0].Unit == "", "不构造两引擎都没有的数量/单位组合");
+var sameQuantity = Lines(100); sameQuantity[0].Quantity = 10; sameQuantity[0].Unit = "KG";
+var paired = Reconcile(mixedPrimary, sameQuantity);
+Check(paired[0].Quantity == 10 && paired[0].Unit == "KG", "数量一致时才用复核单位补全");
+
+// R5-6: a field copied from the second engine backfills the row but is not independent
+// verification, and an amount read only by the second engine is never "金额一致".
+var amountOnlyPrimary = Lines(100);
+var fullSecondary = Lines(100);
+fullSecondary[0].ProductName = "冷冻鳕鱼片"; fullSecondary[0].Quantity = 10m; fullSecondary[0].Unit = "KG"; fullSecondary[0].UnitPrice = 10m;
+var backfilledLine = Reconcile(amountOnlyPrimary, fullSecondary);
+Check(!backfilledLine[0].IsFullyVerified && backfilledLine[0].ItemConsistency == "未完整复核" && backfilledLine[0].AmountVerification == "金额一致",
+    "复核引擎补全的字段不计为独立复核");
+var secondaryOnlyPrimary = Lines(100); secondaryOnlyPrimary[0].ItemNo = "1";
+var secondaryOnlySecondary = Lines(200); secondaryOnlySecondary[0].ItemNo = "2";
+var secondaryOnlyLine = Reconcile(secondaryOnlyPrimary, secondaryOnlySecondary).First(x => x.Amount == 200m);
+Check(secondaryOnlyLine.AmountOnlyFromSecondary && secondaryOnlyLine.AmountVerification == "金额未复核" && !secondaryOnlyLine.IsFullyVerified,
+    "仅复核引擎识别的金额标注为未复核");
+
+// R4-1: a model number sitting just left of the price column with no quantity header,
+// quantity cell or unit evidence must stay out of Quantity; the source product text
+// keeps the model.
+var modelPage = new TextPage
+{
+    PageNumber = 1,
+    Width = 1000,
+    Height = 1400,
+    Tokens =
+    [
+        new TextToken("单价/总价/币制", 500, 700, 640, 730),
+        new TextToken("1", 50, 760, 70, 790),
+        new TextToken("冷冻鳕鱼片 型号", 140, 760, 400, 790),
+        new TextToken("2026", 410, 760, 460, 790),
+        new TextToken("100.00", 520, 795, 640, 825),
+        new TextToken("美元", 560, 835, 620, 865)
+    ]
+};
+var modelLine = new DeclarationParser().Parse("model-token.png", new DocumentText { Pages = [modelPage] }).LineTotals.Single();
+Check(modelLine.Quantity is null, "靠右数字型号在无数量列/单位证据时保持空值");
+Check(modelLine.ProductName.Contains("2026"), "数量空缺时商品名称中的型号未被截断");
+
+// A row with explicit quantity column or unit evidence is still parsed.
+var unitPage = new TextPage
+{
+    PageNumber = 1,
+    Width = 1000,
+    Height = 1400,
+    Tokens =
+    [
+        new TextToken("单价/总价/币制", 500, 700, 640, 730),
+        new TextToken("1", 50, 760, 70, 790),
+        new TextToken("冷冻鳕鱼片", 140, 760, 340, 790),
+        new TextToken("12.5", 360, 760, 420, 790),
+        new TextToken("KG", 430, 760, 470, 790),
+        new TextToken("100.00", 520, 795, 640, 825),
+        new TextToken("美元", 560, 835, 620, 865)
+    ]
+};
+var unitLine = new DeclarationParser().Parse("unit-token.png", new DocumentText { Pages = [unitPage] }).LineTotals.Single();
+Check(unitLine.Quantity == 12.5m && unitLine.Unit.Equals("KG", StringComparison.OrdinalIgnoreCase), "有单位证据时数量/单位仍正确解析");
+
+// R5-5: a word that merely contains a unit substring ("HEADSET"/"RESET" contain "SET")
+// is not unit evidence, so a model number next to it must not become the quantity.
+TextPage ModelWithWordPage(string word) => new()
+{
+    PageNumber = 1,
+    Width = 1000,
+    Height = 1400,
+    Tokens =
+    [
+        new TextToken("单价/总价/币制", 620, 700, 760, 730),
+        new TextToken("1", 50, 760, 70, 790),
+        new TextToken("WIRELESS", 140, 760, 280, 790),
+        new TextToken("2026", 430, 760, 470, 790),
+        new TextToken(word, 480, 760, 580, 790),
+        new TextToken("100.00", 620, 795, 740, 825),
+        new TextToken("美元", 660, 835, 720, 865)
+    ]
+};
+var headsetLine = new DeclarationParser().Parse("headset-model.png", new DocumentText { Pages = [ModelWithWordPage("HEADSET")] }).LineTotals.Single();
+Check(headsetLine.Quantity is null && headsetLine.Unit == "" && headsetLine.ProductName.Contains("2026"), "含 SET 子串的单词不得作为数量单位证据");
+var resetLine = new DeclarationParser().Parse("reset-model.png", new DocumentText { Pages = [ModelWithWordPage("RESET")] }).LineTotals.Single();
+Check(resetLine.Quantity is null && resetLine.Unit == "" && resetLine.ProductName.Contains("2026"), "RESET 等含单位子串的单词不得写入单位");
+
+// R4-3: display and tooltip text must not round small quantities or long unit prices.
+var precise = new DeclarationLineTotal { Quantity = 0.0004m, Unit = "KG", UnitPrice = 0.1234567m };
+Check(precise.DisplayQuantity == "0.0004" && precise.DisplayQuantityUnit == "0.0004 KG", "明细显示的小数量不得呈现为零");
+Check(precise.DisplayUnitPrice == "0.1234567", "明细显示的单价不得四舍五入");
+
+// R4-2: the overall verdict distinguishes difference / fully verified / not verified and
+// an amount conflict can never be exported as consistent.
+var amountConflict = new DeclarationLineTotal
+{
+    Currency = "USD", ProductName = "X", Quantity = 1m, Unit = "KG", UnitPrice = 1m, Amount = 100m,
+    VerificationProductName = "X", VerificationQuantity = 1m, VerificationUnit = "KG", VerificationUnitPrice = 1m,
+    VerificationAmount = 99m, IsReliable = false
+};
+Check(amountConflict.HasAmountDifference && amountConflict.ItemConsistency == "存在差异" && amountConflict.AmountVerification == "金额不一致",
+    "金额差异计入整项一致并单独标注金额不一致");
+var fullyVerified = new DeclarationLineTotal
+{
+    Currency = "USD", ProductName = "X", Quantity = 1m, Unit = "KG", UnitPrice = 1m, Amount = 100m,
+    VerificationProductName = "X", VerificationQuantity = 1m, VerificationUnit = "KG", VerificationUnitPrice = 1m, VerificationAmount = 100m
+};
+Check(fullyVerified.IsFullyVerified && fullyVerified.ItemConsistency == "一致" && fullyVerified.AmountVerification == "金额一致",
+    "完整复核一致时才判定一致");
+var partial = new DeclarationLineTotal { Currency = "USD", Amount = 100m, VerificationAmount = 100m };
+Check(!partial.IsFullyVerified && partial.ItemConsistency == "未完整复核", "缺少复核字段时不得判定一致");
+var legacySingle = new DeclarationLineTotal { Currency = "USD", Amount = 100m };
+Check(legacySingle.ItemConsistency == "未完整复核" && legacySingle.AmountVerification == "金额未复核", "单引擎旧历史不得判定整项一致");
+Check(BrowserCapturePolicy.CanBackfill("310120260000000001", "saved", "310120260000000001"), "活动会话单号一致时允许回填");
+Check(!BrowserCapturePolicy.CanBackfill("310120260000000001", "saved", "310120260000000002"), "结果单号不同不得回填");
+Check(!BrowserCapturePolicy.CanBackfill("310120260000000001", "error", "310120260000000001"), "失败结果不得回填");
+Check(!BrowserCapturePolicy.CanBackfill("310120260000000001", "mismatch", "310120260000000001"), "单号不一致结果不得回填");
+Check(TargetUrlPolicy.IsSingleWindowInquiry("https://www.singlewindow.cn/#/publicInquiryDetail?id=pi4"), "精确单一窗口查询路由被接受");
+Check(!TargetUrlPolicy.IsSingleWindowInquiry("https://example.com/?singlewindow"), "含 singlewindow 子串的无关网页被拒绝");
+Check(!TargetUrlPolicy.IsSingleWindowInquiry("http://www.singlewindow.cn/#/publicInquiryDetail"), "非 https 目标被拒绝");
+Check(!TargetUrlPolicy.IsSingleWindowInquiry("https://www.singlewindow.cn/#/other"), "非查询路由被拒绝");
+Check(!TargetUrlPolicy.IsSingleWindowInquiry("https://www.singlewindow.cn.evil.example/#/publicInquiryDetail"), "伪装主机后缀被拒绝");
+// R5-4: the verified official query iframe keeps working, unrelated/unknown frames do not.
+Check(TargetUrlPolicy.IsAuthorizedFrame("https://swapp.singlewindow.cn/qspserver/sw/qsp/query/view/queryDecStatus?ngBasePath=x"), "已核实的官方查询 frame 被授权");
+Check(TargetUrlPolicy.IsAuthorizedFrame("https://www.singlewindow.cn/inner"), "可信主机的同源 frame 被授权");
+Check(!TargetUrlPolicy.IsAuthorizedFrame("https://evil.example/qspserver/sw/qsp/query/view/queryDecStatus"), "非官方主机 frame 被拒绝");
+Check(!TargetUrlPolicy.IsAuthorizedFrame("https://swapp.singlewindow.cn/other/route"), "官方主机非查询路由 frame 被拒绝");
+Check(!TargetUrlPolicy.IsAuthorizedFrame("http://swapp.singlewindow.cn/qspserver/sw/qsp/query/view/queryDecStatus"), "官方查询 frame 不接受 http 降级");
+Check(!TargetUrlPolicy.IsAuthorizedFrame("about:blank") && !TargetUrlPolicy.IsAuthorizedFrame(null), "未知/空 frame 来源被拒绝");
+var conflictRecord = new DeclarationRecord
+{
+    DeclarationNo = "310120260000000001", SourcePath = "conflict.pdf", Status = "识别完成",
+    LineTotals = [amountConflict], Totals = new() { ["USD"] = 100m }
+};
+var conflictMarkdown = MarkdownListExporter.Render([conflictRecord], new DateTime(2026, 9, 9));
+Check(conflictMarkdown.Contains("另一引擎内容不同：总价 99.00"), "Markdown 标注金额差异的另一引擎总价");
+
 var no = "310120260000000001";
 var first = new DeclarationRecord { DeclarationNo = no, SourcePath = "a.pdf", Status = "需关注", Warning = "金额冲突", Confidence = 80, Totals = new() { ["USD"] = 100 } };
 var second = new DeclarationRecord { DeclarationNo = no, SourcePath = "b.pdf", Status = "识别完成", Confidence = 90, Totals = new() { ["USD"] = 200 } };
@@ -54,7 +204,17 @@ try { ScanPlan.FromFiles([]); } catch (InvalidOperationException) { }
 Check(store.Load().Records.Single().Warning == "金额冲突", "预检失败不修改已保存批次");
 File.WriteAllText(statePath, "{\"UiSchemaVersion\":3,\"Records\":[{\"DeclarationNo\":\"310120260000000001\",\"Status\":\"重复单号\"}]}");
 var migrated = store.Load();
-Check(migrated.UiSchemaVersion == 5 && migrated.Records[0].NeedsAttention && migrated.Records[0].Warning.Contains("历史"), "旧重复记录保守迁移，不假定正常");
+Check(migrated.UiSchemaVersion == AppState.CurrentUiSchemaVersion && migrated.Records[0].NeedsAttention && migrated.Records[0].Warning.Contains("历史"), "旧重复记录保守迁移，不假定正常");
+
+// Old history without the new line fields loads with empty values.
+File.WriteAllText(statePath, "{\"UiSchemaVersion\":4,\"Records\":[{\"DeclarationNo\":\"310120260000000009\",\"Status\":\"识别完成\",\"LineTotals\":[{\"PageNumber\":1,\"ItemNo\":\"1\",\"Currency\":\"USD\",\"Amount\":12.5}]}]}");
+var legacy = store.Load();
+
+// An unreadable history is kept aside before the next save could overwrite it.
+File.WriteAllText(statePath, "{ not json");
+var corruptLoaded = store.Load();
+Check(corruptLoaded.Records.Count == 0 && Directory.EnumerateFiles(workspace.Path, "history.json.corrupt-*").Any(), "无法读取的历史记录先备份再重置");
+Check(legacy.Records[0].LineTotals[0].ProductName == "" && legacy.Records[0].LineTotals[0].Quantity is null && legacy.Records[0].LineTotals[0].UnitPrice is null, "旧历史缺少新字段时照常加载为空值");
 
 var scanPlan = ScanPlan.FromFiles(new[] { path, FileAt("two.pdf") });
 using var scanSession = new ScanSession(scanPlan);
@@ -83,9 +243,68 @@ using var child = Process.Start(start)!; using var cancel = new CancellationToke
 try { await OwnedProcess.WaitForExitAsync(child, cancel.Token); Check(false, "取消必须停止子进程"); }
 catch (OperationCanceledException) { Check(child.HasExited, "取消必须停止子进程"); }
 
-var exportRecord = new DeclarationRecord { DeclarationNo = no, Consignee = new string('名', 90) + "|<A>", Warning = "OCR提示", DuplicateWarning = "重复提示", LineTotals = agreeing, Totals = DeclarationParser.SumReliableLineTotals(agreeing) };
+var exportRecord = new DeclarationRecord
+{
+    DeclarationNo = no, Consignee = new string('名', 90) + "|<A>", ContractNo = "AB_0001",
+    ExitCustoms = "大连湾海关", DestinationCountry = "美国", Warning = "OCR提示", DuplicateWarning = "重复提示",
+    LineTotals = agreeing, Totals = DeclarationParser.SumReliableLineTotals(agreeing)
+};
+exportRecord.LineTotals[0].ProductName = "冷冻鳕鱼片"; exportRecord.LineTotals[0].Quantity = 12000; exportRecord.LineTotals[0].Unit = "KG"; exportRecord.LineTotals[0].UnitPrice = 2.15m;
 var output = MarkdownListExporter.Render([exportRecord], new DateTime(2026, 9, 9));
 Check(output.Contains(new string('名', 90)) && output.Contains("&#124;&lt;A&gt;") && output.Contains("OCR提示；重复提示") && output.Contains("未确认，未计入总价"), "导出保留长内容、转义字符和独立异常提示");
+Check(output.Contains("冷冻鳕鱼片") && output.Contains("12,000 KG") && output.Contains("2.15") && output.Contains("出境关别"), "Markdown 导出补齐商品/数量/单位/单价与列表字段");
+
+// Real OOXML export + Markdown validation over an edge-case synthetic batch.
+var exportReport = ExportValidation.Run(Path.Combine(workspace.Path, "export-samples"), 60);
+Check(exportReport.Pass, $"Excel/Markdown 整批导出校验通过（{string.Join("；", exportReport.Issues)}）");
+Check(exportReport.RecordCount >= 60 && exportReport.DetailRows > 0, "整批导出包含全部记录与分项");
+var xlsx = Path.Combine(workspace.Path, "export-samples", "关单列表_合成样例.xlsx");
+Check(ExcelListExporter.Validate(xlsx).Count == 0, "xlsx 重新解析无问题");
+
+// A PDF text layer can emit XML-illegal control codes; they must not abort the whole export.
+var controlRecord = new DeclarationRecord
+{
+    DeclarationNo = no, Consignee = "青岛\u0002海\u0001洋 😀", ContractNo = "HT\u001F-01", SourcePath = "ctrl.pdf",
+    LineTotals = agreeing, Totals = DeclarationParser.SumReliableLineTotals(agreeing)
+};
+var controlXlsx = Path.Combine(workspace.Path, "control-chars.xlsx");
+ExcelListExporter.Save(controlXlsx, [controlRecord], new DateTime(2026, 9, 9));
+Check(ExcelListExporter.Validate(controlXlsx, [controlRecord]).Count == 0, "含控制字符的记录仍可导出且校验通过");
+Check(ExcelListExporter.XmlSafe(controlRecord.Consignee) == "青岛海洋 😀" && ExcelListExporter.XmlSafe("\uD800x") == "x", "XML 非法字符被剔除且保留合法代理对");
+using (var archive = System.IO.Compression.ZipFile.OpenRead(xlsx))
+{
+    var sheet1 = archive.GetEntry("xl/worksheets/sheet1.xml")!;
+    using var reader = new StreamReader(sheet1.Open());
+    var xml = reader.ReadToEnd();
+    Check(xml.Contains("010120260000000001") && xml.Contains("=SUM(A1:A2)"), "18 位前导零与公式型外来文本按文本保存");
+    Check(!xml.Contains("<v>010120260000000001</v>"), "18 位编号未保存为数值");
+}
+// R4-6: the quantity/unit-price cell formats must be able to display 0.0004 / 0.1234567;
+// a 12-decimal format would silently round them to a visible zero.
+using (var archive = System.IO.Compression.ZipFile.OpenRead(xlsx))
+{
+    System.Xml.Linq.XNamespace ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+    var stylesDoc = System.Xml.Linq.XDocument.Load(archive.GetEntry("xl/styles.xml")!.Open());
+    var customFormats = stylesDoc.Descendants(ns + "numFmt")
+        .ToDictionary(x => (string?)x.Attribute("numFmtId") ?? "", x => (string?)x.Attribute("formatCode") ?? "");
+    var xfs = stylesDoc.Descendants(ns + "cellXfs").Single().Elements(ns + "xf")
+        .Select(x => (string?)x.Attribute("numFmtId") ?? "0").ToList();
+    int DisplayCapacity(int style)
+    {
+        if (style < 0 || style >= xfs.Count) return -1;
+        if (!customFormats.TryGetValue(xfs[style], out var code) || !code.Contains('.')) return -1;
+        return code[(code.IndexOf('.') + 1)..].Count(c => c == '#');
+    }
+    var detailDoc = System.Xml.Linq.XDocument.Load(archive.GetEntry("xl/worksheets/sheet2.xml")!.Open());
+    var numericCells = detailDoc.Descendants(ns + "c")
+        .Select(c => (Value: c.Element(ns + "v")?.Value, Style: int.TryParse((string?)c.Attribute("s"), out var s) ? s : 0))
+        .Where(c => c.Value is not null)
+        .ToList();
+    var quantityCell = numericCells.FirstOrDefault(c => c.Value == "0.0004");
+    var unitPriceCell = numericCells.FirstOrDefault(c => c.Value == "0.1234567");
+    Check(quantityCell.Value is not null && DisplayCapacity(quantityCell.Style) >= 4, "导出数量 0.0004 的显示格式保留足够小数位");
+    Check(unitPriceCell.Value is not null && DisplayCapacity(unitPriceCell.Style) >= 7, "导出单价 0.1234567 的显示格式保留足够小数位");
+}
 Console.WriteLine($"CORE_REGRESSION_OK: {passed} checks");
 
 internal sealed class InlineProgress<T>(Action<T> report) : IProgress<T> { public void Report(T value) => report(value); }

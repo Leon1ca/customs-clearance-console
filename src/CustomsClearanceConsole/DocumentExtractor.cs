@@ -318,8 +318,11 @@ internal sealed partial class DocumentExtractor
             var parts = line.Split('\t');
             if (parts.Length < 12 || parts[0] == "level" || string.IsNullOrWhiteSpace(parts[11])) continue;
             if (!double.TryParse(parts[10], NumberStyles.Float, CultureInfo.InvariantCulture, out var confidence) || confidence < 15) continue;
-            if (!double.TryParse(parts[6], out var left) || !double.TryParse(parts[7], out var top) ||
-                !double.TryParse(parts[8], out var width) || !double.TryParse(parts[9], out var height)) continue;
+            // Tesseract writes TSV geometry in the invariant format regardless of the user's locale.
+            if (!double.TryParse(parts[6], NumberStyles.Float, CultureInfo.InvariantCulture, out var left) ||
+                !double.TryParse(parts[7], NumberStyles.Float, CultureInfo.InvariantCulture, out var top) ||
+                !double.TryParse(parts[8], NumberStyles.Float, CultureInfo.InvariantCulture, out var width) ||
+                !double.TryParse(parts[9], NumberStyles.Float, CultureInfo.InvariantCulture, out var height)) continue;
             tokens.Add(new TextToken(parts[11].Trim(), left, top, left + width, top + height, confidence));
         }
         return tokens;

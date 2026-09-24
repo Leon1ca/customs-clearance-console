@@ -126,6 +126,7 @@ internal sealed partial class DeclarationParser
             remaining.Remove(match);
             var reconciled = CloneLine(primaryLine);
             reconciled.VerificationAmount = match.Amount;
+            MergeSecondaryFields(reconciled, match);
             if (primaryLine.Currency.Equals(match.Currency, StringComparison.OrdinalIgnoreCase) && primaryLine.Amount == match.Amount)
             {
                 reconciled.IsReliable = true;
@@ -145,6 +146,7 @@ internal sealed partial class DeclarationParser
         {
             var recoveredLine = CloneLine(secondaryLine);
             recoveredLine.VerificationAmount = secondaryLine.Amount;
+            recoveredLine.AmountOnlyFromSecondary = true;
             recoveredLine.IsReliable = false;
             recoveredLine.Note = "仅复核引擎识别到，未计入合计";
             result.Add(recoveredLine);
@@ -185,6 +187,7 @@ internal sealed partial class DeclarationParser
             var match = verification.FirstOrDefault(x => x.PageNumber == result[i].PageNumber &&
                 (!string.IsNullOrWhiteSpace(result[i].ItemNo) ? x.ItemNo == result[i].ItemNo : x.Sequence == originalSequence));
             result[i].VerificationAmount = match?.Amount;
+            if (match is not null) MergeSecondaryFields(result[i], match);
             result[i].IsReliable = true;
             result[i].Note = note;
         }
@@ -210,12 +213,71 @@ internal sealed partial class DeclarationParser
         Sequence = source.Sequence,
         PageNumber = source.PageNumber,
         ItemNo = source.ItemNo,
+        ProductName = source.ProductName,
+        Quantity = source.Quantity,
+        Unit = source.Unit,
+        UnitPrice = source.UnitPrice,
         Currency = source.Currency,
         Amount = source.Amount,
         VerificationAmount = source.VerificationAmount,
+        VerificationProductName = source.VerificationProductName,
+        VerificationQuantity = source.VerificationQuantity,
+        VerificationUnit = source.VerificationUnit,
+        VerificationUnitPrice = source.VerificationUnitPrice,
         IsReliable = source.IsReliable,
-        Note = source.Note
+        Note = source.Note,
+        BackfilledFields = new HashSet<string>(source.BackfilledFields),
+        AmountOnlyFromSecondary = source.AmountOnlyFromSecondary
     };
+
+    /// <summary>
+    /// Fills missing descriptive fields from the verification engine and keeps the
+    /// engine's own value for display. Never derives a value from the amount.
+    /// </summary>
+    private static void MergeSecondaryFields(DeclarationLineTotal target, DeclarationLineTotal secondary)
+    {
+        target.VerificationProductName = secondary.ProductName;
+        target.VerificationQuantity = secondary.Quantity;
+        target.VerificationUnit = secondary.Unit;
+        target.VerificationUnitPrice = secondary.UnitPrice;
+        if (string.IsNullOrWhiteSpace(target.ProductName) && !string.IsNullOrWhiteSpace(secondary.ProductName))
+        {
+            target.ProductName = secondary.ProductName;
+            target.BackfilledFields.Add("ProductName");
+        }
+        if (target.UnitPrice is null && secondary.UnitPrice is not null)
+        {
+            target.UnitPrice = secondary.UnitPrice;
+            target.BackfilledFields.Add("UnitPrice");
+        }
+
+        // Quantity and unit are a pair: only fill them together from one engine so a
+        // combination that neither engine actually read (primary 10 / secondary 20 KG)
+        // can never be constructed. Every field taken from the secondary engine is recorded
+        // as backfilled so it cannot later count as independently verified.
+        var primaryHasQuantity = target.Quantity is not null;
+        var primaryHasUnit = !string.IsNullOrWhiteSpace(target.Unit);
+        var secondaryHasQuantity = secondary.Quantity is not null;
+        var secondaryHasUnit = !string.IsNullOrWhiteSpace(secondary.Unit);
+        if (!primaryHasQuantity && !primaryHasUnit && (secondaryHasQuantity || secondaryHasUnit))
+        {
+            target.Quantity = secondary.Quantity;
+            target.Unit = secondary.Unit;
+            if (secondaryHasQuantity) target.BackfilledFields.Add("Quantity");
+            if (secondaryHasUnit) target.BackfilledFields.Add("Unit");
+        }
+        else if (primaryHasQuantity && !primaryHasUnit && secondaryHasUnit && secondary.Quantity == target.Quantity)
+        {
+            target.Unit = secondary.Unit;
+            target.BackfilledFields.Add("Unit");
+        }
+        else if (!primaryHasQuantity && primaryHasUnit && secondaryHasQuantity &&
+                 string.Equals(secondary.Unit, target.Unit, StringComparison.OrdinalIgnoreCase))
+        {
+            target.Quantity = secondary.Quantity;
+            target.BackfilledFields.Add("Quantity");
+        }
+    }
 
     private static int ParseItemNumber(string value) => int.TryParse(value, out var item) ? item : int.MaxValue;
     private static string DisplayItem(DeclarationLineTotal line) => string.IsNullOrWhiteSpace(line.ItemNo) ? line.Sequence.ToString() : line.ItemNo;

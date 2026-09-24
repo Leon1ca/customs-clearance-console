@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Developer tool, not shipped: runs the production controlled browser E2E
+    (src/CustomsClearanceConsole/BrowserCaptureE2E.cs + BrowserValidation.cs) against any
+    Chromium on Linux/macOS/Windows without WinForms. System.Drawing's few image calls used by
+    those two files are provided by DrawingShim.cs on top of SkiaSharp (MIT).
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>CustomsClearanceConsole</RootNamespace>
+    <AssemblyName>BrowserE2E.Portable</AssemblyName>
+    <!-- Default-browser registry lookup is Windows-only and unused here (the browser is explicit). -->
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
+  </PropertyGroup>
+  <PropertyGroup>
+    <Production>../../src/CustomsClearanceConsole</Production>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="SkiaSharp" Version="3.119.4" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="3.119.4" />
+    <Compile Include="$(Production)/BrowserValidation.cs" Link="Production/BrowserValidation.cs" />
+    <Compile Include="$(Production)/BrowserCaptureE2E.cs" Link="Production/BrowserCaptureE2E.cs" />
+    <Compile Include="$(Production)/TargetUrlPolicy.cs" Link="Production/TargetUrlPolicy.cs" />
+    <Compile Include="$(Production)/AppLog.cs" Link="Production/AppLog.cs" />
+    <Compile Include="$(Production)/AppPaths.cs" Link="Production/AppPaths.cs" />
+    <EmbeddedResource Include="$(Production)/BrowserScripts/*.js" LogicalName="CustomsClearanceConsole.BrowserScripts.%(Filename)%(Extension)" />
+  </ItemGroup>
+</Project>
