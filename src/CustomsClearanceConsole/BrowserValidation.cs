@@ -283,6 +283,12 @@ internal sealed class BrowserValidation : IAsyncDisposable
         start.ArgumentList.Add("--no-first-run");
         start.ArgumentList.Add("--no-default-browser-check");
         start.ArgumentList.Add("--disable-features=Translate");
+        // The capture drives the page through timers, animation frames and screenshots. A
+        // window that is partly covered by the console, or loses focus while the user switches
+        // back to it, is otherwise throttled or not painted at all, which stalls the capture.
+        start.ArgumentList.Add("--disable-background-timer-throttling");
+        start.ArgumentList.Add("--disable-renderer-backgrounding");
+        start.ArgumentList.Add("--disable-backgrounding-occluded-windows");
         if (_headless)
         {
             start.ArgumentList.Add("--headless=new");
@@ -864,7 +870,10 @@ internal sealed class BrowserValidation : IAsyncDisposable
                     // touching the gate: the running capture publishes the next retryable
                     // page state, so a card that switched itself to capturing does not need a
                     // second completion event to recover.
-                    AppLog.Write($"忙拒绝网页截图请求：已有截图正在进行（context={contextId}）。");
+                    AppLog.Write($"忙拒绝网页截图请求：已有截图正在进行（context={contextId}，当前步骤：{_captureStep}）。");
+                    // The card switched itself to capturing; tell it the earlier capture still
+                    // runs so it does not wait silently for a completion that is not its own.
+                    _ = ReportProgressAsync(0, 1, "上一次截图仍在进行，请稍候");
                     return;
                 }
                 AppLog.Write($"接受网页截图请求并持有截图锁（context={contextId}）。");
@@ -901,9 +910,22 @@ internal sealed class BrowserValidation : IAsyncDisposable
         BrowserCaptureResult result;
         try
         {
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+            deadline.CancelAfter(CaptureDeadline);
+            _captureClock.Restart();
+            CaptureStep("开始");
             try
             {
-                result = await CaptureWithRetryAsync(_lifetime.Token);
+                result = await CaptureWithRetryAsync(deadline.Token);
+            }
+            catch (Exception ex) when (IsDeadline(ex, deadline))
+            {
+                // A browser that stops answering (a renderer busy with page scripts, a window
+                // that is not painted) must end the capture with a reason, never leave the
+                // card on "截取中"; the step names where it stalled for the log.
+                AppLog.Write($"截图超时：{CaptureDeadline.TotalSeconds:0} 秒内未完成，停在“{_captureStep}”。");
+                result = new BrowserCaptureResult(SessionId, DeclarationNo, "error", null,
+                    $"截图超时，未保存（浏览器 {CaptureDeadline.TotalSeconds:0} 秒内无响应，停在：{_captureStep}）。请保持浏览器窗口可见后重试。");
             }
             catch (OperationCanceledException)
             {
@@ -924,6 +946,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
             // still-held gate and swallowed. This is the only release: the busy path never
             // touches the gate, and the finally keeps the gate from being held forever on a
             // failure, cancellation or reporting exception.
+            _captureStep = "空闲";
             Interlocked.Exchange(ref _captureGate, 0);
             AppLog.Write("网页截图锁已释放。");
         }
@@ -954,6 +977,25 @@ internal sealed class BrowserValidation : IAsyncDisposable
         CaptureCompleted?.Invoke(this, result);
     }
 
+    /// <summary>Upper bound for one capture request, restore excluded.</summary>
+    public TimeSpan CaptureDeadline { get; set; } = TimeSpan.FromSeconds(60);
+
+    /// <summary>E2E-only: holds the capture after the page was prepared, like a browser that stops answering.</summary>
+    public TimeSpan StallCaptureForTest { get; set; }
+
+    private readonly Stopwatch _captureClock = new();
+    private volatile string _captureStep = "空闲";
+
+    private void CaptureStep(string step)
+    {
+        _captureStep = step;
+        AppLog.Write($"截图步骤：{step}（{_captureClock.ElapsedMilliseconds} ms）");
+    }
+
+    private bool IsDeadline(Exception ex, CancellationTokenSource deadline) =>
+        deadline.IsCancellationRequested && !_lifetime.IsCancellationRequested
+        && (ex is OperationCanceledException || ex is TimeoutException || ex.InnerException is OperationCanceledException);
+
     private async Task<BrowserCaptureResult> CaptureWithRetryAsync(CancellationToken token)
     {
         try
@@ -979,6 +1021,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
         // could make the completion wait for the wrong size.
         _captureBaselineViewport = null;
 
+        CaptureStep("确认查询结果");
         var identity = await ProbeIdentityAsync(token);
         if (identity.StartsWith("mismatch|", StringComparison.Ordinal))
             return new BrowserCaptureResult(SessionId, DeclarationNo, "mismatch", null, "网页结果单号与本次核验不一致，未保存截图。");
@@ -994,6 +1037,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
         // A layout-independent fingerprint of the result region: it is re-checked before
         // the atomic save so a query change, a result re-render or a navigation during
         // the capture aborts the save instead of backfilling a stale image.
+        CaptureStep("校验结果稳定");
         var stableBefore = await VerifyStableAsync(token);
         if (stableBefore.StartsWith("mismatch|", StringComparison.Ordinal))
             return new BrowserCaptureResult(SessionId, DeclarationNo, "mismatch", null, "网页结果单号与本次核验不一致，未保存截图。");
@@ -1014,6 +1058,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
         {
             try
             {
+                CaptureStep("准备页面");
                 await PrepareContextsAsync(BrowserScript("capture-prepare"), preparedTargets, token);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -1021,15 +1066,18 @@ internal sealed class BrowserValidation : IAsyncDisposable
                 return new BrowserCaptureResult(SessionId, DeclarationNo, "error", null, $"网页准备失败，未保存截图：{ex.Message}");
             }
             await Task.Delay(300, token);
+            if (StallCaptureForTest > TimeSpan.Zero) await Task.Delay(StallCaptureForTest, token);
 
             // Cross-origin frames cannot be resized from page JS. The CDP frame owner is
             // grown to the frame document height so the complete frame content is painted;
             // a frame that cannot be expanded rejects the capture instead of truncating it.
+            CaptureStep("展开网页框架");
             var failedFrames = await ExpandFramesAsync(expandedFrames, capturedOopif, token);
             if (failedFrames.Count > 0)
                 return new BrowserCaptureResult(SessionId, DeclarationNo, "error", null,
                     $"存在无法完整捕获的网页框架（{string.Join("、", failedFrames)}），未保存截图。");
 
+            CaptureStep("读取页面尺寸");
             var metrics = await cdp.SendAsync("Page.getLayoutMetrics", null, token);
             var content = metrics.GetProperty("result").GetProperty("contentSize");
             var width = (int)Math.Ceiling(content.GetProperty("width").GetDouble());
@@ -1073,6 +1121,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
             {
                 if (enlargedViewport)
                 {
+                    CaptureStep("放大视口");
                     await cdp.SendAsync("Emulation.setDeviceMetricsOverride", new
                     {
                         width = paintWidth,
@@ -1102,6 +1151,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
                 using var full = new Bitmap(width, height, PixelFormat.Format24bppRgb);
                 for (var attempt = 1; ; attempt++)
                 {
+                    CaptureStep($"截取 {tiles} 段（{width}×{height}）");
                     await ReportProgressAsync(0, tiles, "正在截取整页");
                     using (var graphics = Graphics.FromImage(full))
                     {
@@ -1143,6 +1193,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
                 // Final identity/generation re-validation before the atomic move.
                 if (Volatile.Read(ref _navigationGeneration) != generation || !IsTargetUrl(_currentUrl))
                     return new BrowserCaptureResult(SessionId, DeclarationNo, "error", null, "捕获期间页面已导航，未保存截图。");
+                CaptureStep("复核并保存");
                 var stableAfter = await VerifyStableAsync(token);
                 if (!stableAfter.StartsWith("stable|", StringComparison.Ordinal) || stableAfter != stableBefore)
                     return new BrowserCaptureResult(SessionId, DeclarationNo, "error", null, "捕获期间查询结果发生变化，未保存截图。");

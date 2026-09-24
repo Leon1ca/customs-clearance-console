@@ -35,7 +35,9 @@ foreach ($name in $binaryNames) {
 }
 
 Get-ChildItem -LiteralPath (Join-Path $appSource 'ocr-models') -Force | Copy-Item -Destination $modelTarget -Recurse -Force
-Get-ChildItem -LiteralPath $toolsSource -Force | Copy-Item -Destination $toolsTarget -Recurse -Force
+# Since v1.5.3 the only OCR engine is PP-OCRv5 (ocr-models); older packages still carry Tesseract.
+Get-ChildItem -LiteralPath $toolsSource -Force | Where-Object { $_.Name -ne 'tesseract' } |
+    Copy-Item -Destination $toolsTarget -Recurse -Force
 
 Write-Host '开发依赖已准备完成。现在可以执行：'
 Write-Host 'dotnet build .\src\CustomsClearanceConsole\CustomsClearanceConsole.csproj -c Release'

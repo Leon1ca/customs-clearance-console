@@ -13,8 +13,6 @@ internal static class AppPaths
         }
     }
     public static string PdfiumDll => Path.Combine(BaseDirectory, "tools", "pdfium", "pdfium.dll");
-    public static string TesseractExe => Path.Combine(BaseDirectory, "tools", "tesseract", "tesseract.exe");
-    public static string Tessdata => Path.Combine(BaseDirectory, "tools", "tesseract", "tessdata");
     public static string RapidOcrModels => Path.Combine(AppContext.BaseDirectory, "ocr-models");
     public static string TempRoot => Path.Combine(Path.GetTempPath(), "CustomsClearanceConsole");
     public static string DataFolder

@@ -77,6 +77,20 @@ public sealed class DeclarationLineTotal
     /// <summary>True when the row amount itself came only from the verification engine.</summary>
     public bool AmountOnlyFromSecondary { get; set; }
 
+    /// <summary>
+    /// Every number in the row's quantity column (declared, legal and second unit quantities),
+    /// used only by the quantity × unit price rule while parsing.
+    /// </summary>
+    [JsonIgnore]
+    public List<decimal> QuantityCandidates { get; } = [];
+
+    /// <summary>
+    /// Result of the OCR quantity × unit price = total rule: true when it holds, false when it
+    /// does not (the line is then excluded from the total), null when it could not be checked
+    /// (text-layer PDF, or no unit price / quantity read).
+    /// </summary>
+    public bool? RuleCheckPassed { get; set; }
+
     [JsonIgnore]
     public string DisplayAmount => $"{Currency} {Amount:N2}";
 
@@ -154,13 +168,15 @@ public sealed class DeclarationLineTotal
     /// conflict can never be exported as "一致" and an unverified row is never "一致".
     /// </summary>
     [JsonIgnore]
-    public string ItemConsistency => HasValueDifference ? "存在差异" : IsFullyVerified ? "一致" : "未完整复核";
+    public string ItemConsistency => HasValueDifference ? "存在差异" : IsFullyVerified ? "一致"
+        : RuleCheckPassed == true ? "规则校验通过" : RuleCheckPassed == false ? "数量×单价不符" : "未完整复核";
 
     /// <summary>Per-amount verdict; distinguishes a real amount conflict from "not verified".</summary>
     [JsonIgnore]
     public string AmountVerification => HasAmountDifference
         ? "金额不一致"
-        : VerificationAmount is null || AmountOnlyFromSecondary ? "金额未复核" : "金额一致";
+        : VerificationAmount is not null && !AmountOnlyFromSecondary ? "金额一致"
+        : RuleCheckPassed == true ? "金额规则校验通过" : RuleCheckPassed == false ? "数量×单价不符" : "金额未复核";
 }
 
 public sealed class AppState

@@ -307,33 +307,78 @@ using (var archive = System.IO.Compression.ZipFile.OpenRead(xlsx))
 }
 // 目的国: layout of a real export declaration (运抵国 阿尔及利亚 (DZA), 贸易国 中国香港 (HKG),
 // 指运港 斯基克达（阿尔及利亚）, goods 原产国 中国 (CHN) / 最终目的国 阿尔及利亚 (DZA)).
-TextPage DeclarationPage(Func<List<TextToken>, List<TextToken>>? edit = null, string consignee = "ZHONG HUAN XIN INTERNATIONAL TRADE CO.,LIMITED")
+TextPage DeclarationPage(Func<List<TextToken>, List<TextToken>>? edit = null, string consignee = "EXAMPLE GLOBAL TRADING CO.,LIMITED")
 {
     TextToken T(string text, double left, double top, double right, double bottom) => new(text, left, top, right, bottom);
     var tokens = new List<TextToken>
     {
-        T("预录入编号：516620260001159033", 85, 160, 360, 178),
-        T("境内发货人", 88, 193, 170, 210), T("(91420112MA49LUFN2B)", 175, 193, 365, 210), T("出境关别", 557, 193, 630, 210), T("(5166)", 640, 193, 686, 210),
+        T("预录入编号：516620260000000017", 85, 160, 360, 178),
+        T("境内发货人", 88, 193, 170, 210), T("(91000000MA00TEST0X)", 175, 193, 365, 210), T("出境关别", 557, 193, 630, 210), T("(5166)", 640, 193, 686, 210),
         T("出口日期", 833, 193, 900, 210), T("申报日期", 1120, 193, 1187, 210), T("备案号", 1380, 193, 1430, 210),
-        T("大星（武汉）汽车制造有限公司", 88, 217, 355, 236), T("南沙新港", 557, 217, 640, 236), T("20260801", 833, 217, 910, 236), T("20260725", 1120, 217, 1197, 236),
+        T("示例（华中）机械制造有限公司", 88, 217, 355, 236), T("南沙新港", 557, 217, 640, 236), T("20260801", 833, 217, 910, 236), T("20260725", 1120, 217, 1197, 236),
         T("境外收货人", 88, 245, 170, 262), T("运输方式", 557, 245, 630, 262), T("(2)", 636, 245, 660, 262), T("运输工具名称及航次号", 833, 245, 990, 262), T("提运单号", 1120, 245, 1187, 262),
-        T(consignee, 88, 270, 530, 288), T("水路运输", 557, 270, 640, 288), T("UN9936628/GJ628W", 833, 270, 985, 288), T("181AN26L0207040M1", 1120, 270, 1280, 288),
+        T(consignee, 88, 270, 530, 288), T("水路运输", 557, 270, 640, 288), T("UN0000001/TS001W", 833, 270, 985, 288), T("000AN26L0000000M1", 1120, 270, 1280, 288),
         T("生产销售单位", 88, 295, 190, 312), T("监管方式", 557, 295, 630, 312), T("征免性质", 833, 295, 900, 312), T("许可证号", 1120, 295, 1187, 312),
-        T("大星（武汉）汽车制造有限公司", 88, 320, 355, 338), T("一般贸易", 557, 320, 640, 338), T("一般征税", 833, 320, 910, 338), T("26-17-801897", 1120, 320, 1235, 338),
+        T("示例（华中）机械制造有限公司", 88, 320, 355, 338), T("一般贸易", 557, 320, 640, 338), T("一般征税", 833, 320, 910, 338), T("26-00-000001", 1120, 320, 1235, 338),
         T("合同协议号", 85, 345, 167, 362), T("贸易国（地区）", 557, 345, 683, 362), T("(HKG)", 687, 345, 722, 362),
         T("运抵国（地区）", 833, 345, 960, 362), T("(DZA)", 963, 345, 1000, 362), T("指运港", 1120, 345, 1172, 362), T("(DZA036)", 1177, 345, 1255, 362),
         T("离境口岸", 1380, 345, 1450, 362), T("(443417)", 1456, 345, 1530, 362),
-        T("CQZHX-DX-20260703-002", 85, 367, 290, 386), T("中国香港", 557, 367, 632, 386), T("阿尔及利亚", 833, 367, 930, 386),
+        T("TESTX-DX-20260101-001", 85, 367, 290, 386), T("中国香港", 557, 367, 632, 386), T("阿尔及利亚", 833, 367, 930, 386),
         T("斯基克达（阿尔及利亚）", 1120, 367, 1325, 386), T("南沙港三期码头", 1380, 367, 1515, 386),
         T("包装种类", 88, 395, 160, 412), T("件数", 557, 395, 590, 412), T("毛重(千克)", 650, 395, 740, 412), T("净重(千克)", 833, 395, 920, 412), T("成交方式", 1005, 395, 1075, 412),
         T("项号", 88, 592, 122, 609), T("商品编号", 148, 592, 212, 609), T("商品名称及规格型号", 376, 592, 520, 609), T("数量及单位", 738, 592, 818, 609),
         T("单价/总价/币制", 923, 592, 1036, 609), T("原产国(地区)", 1098, 592, 1192, 609), T("最终目的国(地区)", 1238, 592, 1365, 609), T("境内货源地", 1468, 592, 1548, 609), T("征免", 1658, 592, 1690, 609),
-        T("1", 88, 622, 95, 640), T("8703225010", 128, 622, 230, 640), T("宝石星牌工具车", 236, 622, 370, 640), T("4辆", 885, 622, 912, 640), T("8034.0000", 965, 622, 1052, 640),
+        T("1", 88, 622, 95, 640), T("8703225010", 128, 622, 230, 640), T("示例牌工具车", 236, 622, 370, 640), T("4辆", 885, 622, 912, 640), T("1250.0000", 965, 622, 1052, 640),
         T("中国", 1180, 622, 1220, 640), T("阿尔及利亚", 1290, 622, 1385, 640), T("(42019)武汉其他", 1468, 622, 1618, 640), T("照章征税", 1640, 622, 1715, 640),
-        T("5020千克", 836, 645, 912, 663), T("32136.00", 972, 645, 1052, 663), T("(CHN)", 1175, 645, 1225, 663), T("(DZA)", 1340, 645, 1385, 663), T("(1)", 1695, 645, 1715, 663),
+        T("5020千克", 836, 645, 912, 663), T("5000.00", 972, 645, 1052, 663), T("(CHN)", 1175, 645, 1225, 663), T("(DZA)", 1340, 645, 1385, 663), T("(1)", 1695, 645, 1715, 663),
         T("4辆", 885, 668, 912, 686), T("美元", 1015, 668, 1052, 686)
     };
     return new TextPage { Width = 1800, Height = 1270, Tokens = edit is null ? tokens : edit(tokens) };
+}
+// Real PP-OCR tokens of the declaration reported in the v1.5.2 feedback: the OCR merges each
+// label with its code ("出境关别（5166）", full-width brackets) and splits 项号 from 商品编号.
+TextPage RealDeclarationPage(double scale = 1)
+{
+    using var json = System.Text.Json.JsonDocument.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "declaration-5166-rapidocr.json")));
+    var root = json.RootElement;
+    var tokens = root.GetProperty("tokens").EnumerateArray().Select(t => new TextToken(t.GetProperty("text").GetString()!,
+        t.GetProperty("l").GetDouble() * scale, t.GetProperty("t").GetDouble() * scale, t.GetProperty("r").GetDouble() * scale,
+        t.GetProperty("b").GetDouble() * scale, t.GetProperty("c").GetDouble() * 100)).ToList();
+    return new TextPage { Width = root.GetProperty("width").GetDouble() * scale, Height = root.GetProperty("height").GetDouble() * scale, Tokens = tokens };
+}
+DeclarationRecord ParsePage(TextPage page) => new DeclarationParser().Parse("declaration.png", new DocumentText { UsedOcr = true, Pages = [page] });
+{
+    var real = ParsePage(RealDeclarationPage(2800d / 1812));
+    Check(real.DeclarationNo == "516620260000000017" && real.ContractNo == "TESTX-DX-20260101-001" &&
+          real.Consignee == "EXAMPLE GLOBAL TRADING CO.,LIMITED", "真实关单 OCR：报关单号、合同协议号、境外收货人");
+    Check(real.ExitCustoms == "南沙新港", $"真实关单 OCR：出境关别（5166）南沙新港（实际 {real.ExitCustoms}）");
+    Check(real.DestinationCountry == "阿尔及利亚", $"真实关单 OCR：目的国阿尔及利亚（实际 {real.DestinationCountry}）");
+    Check(real.Totals.Count == 1 && real.Totals.TryGetValue("USD", out var usd) && usd == 5000.00m, "真实关单 OCR：总价 USD 5,000.00");
+    var noBoxValue = RealDeclarationPage();
+    noBoxValue.Tokens.RemoveAll(t => t.Text == "南沙新港");
+    Check(ParsePage(noBoxValue).ExitCustoms == "南沙新港", "出境关别：框内值未识别时取表头海关编号后的（南沙新港）");
+    Check(ParsePage(DeclarationPage()).ExitCustoms == "南沙新港", "出境关别：标签与代码分开的文本层同样识别");
+
+    // Rules that replace the second OCR engine.
+    var line = real.LineTotals.Single();
+    Check(real.Status == "OCR 识别完成" && line.Quantity == 4 && line.Unit == "辆" && line.IsReliable,
+        $"规则复核：OCR 合并的“4辆”读作数量，4×1250=5000 通过（{real.Status}：{real.Warning}；{line.Quantity}{line.Unit} {line.Note}）");
+    TextPage Tampered(string from, string to)
+    {
+        var page = RealDeclarationPage(2800d / 1812);
+        return new TextPage { Width = page.Width, Height = page.Height, Tokens = page.Tokens.Select(t => t.Text == from ? t with { Text = to } : t).ToList() };
+    }
+    var wrongTotal = ParsePage(Tampered("5000.00", "5800.00"));
+    Check(wrongTotal.Status == "需关注" && wrongTotal.Warning.Contains("数量×单价与总价不符") && !wrongTotal.LineTotals.Single().IsReliable && wrongTotal.Totals.Count == 0,
+        "规则复核：总价被误读（5800≠4×1250）时标为需关注且不计入合计");
+    var wrongPrice = ParsePage(Tampered("1250.0000", "1260.0000"));
+    Check(wrongPrice.Status == "需关注" && wrongPrice.Warning.Contains("数量×单价与总价不符"), "规则复核：单价被误读时标为需关注");
+    var wrongDigit = ParsePage(Tampered("*516620260000000017*", "*516620260000000011*"));
+    Check(wrongDigit.Status == "需关注" && wrongDigit.Warning.Contains("报关单号在表头读取不一致"), "规则复核：表头三处报关单号有一处读错时标为需关注");
+    var wrongCountry = ParsePage(Tampered("阿尔及利亚", "阿尔及利W"));
+    Check(wrongCountry.DestinationCountry == "阿尔及利亚", "规则复核：国名误读由标签国别代码纠正，不误报");
+    var textLayer = new DeclarationParser().Parse("declaration.pdf", new DocumentText { Pages = [RealDeclarationPage()] });
+    Check(textLayer.Status == "识别完成", "规则复核只作用于 OCR 页面，文本层 PDF 不受影响");
 }
 string Destination(TextPage page) => new DeclarationParser().Parse("declaration.pdf", new DocumentText { Pages = [page] }).DestinationCountry;
 List<TextToken> Replace(List<TextToken> tokens, string from, string to) =>

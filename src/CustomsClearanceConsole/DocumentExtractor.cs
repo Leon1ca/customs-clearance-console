@@ -1,5 +1,3 @@
-using System.Diagnostics;
-using System.Globalization;
 using System.Text;
 
 namespace CustomsClearanceConsole;
@@ -7,8 +5,8 @@ namespace CustomsClearanceConsole;
 internal sealed partial class DocumentExtractor
 {
     private readonly RapidOcrEngine _rapidOcr = new();
-    private static readonly HashSet<string> ImageExtensions = new(StringComparer.OrdinalIgnoreCase)
-        { ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff" };
+    private static readonly HashSet<string> ImageExtensions =
+        new(BatchScanner.SupportedExtensions.Where(x => x != ".pdf"), StringComparer.OrdinalIgnoreCase);
 
     public async Task<DocumentText> ExtractAsync(string path, CancellationToken cancellationToken)
     {
@@ -16,17 +14,20 @@ internal sealed partial class DocumentExtractor
             return await ExtractPdfAsync(path, cancellationToken);
         if (ImageExtensions.Contains(Path.GetExtension(path)))
         {
-            var result = await OcrImageAsync(path, cancellationToken);
-            return new DocumentText
+            // A multi-page TIFF (a scanner's usual output) is read page by page like a PDF.
+            var pages = new List<TextPage>();
+            var frames = OcrImages.LoadPages(path);
+            try
             {
-                UsedOcr = true,
-                Pages = [WithPageNumber(result.Primary, 1)],
-                VerificationPages = result.Secondary is null ? [] : [WithPageNumber(result.Secondary, 1)],
-                SecondaryOcrAttempted = true,
-                SecondaryOcrError = result.SecondaryError
-            };
+                for (var i = 0; i < frames.Count; i++)
+                    pages.Add(WithPageNumber(await OcrBitmapAsync(frames[i], cancellationToken), i + 1));
+            }
+            finally { foreach (var frame in frames) frame.Dispose(); }
+            var declarationIndexes = SelectDeclarationPageIndexes(pages);
+            if (declarationIndexes.Count > 0) pages = declarationIndexes.Select(index => pages[index]).ToList();
+            return new DocumentText { UsedOcr = true, Pages = pages };
         }
-        throw new NotSupportedException("仅支持 PDF、PNG、JPG、BMP、TIF/TIFF 文件。");
+        throw new NotSupportedException("仅支持 PDF 与 PNG、JPG、BMP、TIF/TIFF、GIF、WEBP 图片。");
     }
 
     private async Task<DocumentText> ExtractPdfAsync(string path, CancellationToken cancellationToken)
@@ -54,29 +55,14 @@ internal sealed partial class DocumentExtractor
         }
 
         var usedOcr = rendered.Count > 0;
-        var verificationPages = pages.ToList();
-        var secondaryErrors = new List<string>();
         foreach (var item in rendered)
         {
-            var result = await OcrImageAsync(item.Path, cancellationToken);
-            pages[item.Index] = WithPageNumber(result.Primary, item.Index + 1);
-            verificationPages[item.Index] = WithPageNumber(result.Secondary ?? result.Primary, item.Index + 1);
-            if (!string.IsNullOrWhiteSpace(result.SecondaryError)) secondaryErrors.Add(result.SecondaryError);
+            using var bitmap = OcrImages.LoadPages(item.Path).Single();
+            pages[item.Index] = WithPageNumber(await OcrBitmapAsync(bitmap, cancellationToken), item.Index + 1);
         }
-        var declarationIndexes = SelectDeclarationPageIndexes(pages, verificationPages);
-        if (declarationIndexes.Count > 0)
-        {
-            pages = declarationIndexes.Select(index => pages[index]).ToList();
-            verificationPages = declarationIndexes.Select(index => verificationPages[index]).ToList();
-        }
-        return new DocumentText
-        {
-            Pages = pages,
-            UsedOcr = usedOcr,
-            VerificationPages = usedOcr && secondaryErrors.Count == 0 ? verificationPages : [],
-            SecondaryOcrAttempted = usedOcr,
-            SecondaryOcrError = string.Join("；", secondaryErrors.Distinct())
-        };
+        var declarationIndexes = SelectDeclarationPageIndexes(pages);
+        if (declarationIndexes.Count > 0) pages = declarationIndexes.Select(index => pages[index]).ToList();
+        return new DocumentText { Pages = pages, UsedOcr = usedOcr };
     }
 
     private static TextPage ExtractPdfText(IntPtr page, int pageNumber)
@@ -140,75 +126,42 @@ internal sealed partial class DocumentExtractor
         return tokens;
     }
 
-    private async Task<OcrPageResult> OcrImageAsync(string path, CancellationToken cancellationToken)
+    /// <summary>
+    /// One PP-OCRv5 pass per page. The page is scaled to a 2800px long edge (the detector's
+    /// working size). Orientation needs no separate engine: a page lying on its side yields
+    /// mostly tall text boxes, and an upside-down page mostly lines the angle classifier turns
+    /// by 180 degrees; only then is the page rotated and read again, keeping the reading that
+    /// looks most like a declaration.
+    /// </summary>
+    private async Task<TextPage> OcrBitmapAsync(Bitmap source, CancellationToken cancellationToken)
     {
-        if (!File.Exists(AppPaths.TesseractExe))
-            throw new FileNotFoundException("该文件需要 OCR，但程序包中的 Tesseract 组件缺失。", AppPaths.TesseractExe);
-
-        using var workspace = new TemporaryDirectory(AppPaths.TempRoot);
-        var temp = workspace.Path;
-        using var source = Image.FromFile(path);
-        var rotation = await DetectOrientationAsync(path, cancellationToken);
-        using var prepared = new Bitmap(source);
-        prepared.RotateFlip(rotation switch
+        var first = await RecognizeRotatedAsync(source, 0, cancellationToken);
+        var candidates = new List<RapidOcrPage> { first };
+        if (first.TallFraction > .5)
         {
-            90 => RotateFlipType.Rotate90FlipNone,
-            180 => RotateFlipType.Rotate180FlipNone,
-            270 => RotateFlipType.Rotate270FlipNone,
-            _ => RotateFlipType.RotateNoneFlipNone
-        });
-        var longEdge = Math.Max(prepared.Width, prepared.Height);
-        var factor = longEdge < 2400 || longEdge > 3000 ? Math.Clamp(2800d / longEdge, .25, 6d) : 1d;
-        var ocrInput = Path.Combine(temp, "input.png");
-        using (var bitmap = new Bitmap(Math.Max(1, (int)(prepared.Width * factor)), Math.Max(1, (int)(prepared.Height * factor))))
-        {
-            using var graphics = Graphics.FromImage(bitmap);
-            graphics.Clear(Color.White);
-            graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
-            graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
-            graphics.DrawImage(prepared, new Rectangle(0, 0, bitmap.Width, bitmap.Height));
-            bitmap.Save(ocrInput, System.Drawing.Imaging.ImageFormat.Png);
+            candidates.Add(await RecognizeRotatedAsync(source, 90, cancellationToken));
+            candidates.Add(await RecognizeRotatedAsync(source, 270, cancellationToken));
         }
-        var tokens = await RunTesseractPassAsync(ocrInput, temp, 3, cancellationToken);
-        var compactOcrText = string.Concat(tokens.OrderBy(t => t.Top).ThenBy(t => t.Left).Select(t => t.Text));
-        var looksLikeDeclaration = DeclarationNumberPattern().IsMatch(compactOcrText) ||
-                                   compactOcrText.Contains("报关单") || compactOcrText.Contains("币制");
-        var hasCurrency = tokens.Any(t => CurrencyNames.Normalize(t.Text) is not null);
-        if (looksLikeDeclaration && !hasCurrency)
+        else if (first.FlippedFraction > .5)
         {
-            var sparseTokens = await RunTesseractPassAsync(ocrInput, temp, 11, cancellationToken);
-            foreach (var token in sparseTokens)
-            {
-                var duplicate = tokens.Any(existing => OverlapRatio(existing, token) >= .55);
-                if (!duplicate) tokens.Add(token);
-            }
+            candidates.Add(await RecognizeRotatedAsync(source, 180, cancellationToken));
         }
-
-        int resultWidth;
-        int resultHeight;
-        using (var ocrSource = Image.FromFile(ocrInput))
-        {
-            resultWidth = ocrSource.Width;
-            resultHeight = ocrSource.Height;
-        }
-        var primary = new TextPage { Width = resultWidth, Height = resultHeight, Tokens = tokens };
-        TextPage? secondary = null;
-        var secondaryError = "";
-        try
-        {
-            secondary = await _rapidOcr.RecognizeAsync(ocrInput, resultWidth, resultHeight, cancellationToken);
-            if (secondary.Tokens.Count == 0) secondaryError = "第二 OCR 引擎未检测到文字";
-        }
-        catch (OperationCanceledException) { throw; }
-        catch (Exception ex)
-        {
-            secondaryError = $"第二 OCR 引擎不可用：{ex.GetBaseException().Message}";
-            AppLog.Write($"{secondaryError}\n文件：{path}\n{ex}");
-        }
-        return new OcrPageResult(primary, secondary, secondaryError);
+        var best = candidates
+            .OrderByDescending(x => DeclarationPageScore(x.Page))
+            .ThenByDescending(x => x.Page.Tokens.Sum(t => t.Text.Length * t.Confidence))
+            .First();
+        if (best.Rotation != 0) AppLog.Write($"OCR 页面方向已校正：旋转 {best.Rotation}°。");
+        return best.Page;
     }
 
-    private sealed record OcrPageResult(TextPage Primary, TextPage? Secondary, string SecondaryError);
+    private async Task<RapidOcrPage> RecognizeRotatedAsync(Bitmap source, int rotation, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        using var prepared = OcrImages.Prepare(source, rotation);
+        var png = OcrImages.ToPng(prepared);
+        var page = await _rapidOcr.RecognizeAsync(png, prepared.Width, prepared.Height, cancellationToken);
+        return page with { Rotation = rotation };
+    }
 
     private static TextPage WithPageNumber(TextPage page, int pageNumber) => new()
     {
@@ -218,48 +171,11 @@ internal sealed partial class DocumentExtractor
         Tokens = page.Tokens
     };
 
-    private static async Task<int> DetectOrientationAsync(string input, CancellationToken cancellationToken)
-    {
-        var start = new ProcessStartInfo
-        {
-            FileName = AppPaths.TesseractExe,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardError = true,
-            RedirectStandardOutput = true,
-            WorkingDirectory = Path.GetDirectoryName(AppPaths.TesseractExe)!
-        };
-        start.ArgumentList.Add(input);
-        start.ArgumentList.Add("stdout");
-        start.ArgumentList.Add("-l"); start.ArgumentList.Add("osd");
-        start.ArgumentList.Add("--psm"); start.ArgumentList.Add("0");
-        start.ArgumentList.Add("--tessdata-dir"); start.ArgumentList.Add(AppPaths.Tessdata);
-        try
-        {
-            using var process = Process.Start(start);
-            if (process is null) return 0;
-            var outputTask = process.StandardOutput.ReadToEndAsync();
-            var errorTask = process.StandardError.ReadToEndAsync();
-            await OwnedProcess.WaitForExitAsync(process, cancellationToken);
-            var text = (await outputTask) + Environment.NewLine + (await errorTask);
-            var rotate = System.Text.RegularExpressions.Regex.Match(text, @"Rotate:\s*(0|90|180|270)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-            var confidence = System.Text.RegularExpressions.Regex.Match(text, @"Orientation confidence:\s*([0-9.]+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-            if (!rotate.Success || !double.TryParse(confidence.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var score) || score < 1.5)
-                return 0;
-            return int.Parse(rotate.Groups[1].Value, CultureInfo.InvariantCulture);
-        }
-        catch (OperationCanceledException) { throw; }
-        catch { return 0; }
-    }
-
-    private static List<int> SelectDeclarationPageIndexes(IReadOnlyList<TextPage> primary, IReadOnlyList<TextPage> secondary)
+    private static List<int> SelectDeclarationPageIndexes(IReadOnlyList<TextPage> pages)
     {
         var selected = new List<int>();
-        for (var i = 0; i < primary.Count; i++)
-        {
-            var score = Math.Max(DeclarationPageScore(primary[i]), i < secondary.Count ? DeclarationPageScore(secondary[i]) : 0);
-            if (score >= 8) selected.Add(i);
-        }
+        for (var i = 0; i < pages.Count; i++)
+            if (DeclarationPageScore(pages[i]) >= 8) selected.Add(i);
         return selected;
     }
 
@@ -282,59 +198,4 @@ internal sealed partial class DocumentExtractor
 
     [System.Text.RegularExpressions.GeneratedRegex(@"(?<!\d)\d{18}(?!\d)")]
     private static partial System.Text.RegularExpressions.Regex DeclarationNumberPattern();
-
-    private static async Task<List<TextToken>> RunTesseractPassAsync(
-        string input, string folder, int pageSegmentationMode, CancellationToken cancellationToken)
-    {
-        var outputBase = Path.Combine(folder, $"ocr-{pageSegmentationMode}");
-        var start = new ProcessStartInfo
-        {
-            FileName = AppPaths.TesseractExe,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardError = true,
-            RedirectStandardOutput = true,
-            WorkingDirectory = Path.GetDirectoryName(AppPaths.TesseractExe)!
-        };
-        start.ArgumentList.Add(input);
-        start.ArgumentList.Add(outputBase);
-        start.ArgumentList.Add("-l"); start.ArgumentList.Add("chi_sim+eng");
-        start.ArgumentList.Add("--oem"); start.ArgumentList.Add("1");
-        start.ArgumentList.Add("--psm"); start.ArgumentList.Add(pageSegmentationMode.ToString(CultureInfo.InvariantCulture));
-        start.ArgumentList.Add("--tessdata-dir"); start.ArgumentList.Add(AppPaths.Tessdata);
-        start.ArgumentList.Add("tsv");
-
-        using var process = Process.Start(start) ?? throw new InvalidOperationException("无法启动 OCR 组件。");
-        var errorTask = process.StandardError.ReadToEndAsync();
-        var outputTask = process.StandardOutput.ReadToEndAsync();
-        await OwnedProcess.WaitForExitAsync(process, cancellationToken);
-        var error = await errorTask;
-        await outputTask;
-        if (process.ExitCode != 0) throw new InvalidOperationException($"OCR 失败：{error.Trim()}");
-
-        var tokens = new List<TextToken>();
-        foreach (var line in await File.ReadAllLinesAsync(outputBase + ".tsv", cancellationToken))
-        {
-            var parts = line.Split('\t');
-            if (parts.Length < 12 || parts[0] == "level" || string.IsNullOrWhiteSpace(parts[11])) continue;
-            if (!double.TryParse(parts[10], NumberStyles.Float, CultureInfo.InvariantCulture, out var confidence) || confidence < 15) continue;
-            // Tesseract writes TSV geometry in the invariant format regardless of the user's locale.
-            if (!double.TryParse(parts[6], NumberStyles.Float, CultureInfo.InvariantCulture, out var left) ||
-                !double.TryParse(parts[7], NumberStyles.Float, CultureInfo.InvariantCulture, out var top) ||
-                !double.TryParse(parts[8], NumberStyles.Float, CultureInfo.InvariantCulture, out var width) ||
-                !double.TryParse(parts[9], NumberStyles.Float, CultureInfo.InvariantCulture, out var height)) continue;
-            tokens.Add(new TextToken(parts[11].Trim(), left, top, left + width, top + height, confidence));
-        }
-        return tokens;
-    }
-
-    private static double OverlapRatio(TextToken first, TextToken second)
-    {
-        var width = Math.Max(0, Math.Min(first.Right, second.Right) - Math.Max(first.Left, second.Left));
-        var height = Math.Max(0, Math.Min(first.Bottom, second.Bottom) - Math.Max(first.Top, second.Top));
-        var intersection = width * height;
-        var firstArea = Math.Max(1, (first.Right - first.Left) * (first.Bottom - first.Top));
-        var secondArea = Math.Max(1, (second.Right - second.Left) * (second.Bottom - second.Top));
-        return intersection / Math.Min(firstArea, secondArea);
-    }
 }

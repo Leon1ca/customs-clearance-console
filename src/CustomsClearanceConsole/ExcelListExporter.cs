@@ -190,13 +190,17 @@ internal static class ExcelListExporter
                         var consistency = CellText(row.GetValueOrDefault(17));
                         if (line.HasValueDifference && consistency != "存在差异")
                             issues.Add($"存在复核差异的分项未被标记：{consistency}。");
-                        if (!line.HasValueDifference && !line.IsFullyVerified && consistency != "未完整复核")
+                        if (consistency != line.ItemConsistency)
+                            issues.Add($"分项整项结论写成“{consistency}”，应为“{line.ItemConsistency}”。");
+                        if (!line.HasValueDifference && !line.IsFullyVerified && line.RuleCheckPassed is null && consistency != "未完整复核")
                             issues.Add($"未完整复核的分项被写成“{consistency}”，应为“未完整复核”。");
                         if (!line.HasValueDifference && line.IsFullyVerified && consistency != "一致")
                             issues.Add($"完整复核且一致的分项被写成“{consistency}”。");
                         var amountCheck = CellText(row.GetValueOrDefault(18));
                         if (line.HasAmountDifference && amountCheck != "金额不一致")
                             issues.Add($"金额不一致的分项金额确认写成“{amountCheck}”。");
+                        if (amountCheck != line.AmountVerification)
+                            issues.Add($"分项金额确认写成“{amountCheck}”，应为“{line.AmountVerification}”。");
                         if (!line.HasAmountDifference && line.AmountVerification == "金额未复核" && amountCheck != "金额未复核")
                             issues.Add($"未复核金额被写成“{amountCheck}”，应为“金额未复核”。");
                         if (!line.HasAmountDifference && line.AmountVerification == "金额一致" && amountCheck != "金额一致")

@@ -89,6 +89,11 @@ internal static class Program
             SelfTest.RunKnownRegressionAsync(args[1]).GetAwaiter().GetResult();
             return true;
         }
+        if (args.Length >= 2 && args[0].Equals("--ocr-self-test", StringComparison.OrdinalIgnoreCase))
+        {
+            Environment.ExitCode = OcrSelfTest.RunAsync(args[1]).GetAwaiter().GetResult();
+            return true;
+        }
         if (args.Length >= 2 && args[0].Equals("--ocr-debug", StringComparison.OrdinalIgnoreCase))
         {
             SelfTest.DumpOcrAsync(args[1]).GetAwaiter().GetResult();

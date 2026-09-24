@@ -94,6 +94,7 @@ internal sealed partial class DeclarationParser
         record.ContractNo = NormalizeContractOcr(CleanValue(record.ContractNo, "合同协议号"));
         record.DestinationCountry = ResolveDestinationCountry(first,
             CleanValue(record.DestinationCountry, "运抵国（地区）", "运抵国(地区)", "运抵国"));
+        var ruleProblems = document.UsedOcr ? ApplyOcrRules(record, first) : [];
         record.Confidence = CalculateConfidence(record, document.UsedOcr);
 
         var missing = new List<string>();
@@ -104,17 +105,67 @@ internal sealed partial class DeclarationParser
         if (string.IsNullOrWhiteSpace(record.DestinationCountry)) missing.Add("目的国");
         if (record.Totals.Count == 0) missing.Add("关单总货值");
 
-        if (missing.Count == 0)
+        if (missing.Count == 0 && ruleProblems.Count == 0)
         {
             record.Status = document.UsedOcr ? "OCR 识别完成" : "识别完成";
-            record.Warning = document.UsedOcr ? "已对无可用文本层的页面自动启用 OCR" : "";
+            record.Warning = document.UsedOcr ? "OCR 识别，已按规则复核（报关单号、数量×单价=总价、国别、关别）" : "";
         }
         else
         {
             record.Status = "需关注";
-            record.Warning = $"未能可靠识别：{string.Join("、", missing)}";
+            record.Warning = JoinWarnings(missing.Count == 0 ? "" : $"未能可靠识别：{string.Join("、", missing)}",
+                string.Join("；", ruleProblems));
+            if (ruleProblems.Count > 0) record.Confidence = Math.Min(record.Confidence, 80);
         }
         return record;
+    }
+
+    /// <summary>
+    /// Consistency rules for an OCR reading (a PDF text layer is exact and needs none). They
+    /// replace the former second OCR engine: instead of reading everything twice, the values
+    /// the declaration itself makes redundant are checked against each other.
+    /// </summary>
+    private static List<string> ApplyOcrRules(DeclarationRecord record, TextPage first)
+    {
+        var problems = new List<string>();
+
+        // The number is printed up to three times in the header (预录入编号, 海关编号, barcode
+        // text); a misread digit in one of them shows up as a second distinct number.
+        var numbers = page18DigitNumbers(first);
+        if (numbers.Count > 1)
+            problems.Add($"报关单号在表头读取不一致（{string.Join(" / ", numbers)}）");
+
+        // Every line: some quantity of the row times the unit price must give the total.
+        foreach (var line in record.LineTotals)
+        {
+            if (line.UnitPrice is not { } price || line.QuantityCandidates.Count == 0) continue;
+            var matches = line.QuantityCandidates.Any(quantity =>
+                Math.Abs(quantity * price - line.Amount) <= .011m + quantity * .00005m + line.Amount * .0001m);
+            line.RuleCheckPassed = matches;
+            if (matches)
+            {
+                line.Note = "数量×单价=总价，规则校验通过";
+                continue;
+            }
+            line.IsReliable = false;
+            line.Note = $"数量×单价与总价不符（单价 {price:0.####}，总价 {line.Amount:N2}），未计入合计";
+            problems.Add($"第{line.PageNumber}页项{(string.IsNullOrWhiteSpace(line.ItemNo) ? line.Sequence.ToString(CultureInfo.InvariantCulture) : line.ItemNo)}数量×单价与总价不符");
+        }
+        if (record.LineTotals.Any(x => !x.IsReliable)) record.Totals = SumReliableLineTotals(record.LineTotals);
+
+        if (record.DestinationCountry.Length > 0 && !CountryNames.IsName(record.DestinationCountry))
+            problems.Add($"目的国“{record.DestinationCountry}”不在国别表中");
+        if (record.ExitCustoms.Length > 0 && !IsCustomsName(record.ExitCustoms))
+            problems.Add($"出境关别“{record.ExitCustoms}”不像关区名称");
+        return problems;
+
+        // Only the title/number band above the first box: the boxes below hold 18-character
+        // credit codes (境内发货人, 生产销售单位) that can be all digits.
+        static List<string> page18DigitNumbers(TextPage page) => page.Tokens
+            .Where(t => t.Bottom <= (FindAnchor(page, "境内发货人")?.Top ?? page.Height * .2))
+            .SelectMany(t => DeclarationRegex().Matches(t.Text).Select(m => m.Value))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
     }
 
     private static string FindDeclarationNo(TextPage page)
@@ -203,12 +254,30 @@ internal sealed partial class DeclarationParser
         var exitName = CustomsShortByCode(code);
         if (string.IsNullOrWhiteSpace(exitName))
             exitName = ShortCustomsName(CleanValue(ReadLabeledValue(page, "出境关别"), "出境关别"));
+        // The printed form repeats the customs name in brackets after 海关编号, e.g.
+        // "海关编号：516620260000000017 （南沙新港）"; use it when the box value was not read.
+        if (!IsCustomsName(exitName)) exitName = ReadHeaderCustomsName(page);
 
         if (string.IsNullOrWhiteSpace(office)) return exitName;
         if (string.IsNullOrWhiteSpace(exitName)) return office;
         if (office.Equals(exitName, StringComparison.OrdinalIgnoreCase)) return exitName;
         if (office.Contains("洋山") && exitName.Contains("洋山")) return exitName;
         return $"{office}/{exitName}";
+    }
+
+    private static bool IsCustomsName(string value) =>
+        value.Length >= 2 && value.Count(x => x is >= '\u4e00' and <= '\u9fff') >= 2;
+
+    private static string ReadHeaderCustomsName(TextPage page)
+    {
+        var anchor = FindAnchor(page, "海关编号");
+        if (anchor is null) return "";
+        var tolerance = Math.Max(4, page.Height * .012);
+        var line = page.Tokens
+            .Where(t => Math.Abs(t.CenterY - anchor.CenterY) <= tolerance && t.Left >= anchor.Left - 1 && t.Left <= anchor.Right + page.Width * .25)
+            .OrderBy(t => t.Left);
+        var match = Regex.Match(Join(line), @"[（(]\s*([\u4e00-\u9fff]{2,10})\s*[）)]");
+        return match.Success ? ShortCustomsName(match.Groups[1].Value) : "";
     }
 
     private static string FindCustomsOffice(TextPage page)
@@ -467,8 +536,34 @@ internal sealed partial class DeclarationParser
         var quantityColumn = FindQuantityColumn(page, rowTop);
         double? quantityLeft = null;
         var maxFragmentGap = page.Width * .015;
+        // OCR usually reads a quantity with its unit as one token ("4辆", "5020千克"). Right-aligned,
+        // such tokens can reach under the price header, so they are looked for up to the price
+        // column's right edge; a number with a unit is never a price. The first one is the
+        // declared quantity, the others are the legal/second-unit quantities.
+        var quantityBand = page.Tokens
+            .Where(t => t.CenterX >= priceLeft - page.Width * .18 && t.CenterX <= priceRight + 1)
+            .Where(t => t.CenterY >= rowTop && t.CenterY <= bandBottom)
+            .ToList();
+        var withUnits = quantityBand
+            .Select(t => (Token: t, Match: Regex.Match(t.Text.Trim(), @"^([0-9][0-9,.]*)\s*(\D+)$")))
+            .Where(x => x.Match.Success && IsKnownUnitToken(x.Token.Text))
+            .Select(x => (x.Token, Ok: TryAmount(x.Match.Groups[1].Value, out var value), Value: value, Unit: x.Match.Groups[2].Value.Trim()))
+            .Where(x => x.Ok && x.Value > 0)
+            .OrderBy(x => x.Token.CenterY)
+            .ToList();
+        line.QuantityCandidates.AddRange(withUnits.Select(x => x.Value));
+        foreach (var token in quantityBand.Where(t => t.CenterX < priceLeft - 1))
+            if (Regex.IsMatch(token.Text.Trim(), @"^[0-9][0-9,.]*$") && TryAmount(token.Text.Trim(), out var plain) && plain > 0)
+                line.QuantityCandidates.Add(plain);
+        if (withUnits.Count > 0)
+        {
+            line.Quantity = withUnits[0].Value;
+            line.Unit = withUnits[0].Unit;
+            quantityLeft = withUnits.Min(x => x.Token.Left);
+        }
         foreach (var visualLine in Lines(leftTokens, tolerance).OrderByDescending(l => l.Max(t => t.CenterX)))
         {
+            if (line.Quantity is not null) break;
             var ordered = visualLine.OrderBy(t => t.Left).ToList();
             for (var k = ordered.Count - 1; k >= 0; k--)
             {

@@ -19,6 +19,7 @@
   </PropertyGroup>
   <ItemGroup>
     <EmbeddedResource Include="BrowserScripts/*.js" />
+    <EmbeddedResource Include="..\..\tests\CoreRegression\Fixtures\declaration-5166-rapidocr.json" LogicalName="ocr-selftest-layout.json" />
     <Reference Include="Clipper2Lib"><HintPath>dual-ocr-bin\Clipper2Lib.dll</HintPath><Private>true</Private></Reference>
     <Reference Include="Emgu.CV"><HintPath>dual-ocr-bin\Emgu.CV.dll</HintPath><Private>true</Private></Reference>
     <Reference Include="Microsoft.ML.OnnxRuntime"><HintPath>dual-ocr-bin\Microsoft.ML.OnnxRuntime.dll</HintPath><Private>true</Private></Reference>

@@ -15,7 +15,8 @@ foreach ($relative in @('关单核验台.exe', 'app\关单核验台.dll')) {
     $file = Get-Item -LiteralPath (Join-Path $SourceRoot $relative)
     if ($file.VersionInfo.FileVersion -ne "$version.0") { throw "版本不一致：$relative" }
 }
-foreach ($relative in @('runtime\dotnet.exe', 'tools\tesseract\tesseract.exe', "更新说明-v$version.md", 'app\ocr-models\ppocrv5_dict.txt',
+if (Test-Path -LiteralPath (Join-Path $SourceRoot 'tools\tesseract')) { throw '发布包不应再包含 Tesseract（v1.5.3 起只用 PP-OCRv5）。' }
+foreach ($relative in @('runtime\dotnet.exe', 'tools\pdfium\pdfium.dll', "更新说明-v$version.md", 'app\ocr-models\ppocrv5_dict.txt',
         'LICENSE', 'AboutAndLicenses.txt', 'third-party-notices\ONNXRuntime-MIT.txt', 'third-party-notices\EmguCV-GPLv3-or-Commercial.txt',
         'app\AboutAndLicenses.txt', 'app\fonts\NotoSansSC-Regular.ttf', 'app\fonts\NotoSansSC-Medium.ttf', 'app\fonts\NotoSansSC-Bold.ttf',
         'app\fonts\JetBrainsMono-Regular.ttf', 'app\fonts\JetBrainsMono-Medium.ttf', 'app\fonts\JetBrainsMono-Bold.ttf',

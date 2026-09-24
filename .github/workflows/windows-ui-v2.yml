@@ -133,6 +133,16 @@ jobs:
         timeout-minutes: 15
         run: dotnet "$env:APP_DLL" --ui-contract-self-test
 
+      - name: OCR end-to-end (PP-OCRv5; PNG/JPG/BMP/TIFF/WebP, rotated pages, image-only PDF)
+        id: ocr
+        continue-on-error: true
+        timeout-minutes: 15
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet "$env:APP_DLL" --ocr-self-test artifacts/validation/ocr
+          if ($LASTEXITCODE -ne 0) { throw "OCR 端到端自检失败：$LASTEXITCODE" }
+
       - name: Environment, DPI and font report (fails if static weights are not real)
         id: envreport
         continue-on-error: true
@@ -243,7 +253,8 @@ jobs:
             if (-not (Test-Path -LiteralPath (Join-Path $fontDir $font))) { throw "便携包缺少字体、许可或清单：$font" }
           }
           if (-not (Test-Path -LiteralPath (Join-Path $root 'app/assets/ui-v2/icons/png/play-white-24.png'))) { throw '便携包缺少 UI v2 图标。' }
-          if (-not (Test-Path -LiteralPath (Join-Path $root 'tools/tesseract/tesseract.exe'))) { throw '便携包缺少根 tools/tesseract。' }
+          if (-not (Test-Path -LiteralPath (Join-Path $root 'tools/pdfium/pdfium.dll'))) { throw '便携包缺少根 tools/pdfium。' }
+          if (Test-Path -LiteralPath (Join-Path $root 'tools/tesseract')) { throw '便携包不应再包含 Tesseract。' }
           & "$env:GITHUB_WORKSPACE/scripts/package-release.ps1" -SourceRoot $root
 
       - name: Verify portable ZIP contents
@@ -266,10 +277,11 @@ jobs:
                                     'app/fonts/NotoSansSC-Regular.ttf', 'app/fonts/NotoSansSC-Medium.ttf',
                                     'app/fonts/NotoSansSC-Bold.ttf', 'app/fonts/JetBrainsMono-Regular.ttf',
                                     'app/fonts/NotoSansSC-OFL.txt', 'app/fonts/JetBrainsMono-OFL.txt',
-                                    'runtime/dotnet.exe', 'tools/tesseract/tesseract.exe',
+                                    'runtime/dotnet.exe',
                                     'tools/pdfium/pdfium.dll', 'app/ocr-models/ppocrv5_dict.txt')) {
               if (-not ($names -contains $required)) { throw "便携 ZIP 缺少：$required" }
             }
+            if ($names | Where-Object { $_ -like 'tools/tesseract/*' }) { throw '便携 ZIP 不应再包含 Tesseract。' }
             if ($names -contains 'app/fonts/NotoSansSC-Variable.ttf') { throw '便携 ZIP 仍包含可变字体，违反静态字体要求。' }
             Write-Host "便携 ZIP 文件数：$($names.Count)"
           } finally { $archive.Dispose() }
@@ -355,6 +367,7 @@ jobs:
           $results = [ordered]@{
             'build'      = '${{ steps.build.outcome }}'
             'uicontract' = '${{ steps.uicontract.outcome }}'
+            'ocr'        = '${{ steps.ocr.outcome }}'
             'envreport'  = '${{ steps.envreport.outcome }}'
             'export'     = '${{ steps.export.outcome }}'
             'snapshots'  = '${{ steps.snapshots.outcome }}'

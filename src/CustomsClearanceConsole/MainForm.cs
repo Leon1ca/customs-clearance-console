@@ -687,7 +687,7 @@ internal sealed partial class MainForm : Form
         var validNumbers = records.Where(x => x.HasValidDeclarationNo).Select(x => x.DeclarationNo).Distinct().Count();
         var placeholder = state == BatchState.Empty;
         var batchTotal = BatchTotalForDisplay();
-        var completedRecords = records.Count(x => x.Status is "识别完成" or "OCR 识别完成" or "双引擎校验通过");
+        var completedRecords = records.Count(x => x.Status is "识别完成" or "OCR 识别完成" or "双引擎校验通过" /* records saved by v1.5.2 and earlier */);
 
         _kpi.Set(
         [
@@ -707,7 +707,7 @@ internal sealed partial class MainForm : Form
                 placeholder ? "尚未载入" : records.Count == 0 ? "识别后统计" : $"{duplicateFiles} 份文件，合计只计 1 份",
                 duplicateGroups > 0 ? KpiTone.Danger : placeholder ? KpiTone.Placeholder : KpiTone.Normal),
             new KpiCell("需关注", attention.ToString(), "",
-                placeholder ? "尚未载入" : records.Count == 0 ? "识别后统计" : records.Any(x => x.Totals.Count == 0) || records.Any(x => x.LineTotals.Any(l => !l.IsReliable)) ? "金额双引擎不一致" : "无异常",
+                placeholder ? "尚未载入" : records.Count == 0 ? "识别后统计" : records.Any(x => x.Totals.Count == 0) || records.Any(x => x.LineTotals.Any(l => !l.IsReliable)) ? "金额未通过校验" : "无异常",
                 attention > 0 ? KpiTone.Warning : placeholder ? KpiTone.Placeholder : KpiTone.Normal),
             new KpiCell("截图留存", $"{savedNumbers}", validNumbers > 0 ? $"/ {validNumbers} 单号" : "单号",
                 placeholder ? "尚未载入" : records.Count == 0 ? "识别后统计" : "网页悬浮按钮截图后自动回填",

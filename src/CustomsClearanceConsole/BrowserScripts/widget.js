@@ -248,6 +248,7 @@
       requestCapture() { if (!captureButton.disabled) captureButton.click(); },
       setCollapsed,
       setState(state, payload) {
+        if (state === 'capturing') armWatchdog(); else disarmWatchdog();
         // A result must never be hidden: a card the user collapsed earlier opens again so the
         // saved file or the reason for not saving is visible next to the retry button.
         if (state !== 'idle') setCollapsed(false);
@@ -267,12 +268,27 @@
         }
       },
       setProgress(done, total, text) {
+        if (api.isCapturing) armWatchdog();
         widget.querySelector('[data-role=progress-text]').textContent = text || ('正在截取整页 · ' + done + ' / ' + total + ' 段');
         const pct = total > 0 ? Math.round(done / total * 100) : 0;
         widget.querySelector('[data-role=progress-bar]').style.width = pct + '%';
       }
     };
     window.__cccWidget = api;
+
+    // Last line of defence: the console bounds every capture and always reports a result, but
+    // if nothing at all comes back (the console was closed, the control connection dropped)
+    // the card must not stay on "截取中" forever. Every progress update re-arms the timer.
+    let watchdog = 0;
+    function disarmWatchdog() { if (watchdog) { clearTimeout(watchdog); watchdog = 0; } }
+    function armWatchdog() {
+      disarmWatchdog();
+      watchdog = setTimeout(() => {
+        watchdog = 0;
+        if (!api.isCapturing) return;
+        api.setState('error', { message: '截图无响应，未保存', detail: '关单核验台长时间没有返回结果。请确认程序仍在运行后重试；如反复出现，请提供 app.log。' });
+      }, api.watchdogMs || 90000);
+    }
 
     captureButton.addEventListener('pointermove', () => { pointerMoveCount += 1; });
     captureButton.addEventListener('click', () => {
@@ -284,6 +300,8 @@
         if (typeof window.cccRequestCapture === 'function') {
           bindingCallCount += 1;
           window.cccRequestCapture('');
+        } else {
+          api.setState('error', { message: '截图服务未连接，未保存', detail: '请回到关单核验台重新打开核验。' });
         }
       }
       catch (error) { api.setState('error', { message: '无法请求截图', detail: String(error) }); }
