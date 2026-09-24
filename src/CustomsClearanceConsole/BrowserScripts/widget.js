@@ -5,6 +5,14 @@
   const declarationNo = __DECLARATION_NO__;
   const saveDir = __SAVE_DIR__;
   const STATE_KEY = '__cccWidgetInstalled';
+  // The card belongs to the top-level page only. The per-document script also runs in
+  // same-process child frames (the official query frame on swapp.singlewindow.cn is
+  // same-site with www.singlewindow.cn), which used to mount a second card inside the
+  // query frame: its click started a capture whose progress and result only ever reached
+  // the top card, so the frame card stayed at "截取中" forever.
+  let isTop = true;
+  try { isTop = window.top === window; } catch (error) { isTop = false; }
+  if (!isTop) return 'subframe';
 
   function install() {
     const root = document.documentElement;
@@ -117,6 +125,13 @@
     // routing (not just the page's own layout) already delivers that point to this button.
     let pointerMoveCount = 0;
 
+    let collapsed = false;
+    function setCollapsed(value) {
+      collapsed = value;
+      widget.querySelectorAll('.ccc-s').forEach(section => { section.style.display = collapsed ? 'none' : ''; });
+      collapse.setAttribute('aria-label', collapsed ? '展开' : '收起');
+    }
+
     // The action button stays available in every non-capturing state so a failed or
     // rejected capture can always be retried without reloading the page.
     const api = {
@@ -176,7 +191,13 @@
           hit: api.hitTest(centerX, centerY),
           domClickCount,
           bindingCallCount,
-          pointerMoveCount
+          pointerMoveCount,
+          collapsed,
+          // Text of the section the current state shows; empty when nothing explains the state.
+          message: (() => {
+            const section = widget.querySelector('.ccc-s-' + widget.dataset.state);
+            return section && section.getClientRects().length > 0 ? (section.innerText || '').trim() : '';
+          })()
         };
       },
       // Bounded render-readiness gate used before a real CDP mouse click and before the
@@ -225,7 +246,11 @@
         });
       },
       requestCapture() { if (!captureButton.disabled) captureButton.click(); },
+      setCollapsed,
       setState(state, payload) {
+        // A result must never be hidden: a card the user collapsed earlier opens again so the
+        // saved file or the reason for not saving is visible next to the retry button.
+        if (state !== 'idle') setCollapsed(false);
         widget.dataset.state = state;
         api.isCapturing = state === 'capturing';
         captureButton.disabled = state === 'capturing';
@@ -267,12 +292,7 @@
       try { if (typeof window.cccOpenFolder === 'function') window.cccOpenFolder(''); } catch (error) { /* ignore */ }
     });
 
-    let collapsed = false;
-    collapse.addEventListener('click', () => {
-      collapsed = !collapsed;
-      widget.querySelectorAll('.ccc-s').forEach(section => { section.style.display = collapsed ? 'none' : ''; });
-      collapse.setAttribute('aria-label', collapsed ? '展开' : '收起');
-    });
+    collapse.addEventListener('click', () => setCollapsed(!collapsed));
 
     (() => {
       let startX = 0, startY = 0, originLeft = 0, originTop = 0, dragging = false;

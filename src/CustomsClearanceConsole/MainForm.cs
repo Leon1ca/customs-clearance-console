@@ -33,7 +33,15 @@ internal sealed partial class MainForm : Form
     /// </summary>
     internal bool AllowOversizeForSnapshot { get; set; }
 
+    private TableLayoutPanel _root = null!;
+    private TableLayoutPanel _titleRow = null!;
     private TableLayoutPanel _body = null!;
+    /// <summary>
+    /// DPI the child bounds are expressed in: 96 (logical) while the form is built, then the
+    /// window's real DPI once the handle exists (see DpiLayout).
+    /// </summary>
+    private int _layoutDpi = DpiLayout.LogicalDpi;
+    internal int LayoutDpiForTest => _layoutDpi;
     private TableLayoutPanel _statsRow = null!;
     private TableLayoutPanel _toolbar = null!;
     private TableLayoutPanel _footerPanel = null!;
@@ -106,8 +114,9 @@ internal sealed partial class MainForm : Form
         Size = new Size(1440, 900);
         BackColor = Theme.Canvas;
         Font = Theme.UiFont(13.5F);
-        AutoScaleMode = AutoScaleMode.Dpi;
-        AutoScaleDimensions = new SizeF(96F, 96F);
+        // Built in 96-DPI logical pixels and scaled once the window's real DPI is known
+        // (OnHandleCreated / OnDpiChanged). See DpiLayout for why auto-scaling is off.
+        AutoScaleMode = AutoScaleMode.None;
         FormBorderStyle = FormBorderStyle.None;
         Padding = new Padding(0);
         var iconPath = Path.Combine(AppContext.BaseDirectory, "app.ico");
@@ -163,6 +172,75 @@ internal sealed partial class MainForm : Form
             _searchTimer.Dispose();
         }
         base.Dispose(disposing);
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        RescaleLayout(DeviceDpi, placeWindow: true);
+    }
+
+    protected override void OnDpiChanged(DpiChangedEventArgs e)
+    {
+        // Windows already applied the suggested window rectangle for the new monitor.
+        base.OnDpiChanged(e);
+        RescaleLayout(e.DeviceDpiNew, placeWindow: false);
+    }
+
+    /// <summary>
+    /// Scales every child from the DPI it is laid out at to <paramref name="dpi"/> and re-applies
+    /// the responsive layout. On first creation the window is also sized from the logical design
+    /// size and fitted to the monitor's working area.
+    /// </summary>
+    private void RescaleLayout(int dpi, bool placeWindow)
+    {
+        if (dpi <= 0) return;
+        var from = _layoutDpi;
+        SuspendLayout();
+        try
+        {
+            if (dpi != from)
+            {
+                DpiLayout.ScaleChildren(this, from, dpi);
+                _layoutDpi = dpi;
+                // Manually dragged column widths are physical pixels of the old DPI.
+                _manualWidths.Clear();
+                RefreshDpiImages();
+            }
+            if (placeWindow && !AllowOversizeForSnapshot) PlaceOnScreen();
+        }
+        finally { ResumeLayout(true); }
+        ApplyResponsiveLayout();
+        LayoutRecordState();
+    }
+
+    /// <summary>
+    /// Design size 1440x900 and minimum 1200x720 are logical pixels. A 1920x1080 display at
+    /// 150% only offers about 1280x690 logical pixels of working area, so the window is fitted
+    /// to the working area (and opens maximized when the design size does not fit) instead of
+    /// extending past the screen edge where the caption buttons would be unreachable.
+    /// </summary>
+    private void PlaceOnScreen()
+    {
+        var working = Screen.FromHandle(Handle).WorkingArea;
+        var design = DpiLayout.Scale(UiTokens.Metrics.DesignWindow, _layoutDpi);
+        var minimum = DpiLayout.Scale(UiTokens.Metrics.MinWindow, _layoutDpi);
+        MinimumSize = new Size(Math.Min(minimum.Width, working.Width), Math.Min(minimum.Height, working.Height));
+        var size = new Size(Math.Min(design.Width, working.Width), Math.Min(design.Height, working.Height));
+        Bounds = new Rectangle(
+            working.Left + (working.Width - size.Width) / 2,
+            working.Top + (working.Height - size.Height) / 2,
+            size.Width, size.Height);
+        if (design.Width > working.Width || design.Height > working.Height)
+            WindowState = FormWindowState.Maximized;
+    }
+
+    /// <summary>Button images are bitmaps loaded for a DPI; reload them after a DPI change.</summary>
+    private void RefreshDpiImages()
+    {
+        if (_settings is not null) _settings.Image = UiV2Icons.Load(Ui2.SettingsWhite, 16, _layoutDpi);
+        if (_cleanupButton is not null) _cleanupButton.Image = UiV2Icons.Load(Ui2.TrashInk, 16, _layoutDpi);
+        if (_scan is not null && _exportButton is not null) RefreshAll();
     }
 
     /// <summary>
@@ -415,11 +493,11 @@ internal sealed partial class MainForm : Form
     {
         var state = CurrentState;
         var processing = state == BatchState.Processing;
-        _body.RowStyles[2].Height = processing ? UiScale.Px(this, _layout.CompactHeight ? 92 : 104) : 0;
-        _body.RowStyles[3].Height = processing ? UiScale.Px(this, _layout.CompactHeight ? 34 : 38) : 0;
+        _body.RowStyles[2].Height = processing ? DpiLayout.Scale(_layout.CompactHeight ? 92 : 104, _layoutDpi) : 0;
+        _body.RowStyles[3].Height = processing ? DpiLayout.Scale(_layout.CompactHeight ? 34 : 38, _layoutDpi) : 0;
         _exportButton.Enabled = _state.Records.Count > 0 && !processing;
         _exportButton.Image?.Dispose();
-        _exportButton.Image = UiV2Icons.Load(_exportButton.Enabled ? Ui2.Export : Ui2.ExportDisabled, 16, DeviceDpi);
+        _exportButton.Image = UiV2Icons.Load(_exportButton.Enabled ? Ui2.Export : Ui2.ExportDisabled, 16, _layoutDpi);
         _settings.Enabled = !processing;
         _cleanupButton.Enabled = !processing;
         _filterSegmented.Enabled = _state.Records.Count > 0 && !processing;
@@ -428,7 +506,7 @@ internal sealed partial class MainForm : Form
         {
             _scan.Text = "取消识别";
             _scan.Image?.Dispose();
-            _scan.Image = UiV2Icons.Load(Ui2.Stop, 16, DeviceDpi);
+            _scan.Image = UiV2Icons.Load(Ui2.Stop, 16, _layoutDpi);
             _scan.BackColor = Color.White;
             _scan.ForeColor = Theme.Danger;
             _scan.AccessibleName = "取消识别";
@@ -443,7 +521,7 @@ internal sealed partial class MainForm : Form
         {
             _scan.Text = "开始识别";
             _scan.Image?.Dispose();
-            _scan.Image = UiV2Icons.Load(Ui2.Play, 16, DeviceDpi);
+            _scan.Image = UiV2Icons.Load(Ui2.Play, 16, _layoutDpi);
             var primaryFill = state == BatchState.Empty ? UiTokens.Colors.DisabledPrimaryFill : Theme.Primary;
             _scan.BackColor = primaryFill;
             _scan.ForeColor = Color.White;
@@ -470,7 +548,7 @@ internal sealed partial class MainForm : Form
         var size = CurrentPageSize();
         var items = _visible.Skip((_page - 1) * size).Take(size).ToList();
         _grid.Rows.Clear();
-        var rowHeight = UiScale.Px(this, _layout.TableRow);
+        var rowHeight = DpiLayout.Scale(_layout.TableRow, _layoutDpi);
         for (var i = 0; i < items.Count; i++)
         {
             var record = items[i];
@@ -542,7 +620,7 @@ internal sealed partial class MainForm : Form
     /// <summary>Stats row height that fits both the KPI grid and the currency summary.</summary>
     private int StatsRowHeight()
     {
-        var dpi = DeviceDpi;
+        var dpi = _layoutDpi;
         int S(int px) => (int)Math.Round(px * dpi / 96.0);
         var kpi = KpiPanel.RequiredHeight(dpi, _layout.CompactHeight);
         var money = S(96 + _moneySummary.RowCount * (_layout.AmountRow + 4) +
@@ -688,6 +766,9 @@ internal sealed partial class MainForm : Form
             : _visible.Count != records.Count ? $"显示 {_visible.Count} 条，共 {records.Count} 条 · 重复记录置顶"
             : $"显示 {_visible.Count} 条，共 {records.Count} 条 · 重复记录置顶";
         _pageLabel.Text = $"{_page}";
+        // Design: with no data the page number uses the disabled style too.
+        _pageLabel.Enabled = records.Count > 0;
+        _pageLabel.Invalidate();
         _previous.Enabled = _page > 1;
         _next.Enabled = _page < PageCount();
         if (_pageSize.SelectedIndex < 0) _pageSize.SelectedItem = "50 条";
@@ -705,7 +786,9 @@ internal sealed partial class MainForm : Form
         var header = _grid.ColumnHeadersHeight;
         _recordState.Bounds = new Rectangle(0, header, _gridHost.ClientSize.Width, Math.Max(0, _gridHost.ClientSize.Height - header));
         if (_dropBanner is null) return;
-        _dropBanner.Bounds = new Rectangle(Math.Max(0, (_gridHost.ClientSize.Width - 420) / 2), 6, Math.Min(420, _gridHost.ClientSize.Width), 34);
+        var bannerWidth = DpiLayout.Scale(420, _layoutDpi);
+        _dropBanner.Bounds = new Rectangle(Math.Max(0, (_gridHost.ClientSize.Width - bannerWidth) / 2), DpiLayout.Scale(6, _layoutDpi),
+            Math.Min(bannerWidth, _gridHost.ClientSize.Width), DpiLayout.Scale(34, _layoutDpi));
         if (_dropBanner.Parent is null)
         {
             _gridHost.Controls.Add(_dropBanner);
@@ -715,12 +798,39 @@ internal sealed partial class MainForm : Form
 
     // ---- grid painting ----
 
+    /// <summary>Self-test only: reproduces the leaked anti-aliasing to prove the seam check works.</summary>
+    internal static bool SkipCellSmoothingResetForTest { get; set; }
+
     private void PaintRecordCell(object? sender, DataGridViewCellPaintingEventArgs e)
     {
+        // Every cell shares one Graphics. The rounded tags and buttons below switch on
+        // anti-aliasing, and that setting used to leak into the next cell's background fill:
+        // anti-aliased rectangle edges only half-cover their pixels, and the grid does not
+        // clear its double buffer under the cells, so a ~25% black seam appeared along every
+        // cell edge on real screens (DrawToBitmap hid it in the alpha channel).
+        if (e.Graphics is not null && !SkipCellSmoothingResetForTest)
+        {
+            e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.None;
+            e.Graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Default;
+        }
+        if (e.RowIndex == -1 && e.ColumnIndex >= 0)
+        {
+            PaintColumnHeader(e);
+            return;
+        }
         if (e.RowIndex < 0 || e.ColumnIndex < 0 || _grid.Rows[e.RowIndex].Tag is not DeclarationRecord record) return;
         var name = _grid.Columns[e.ColumnIndex].Name;
-        if (name is not ("Index" or "Status" or "No" or "PortDest" or "Amount" or "Detail" or "Verify")) return;
-        e.Paint(e.CellBounds, DataGridViewPaintParts.Background | DataGridViewPaintParts.Border);
+        // Grid borders are off; every cell draws only its own 1px bottom divider (design 2.5).
+        // The grid's own SingleHorizontal style still produced column lines on real screens.
+        if (name is not ("Index" or "Status" or "No" or "PortDest" or "Amount" or "Detail" or "Verify"))
+        {
+            e.Paint(e.CellBounds, DataGridViewPaintParts.All & ~DataGridViewPaintParts.Border);
+            DrawRowDivider(e.Graphics!, e.CellBounds);
+            e.Handled = true;
+            return;
+        }
+        e.Paint(e.CellBounds, DataGridViewPaintParts.Background);
+        DrawRowDivider(e.Graphics!, e.CellBounds);
         var graphics = e.Graphics!;
         graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
         var dpi = DeviceDpi;
@@ -769,6 +879,38 @@ internal sealed partial class MainForm : Form
                 else DrawVerifyButton(graphics, bounds, S);
                 break;
         }
+        e.Handled = true;
+    }
+
+    private static void DrawRowDivider(Graphics graphics, Rectangle bounds)
+    {
+        using var line = new Pen(Theme.Divider);
+        graphics.DrawLine(line, bounds.Left, bounds.Bottom - 1, bounds.Right, bounds.Bottom - 1);
+    }
+
+    /// <summary>
+    /// Design 2.5 table header: panelSubtle background, 12.5px/500 muted text, only a 1px
+    /// border line at the bottom (no vertical grid lines).
+    /// </summary>
+    private void PaintColumnHeader(DataGridViewCellPaintingEventArgs e)
+    {
+        var graphics = e.Graphics!;
+        var bounds = e.CellBounds;
+        int S(int px) => (int)Math.Round(px * DeviceDpi / 96.0);
+        using (var back = new SolidBrush(Theme.PanelSubtle)) graphics.FillRectangle(back, bounds);
+        using (var line = new Pen(Theme.Border)) graphics.DrawLine(line, bounds.Left, bounds.Bottom - 1, bounds.Right, bounds.Bottom - 1);
+        var column = _grid.Columns[e.ColumnIndex];
+        var inset = column.Name == "Index" ? 0 : S(8);
+        var text = new Rectangle(bounds.X + inset, bounds.Y, Math.Max(0, bounds.Width - inset * 2), bounds.Height - 1);
+        var align = column.Name switch
+        {
+            "Index" or "Status" or "Detail" or "Verify" => TextFormatFlags.HorizontalCenter,
+            "Amount" => TextFormatFlags.Right,
+            _ => TextFormatFlags.Left
+        };
+        using var font = AppFonts.Ui(12.5F, UiWeight.Medium);
+        TextRenderer.DrawText(graphics, column.HeaderText, font, text, Theme.Muted,
+            align | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
         e.Handled = true;
     }
 
@@ -866,21 +1008,25 @@ internal sealed partial class MainForm : Form
         var overflow = lines.Count > 2 ? S(14) : 0;
         var startY = bounds.Y + Math.Max(0, (bounds.Height - visible.Count * lineHeight - overflow) / 2);
         using var currencyFont = Theme.UiFont(11.5F);
+        using var amountFont = Theme.MonoFont(13.5F, true);
         for (var i = 0; i < visible.Count; i++)
         {
+            // Design 2.5: currency 11.5px muted, 6px gap, amount 500 weight; right aligned.
             var (currency, amount, reliable) = visible[i];
             var lineY = startY + i * lineHeight;
+            var text = amount.ToString("N2");
+            var amountWidth = TextRenderer.MeasureText(graphics, text, amountFont, new Size(int.MaxValue, S(20)), TextFormatFlags.NoPadding).Width;
             var currencyWidth = TextRenderer.MeasureText(graphics, currency, currencyFont, new Size(int.MaxValue, S(20)), TextFormatFlags.NoPadding).Width;
-            using (var amountFont = Theme.MonoFont(13.5F, true))
-                TextRenderer.DrawText(graphics, amount.ToString("N2"), amountFont, new Rectangle(bounds.X, lineY, Math.Max(S(10), bounds.Width - S(10) - currencyWidth - S(6)), lineHeight),
-                    reliable ? Theme.Text : Theme.Warning, TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
-            TextRenderer.DrawText(graphics, currency, currencyFont, new Rectangle(bounds.Right - S(10) - currencyWidth, lineY, currencyWidth, lineHeight), Theme.Muted,
+            var amountLeft = bounds.Right - S(10) - amountWidth;
+            TextRenderer.DrawText(graphics, text, amountFont, new Rectangle(amountLeft, lineY, amountWidth, lineHeight),
+                reliable ? Theme.Text : Theme.Warning, TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+            TextRenderer.DrawText(graphics, currency, currencyFont, new Rectangle(Math.Max(bounds.X, amountLeft - S(6) - currencyWidth), lineY, currencyWidth, lineHeight), Theme.Muted,
                 TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
             if (!reliable)
             {
                 var underlineY = lineY + lineHeight / 2 + S(8);
                 using var underline = new Pen(UiTokens.Status.AttentionUnderline, S(1)) { DashStyle = System.Drawing.Drawing2D.DashStyle.Dash };
-                graphics.DrawLine(underline, bounds.Right - S(10) - currencyWidth - S(64), underlineY, bounds.Right - S(10), underlineY);
+                graphics.DrawLine(underline, amountLeft, underlineY, bounds.Right - S(10), underlineY);
             }
         }
         if (overflow > 0)
@@ -919,7 +1065,7 @@ internal sealed partial class MainForm : Form
             using var pen = new Pen(UiTokens.Colors.BorderAccentSoft);
             graphics.DrawPath(pen, path);
         }
-        var icon = UiV2Icons.Load(Ui2.External, 16, DeviceDpi);
+        var icon = UiV2Icons.Load(Ui2.External, 16, _layoutDpi);
         var iconWidth = icon?.Width ?? 0;
         var contentWidth = textWidth + (iconWidth > 0 ? S(6) + iconWidth : 0);
         var contentX = button.X + (button.Width - contentWidth) / 2;
@@ -940,17 +1086,20 @@ internal sealed partial class MainForm : Form
         var tag = new Rectangle(bounds.X + (bounds.Width - width) / 2, bounds.Y + (bounds.Height - S(26)) / 2, width, S(26));
         using var path = Theme.RoundedPath(tag, S(4));
         using (var fill = new SolidBrush(UiTokens.Status.Kept.Bg)) graphics.FillPath(fill, path);
-        var icon = UiV2Icons.Load(Ui2.CameraBlue, 16, DeviceDpi);
+        var icon = UiV2Icons.Load(Ui2.CameraBlue, 16, _layoutDpi);
         var iconWidth = icon?.Width ?? 0;
         var contentWidth = textWidth + (iconWidth > 0 ? S(5) + iconWidth : 0);
         var contentX = tag.X + (tag.Width - contentWidth) / 2;
-        TextRenderer.DrawText(graphics, "已留存", font, new Rectangle(contentX, tag.Y, textWidth + S(2), tag.Height), UiTokens.Status.Kept.Fg,
-            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+        // Design 01-main: the camera icon precedes the "已留存" text.
+        var textX = contentX;
         if (icon is not null)
         {
-            graphics.DrawImage(icon, contentX + textWidth + S(5), tag.Y + (tag.Height - icon.Height) / 2, icon.Width, icon.Height);
+            graphics.DrawImage(icon, contentX, tag.Y + (tag.Height - icon.Height) / 2, icon.Width, icon.Height);
+            textX = contentX + iconWidth + S(5);
             icon.Dispose();
         }
+        TextRenderer.DrawText(graphics, "已留存", font, new Rectangle(textX, tag.Y, textWidth + S(2), tag.Height), UiTokens.Status.Kept.Fg,
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
     }
 
     // ---- grid interactions ----
@@ -1344,7 +1493,7 @@ internal sealed partial class MainForm : Form
         base.OnResize(e);
         if (Width <= 0 || Height <= 0) return;
         if (WindowState == FormWindowState.Maximized) { var maximizedRegion = Region; Region = null; maximizedRegion?.Dispose(); return; }
-        using var path = Theme.RoundedPath(new RectangleF(0, 0, Width, Height), 10);
+        using var path = Theme.RoundedPath(new RectangleF(0, 0, Width, Height), 10F * DeviceDpi / 96F);
         var oldRegion = Region;
         Region = new Region(path);
         oldRegion?.Dispose();
@@ -1372,6 +1521,20 @@ internal sealed partial class MainForm : Form
             base.WndProc(ref message);
             var info = Marshal.PtrToStructure<MinMaxInfo>(message.LParam);
             info.MaxTrackSize = new Point(8192, 8192);
+            Marshal.StructureToPtr(info, message.LParam, false);
+            return;
+        }
+        if (message.Msg == wmGetMinMaxInfo && IsHandleCreated)
+        {
+            // A borderless window maximizes over the whole monitor, covering the taskbar.
+            // Maximize to the working area of the monitor the window is on instead
+            // (MaxPosition is relative to that monitor's top-left corner).
+            base.WndProc(ref message);
+            var info = Marshal.PtrToStructure<MinMaxInfo>(message.LParam);
+            var screen = Screen.FromHandle(Handle);
+            var working = screen.WorkingArea;
+            info.MaxPosition = new Point(working.Left - screen.Bounds.Left, working.Top - screen.Bounds.Top);
+            info.MaxSize = new Point(working.Width, working.Height);
             Marshal.StructureToPtr(info, message.LParam, false);
             return;
         }

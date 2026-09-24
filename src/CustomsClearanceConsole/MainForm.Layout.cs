@@ -5,11 +5,16 @@ internal sealed partial class MainForm
     private void BuildWorkspace()
     {
         var root = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, ColumnCount = 1, Margin = Padding.Empty, BackColor = Theme.Canvas };
+        _root = root;
+        // Explicit 100% columns: an implicit AutoSize column takes its widest child's current
+        // width, which after the DPI scale pass is wider than the window.
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, UiTokens.Metrics.Header));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.Controls.Add(BuildHeader(), 0, 0);
 
         _body = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, Margin = Padding.Empty, BackColor = Theme.Canvas };
+        _body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         _body.RowStyles.Add(new RowStyle(SizeType.Absolute, 62));   // title row
         _body.RowStyles.Add(new RowStyle(SizeType.Absolute, 130));  // stats row
         _body.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));    // progress strip
@@ -63,7 +68,9 @@ internal sealed partial class MainForm
         // fixed divider (x=186) and version (x=197); the real composited window then clipped
         // the version to "5.0" even though DrawToBitmap looked fine. Size the label to its
         // real text and place the divider/version strictly after it (P2).
-        var titleWidth = Math.Max(1, TextRenderer.MeasureText(title.Text, title.Font).Width);
+        // Measured without a device context (system DPI) and converted back to logical pixels,
+        // because the whole header is built in logical pixels and scaled once afterwards.
+        var titleWidth = Math.Max(1, DpiLayout.MeasuredToLogical(TextRenderer.MeasureText(title.Text, title.Font).Width));
         title.Size = new Size(titleWidth, UiTokens.Metrics.Header);
         var divider = new Panel
         {
@@ -86,7 +93,9 @@ internal sealed partial class MainForm
         header.Controls.Add(version);
         _headerVersion = version;
 
-        var actions = new FlowLayoutPanel { Dock = DockStyle.Right, AutoSize = true, FlowDirection = FlowDirection.LeftToRight, Margin = Padding.Empty, BackColor = Color.Transparent, Padding = new Padding(0, 9, 10, 9) };
+        // Settings, then the minimize / maximize / close caption buttons flush with the top-right
+        // corner at full title-bar height, as in every Windows 11 window.
+        var actions = new FlowLayoutPanel { Dock = DockStyle.Right, AutoSize = true, WrapContents = false, FlowDirection = FlowDirection.LeftToRight, Margin = Padding.Empty, BackColor = Theme.HeaderBg, Padding = Padding.Empty };
         _settings = Theme.IconButton("设置", new RoundedButton
         {
             BackColor = ColorTranslator.FromHtml("#213855"),
@@ -97,13 +106,14 @@ internal sealed partial class MainForm
             DisabledFill = Theme.HeaderBg,
             Radius = 6,
             Size = new Size(78, 30),
+            Margin = new Padding(0, 9, 16, 9),
             Font = AppFonts.Ui(13F, UiWeight.Medium)
         }, Ui2.SettingsWhite, 16, DeviceDpi);
         _settings.Click += (_, _) => ShowDirectorySettings();
         actions.Controls.Add(_settings);
         foreach (var glyph in new[] { CaptionGlyph.Minimize, CaptionGlyph.Maximize, CaptionGlyph.Close })
         {
-            var button = new WindowCaptionButton(glyph) { Margin = new Padding(0), Size = new Size(46, 30) };
+            var button = new WindowCaptionButton(glyph) { Margin = new Padding(0), Size = new Size(46, UiTokens.Metrics.Header), BackColor = Theme.HeaderBg };
             var captured = glyph;
             button.Click += (_, _) =>
             {
@@ -137,12 +147,14 @@ internal sealed partial class MainForm
     private Control BuildTitleRow()
     {
         var row = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1, Margin = Padding.Empty, BackColor = Theme.Canvas };
+        _titleRow = row;
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 158));
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
         _titleBlock = new TitleBlock { Dock = DockStyle.Fill, Margin = new Padding(0, 0, 12, 0) };
         row.Controls.Add(_titleBlock, 0, 0);
         _exportButton = Theme.IconButton("导出列表", Theme.SecondaryButton(""), Ui2.Export, 16, DeviceDpi);
+        if (_exportButton is RoundedButton exportRounded) exportRounded.DropDown = DropDownGlyph.Separated;
         _exportButton.Dock = DockStyle.Fill;
         _exportButton.Margin = new Padding(0, 11, 10, 11);
         _exportButton.AccessibleName = "导出列表";
@@ -176,6 +188,7 @@ internal sealed partial class MainForm
         var panel = new RoundedPanel { Dock = DockStyle.Fill, BackColor = Theme.Surface, BorderColor = Theme.Border, Radius = 8, Margin = Padding.Empty };
         var content = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, Padding = new Padding(1), Margin = Padding.Empty, BackColor = Theme.Surface };
         _recordsContent = content;
+        content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 56));
         content.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
@@ -199,6 +212,7 @@ internal sealed partial class MainForm
         _searchHost = new SearchField(_search) { Dock = DockStyle.Fill, Margin = new Padding(0, 11, 0, 11) };
         toolbar.Controls.Add(_searchHost, 1, 0);
         _cleanupButton = Theme.IconButton("清理", Theme.QuietButton(""), Ui2.TrashInk, 16, DeviceDpi);
+        if (_cleanupButton is RoundedButton cleanupRounded) cleanupRounded.DropDown = DropDownGlyph.Plain;
         _cleanupButton.Dock = DockStyle.Fill;
         _cleanupButton.Margin = new Padding(0, 11, 0, 11);
         _cleanupButton.AccessibleName = "清理";
@@ -245,7 +259,7 @@ internal sealed partial class MainForm
         _previous.Dock = DockStyle.Fill;
         _previous.Margin = new Padding(0, 8, 6, 8);
         _previous.Click += (_, _) => { if (_page > 1) { _page--; RefreshGrid(); } };
-        _pageLabel = new Label { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, ForeColor = Theme.Text, Font = Theme.MonoFont(12.5F, true) };
+        _pageLabel = new PageBadge { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, ForeColor = Color.White, Font = Theme.MonoFont(12.5F, true) };
         _next = Theme.QuietButton("下一页");
         _next.Dock = DockStyle.Fill;
         _next.Margin = new Padding(6, 8, 0, 8);
@@ -282,6 +296,9 @@ internal sealed partial class MainForm
             MultiSelect = true,
             EnableHeadersVisualStyles = false,
             ColumnHeadersHeight = 38,
+            // Design 2.5: rows are separated by a 1px divider only; no vertical grid lines.
+            CellBorderStyle = DataGridViewCellBorderStyle.None,
+            ColumnHeadersBorderStyle = DataGridViewHeaderBorderStyle.None,
             ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing,
             RowTemplate = { Height = 54 },
             ClipboardCopyMode = DataGridViewClipboardCopyMode.Disable,
@@ -363,6 +380,8 @@ internal sealed partial class MainForm
         return grid;
     }
 
+    private static int LogicalMinimumWidth(string column) => column switch { "Index" => 28, "Status" => 64, "No" => 150, _ => 48 };
+
     private static void AddColumn(DataGridView grid, string name, string header, DataGridViewContentAlignment alignment) =>
         grid.Columns.Add(new DataGridViewTextBoxColumn
         {
@@ -370,7 +389,7 @@ internal sealed partial class MainForm
             HeaderText = header,
             SortMode = DataGridViewColumnSortMode.NotSortable,
             Resizable = DataGridViewTriState.True,
-            MinimumWidth = name switch { "Index" => 28, "Status" => 64, "No" => 150, _ => 48 },
+            MinimumWidth = LogicalMinimumWidth(name),
             DefaultCellStyle = new DataGridViewCellStyle { Alignment = alignment, NullValue = "—", Padding = new Padding(8, 0, 8, 0) }
         });
 
@@ -379,16 +398,27 @@ internal sealed partial class MainForm
         if (IsDisposed || _body is null || _grid is null || _recordsContent is null) return;
         SuspendLayout();
         _body.SuspendLayout();
-        var dpi = DeviceDpi;
+        // Everything is expressed in the DPI the children are laid out at (see DpiLayout), and
+        // every fixed row/column size is set here from its logical value, so the result never
+        // depends on whether an earlier scale pass touched it.
+        var dpi = _layoutDpi;
         var logicalWidth = (int)Math.Round(ClientSize.Width * 96.0 / dpi);
         var logicalHeight = (int)Math.Round(ClientSize.Height * 96.0 / dpi);
         _layout = Responsive.Compute(logicalWidth, logicalHeight);
         int S(int px) => (int)Math.Round(px * dpi / 96.0);
+        _root.RowStyles[0].Height = S(UiTokens.Metrics.Header);
+        _titleRow.ColumnStyles[1].Width = S(158);
+        _titleRow.ColumnStyles[2].Width = S(150);
+        _recordsContent.RowStyles[2].Height = S(44);
+        _toolbar.ColumnStyles[3].Width = S(112);
+        var footerColumns = new[] { 72, 64, 72, 44, 104 };
+        for (var i = 0; i < footerColumns.Length; i++) _footerPanel.ColumnStyles[i + 1].Width = S(footerColumns[i]);
         _body.Padding = new Padding(S(24), S(_layout.ContentPaddingY), S(24), S(_layout.ContentPaddingY));
         _body.RowStyles[0].Height = S(_layout.CompactHeight ? 56 : 62);
         _body.RowStyles[1].Height = StatsRowHeight();
-        _body.RowStyles[2].Height = _session is null ? 0 : S(_layout.CompactHeight ? 92 : 104);
-        _body.RowStyles[3].Height = _session is null ? 0 : S(_layout.CompactHeight ? 34 : 38);
+        var processing = CurrentState == BatchState.Processing;
+        _body.RowStyles[2].Height = processing ? S(_layout.CompactHeight ? 92 : 104) : 0;
+        _body.RowStyles[3].Height = processing ? S(_layout.CompactHeight ? 34 : 38) : 0;
         _statsRow.ColumnStyles[0].Width = S(_layout.KpiPanelWidth);
         _toolbar.ColumnStyles[0].Width = S(372);
         _toolbar.ColumnStyles[1].Width = S(_layout.SearchWidth + 8);
@@ -403,7 +433,7 @@ internal sealed partial class MainForm
     private void ApplyGridColumns()
     {
         if (_grid.Columns.Count == 0) return;
-        var dpi = DeviceDpi;
+        var dpi = _layoutDpi;
         int S(int px) => (int)Math.Round(px * dpi / 96.0);
         var table = _layout.Table;
         _applyingWidths = true;
@@ -414,6 +444,7 @@ internal sealed partial class MainForm
             _grid.Columns["Dest"].Visible = !merged;
             _grid.Columns["PortDest"].Visible = merged;
             var inner = ClientSize.Width == 0 ? S(1100) : ClientSize.Width - S(48) - S(2) - S(32);
+            foreach (DataGridViewColumn each in _grid.Columns) each.MinimumWidth = Math.Max(2, S(LogicalMinimumWidth(each.Name)));
             void Set(string name, int logical, bool fill = false)
             {
                 var column = _grid.Columns[name];

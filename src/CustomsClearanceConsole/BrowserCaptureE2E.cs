@@ -620,10 +620,18 @@ internal static class BrowserCaptureE2E
             server.Url("/page?content=900&result=310120260000000006&query=0"), browser, headless: true, allowTestTarget: true);
         var problem = await StartAndWaitAsync(session, false);
         if (problem is not null) return new Scenario("no-query-rejected", false, [problem]);
+        // The user may have collapsed the card before clicking: the refusal reason must still show.
+        await session.EvaluateRawAsync("window.__cccWidget && window.__cccWidget.setCollapsed(true)", CancellationToken.None);
         var result = await ClickAndAwaitAsync(session, TimeSpan.FromSeconds(120));
         var details = new List<string>();
         if (result.State != "error") details.Add($"未查询应拒绝保存，实际状态 {result.State}：{result.Message}");
         if (Directory.EnumerateFiles(folder, "*.png").Any()) details.Add("未查询仍然生成了截图。");
+        using (var card = JsonDocument.Parse(await session.DescribeWidgetForTestAsync(CancellationToken.None)))
+        {
+            var message = card.RootElement.TryGetProperty("message", out var m) ? m.GetString() ?? "" : "";
+            if (!message.Contains("尚未确认", StringComparison.Ordinal))
+                details.Add($"收起的卡片收到拒绝结论后未展开显示原因：{card.RootElement}");
+        }
         return new Scenario("no-query-rejected", details.Count == 0, details.Count == 0 ? ["真实点击后未查询时未保存假成功"] : details);
     }
 
@@ -1146,7 +1154,7 @@ internal static class BrowserCaptureE2E
         var folder = Path.Combine(outputFolder, "official-dom");
         Directory.CreateDirectory(folder);
         const string number = "310120260000000023";
-        var url = server.Url($"/page?result={number}&frame=official&mode=ok");
+        var url = server.Url($"/page?result={number}&frame=official&mode=ok&lazy=2500");
         await using var session = new BrowserValidation(number, folder, url, browser, headless: true, allowTestTarget: true);
         var problem = await StartAndWaitAsync(session, false);
         var details = new List<string>();
@@ -1155,6 +1163,11 @@ internal static class BrowserCaptureE2E
             details.Add("未能在 frame 内真实点击查询按钮。");
         var identity = await session.WaitForIdentitySettledAsync(TimeSpan.FromSeconds(30), CancellationToken.None);
         if (!identity.StartsWith("ready|", StringComparison.Ordinal)) details.Add($"官方 DOM 查询未就绪：{identity}");
+        // Like the official page, the query frame shares the renderer process with the top page,
+        // so the per-document script runs inside it too. Exactly one card may exist: the top one.
+        var topCards = await session.CountWidgetHostsAsync(CancellationToken.None);
+        var frameCards = await session.CountSubframeWidgetHostsAsync(CancellationToken.None);
+        if (topCards != 1 || frameCards != 0) details.Add($"截图卡片数量错误：顶层 {topCards}、查询 frame 内 {frameCards}（应为 1 和 0）。");
         var result = await ClickAndAwaitAsync(session, TimeSpan.FromSeconds(120));
         if (result.State != "saved") details.Add($"官方 DOM 截图失败：{result.State}：{result.Message}");
         else if (result.FilePath is null || !File.Exists(result.FilePath)) details.Add("官方 DOM 未生成截图。");
@@ -1531,6 +1544,10 @@ internal static class BrowserCaptureE2E
             // frameh lets a fixture start with an owner iframe already tall enough for its
             // document, so the expand path has nothing to grow while the frame still extends
             // past the physical viewport (the pre-expanded OOPIF regression).
+            // lazy=<ms>: the page script creates the iframe after this delay, like the official
+            // single-page app that renders its query frame after load. The frame's document is
+            // then created after the session registered its per-document script.
+            var lazyFrame = parameters.TryGetValue("lazy", out var lz) && int.TryParse(lz, out var lzParsed) && lzParsed > 0 ? lzParsed : 0;
             var frameHeight = parameters.TryGetValue("frameh", out var fh) && int.TryParse(fh, out var fhParsed) && fhParsed > 0 ? fhParsed : 400;
             // R5-2 failure injection: the first scroll container expands normally, then the
             // second one throws once on its first style write, exercising the production
@@ -1634,6 +1651,21 @@ internal static class BrowserCaptureE2E
                   <iframe id="inner" src="{frameSrc}" style="width:100%;height:{frameHeight}px;{(clamp ? "max-height:400px !important;" : "")}border:0"></iframe>
                   <div id="bottom"></div>
                   """
+                : isFrame && lazyFrame > 0
+                    ? $$"""
+                      <div id="top"></div>
+                      <div id="frame-slot"></div>
+                      <div id="bottom"></div>
+                      <script>
+                        setTimeout(function () {
+                          var frame = document.createElement('iframe');
+                          frame.id = 'inner';
+                          frame.src = {{JsonSerializer.Serialize(frameSrc)}};
+                          frame.style.cssText = 'width:100%;height:{{frameHeight}}px;border:0';
+                          document.getElementById('frame-slot').appendChild(frame);
+                        }, {{lazyFrame}});
+                      </script>
+                      """
                 : isFrame
                     ? $"""
                       <div id="top"></div>
