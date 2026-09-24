@@ -297,6 +297,31 @@ jobs:
           if (-not $report.fontVerification.ok) { throw "解压后字体未真实加载：$($report.fontVerification.detail)" }
           Write-Host "干净解压包 DeviceDpi=$($report.dpi) 字体=$($report.fontVerification.detail)"
 
+      # Runs last because it changes the display scaling for the rest of the job. The
+      # runner's session keeps its 96-DPI system DPI, so windows here are created at 150%
+      # on a monitor whose DPI differs from the system DPI.
+      - name: 150% display scaling snapshots
+        id: dpi150
+        continue-on-error: true
+        timeout-minutes: 12
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:GITHUB_WORKSPACE 'artifacts/validation/ui-states-150'
+          New-Item -ItemType Directory -Force $evidence | Out-Null
+          & "$env:GITHUB_WORKSPACE/scripts/set-display-scale.ps1" -ScalePercent 150 -MinWidth 2880 -MinHeight 1620
+          dotnet "$env:APP_DLL" --env-report (Join-Path $evidence 'environment')
+          $report = Get-Content (Join-Path $evidence 'environment/environment.json') -Raw | ConvertFrom-Json
+          Write-Host "150%: actualDeviceDpi=$($report.dpi) windowDpi=$($report.dpiProbe.windowDpi) systemDpi=$($report.dpiProbe.systemDpi)"
+          $stdout = Join-Path $evidence 'snapshot-stdout.log'
+          $stderr = Join-Path $evidence 'snapshot-stderr.log'
+          $process = Start-Process -FilePath 'dotnet' -ArgumentList @("$env:APP_DLL", '--ui-state-snapshot', $evidence) `
+            -PassThru -NoNewWindow -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          if (-not $process.WaitForExit(8 * 60 * 1000)) { try { $process.Kill($true) } catch { }; throw '150% 快照超时。' }
+          Get-Content -LiteralPath $stdout -Tail 60 -ErrorAction SilentlyContinue | Write-Host
+          Get-Content -LiteralPath $stderr -Tail 60 -ErrorAction SilentlyContinue | Write-Host
+          if ($process.ExitCode -ne 0) { throw "150% 快照退出码非 0：$($process.ExitCode)" }
+
       - name: Upload validation evidence
         if: always()
         uses: actions/upload-artifact@v4
