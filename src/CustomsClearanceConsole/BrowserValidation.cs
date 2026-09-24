@@ -1013,14 +1013,16 @@ internal sealed class BrowserValidation : IAsyncDisposable
             var enlargedViewport = viewport is not null
                 && (width > viewportWidth || height > viewportHeight
                     || capturedOopif.Any(frame => frame.Bottom > viewportHeight || frame.Right > viewportWidth));
+            var paintWidth = enlargedViewport ? Math.Max(viewportWidth, width) : viewportWidth;
+            var paintHeight = enlargedViewport ? Math.Max(viewportHeight, height) : viewportHeight;
             try
             {
                 if (enlargedViewport)
                 {
                     await cdp.SendAsync("Emulation.setDeviceMetricsOverride", new
                     {
-                        width = Math.Max(viewportWidth, width),
-                        height = Math.Max(viewportHeight, height),
+                        width = paintWidth,
+                        height = paintHeight,
                         deviceScaleFactor = viewportScale,
                         mobile = false
                     }, token);
@@ -1028,7 +1030,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
                     // yet learned that it is fully visible and its lower part is saved blank. Wait
                     // (bounded) until the page reports the enlarged viewport and every captured
                     // child frame reports itself completely inside it, then for fresh frames.
-                    var paintProblem = await WaitForEnlargedPaintAsync(Math.Max(viewportWidth, width), Math.Max(viewportHeight, height), capturedOopif, token);
+                    var paintProblem = await WaitForEnlargedPaintAsync(paintWidth, paintHeight, capturedOopif, token);
                     if (paintProblem is not null)
                         return new BrowserCaptureResult(SessionId, DeclarationNo, "error", null,
                             $"跨进程网页框架未能在放大视口后完成重绘（{paintProblem}），为避免保存空白截图，已拒绝本次截图。");
@@ -1043,31 +1045,46 @@ internal sealed class BrowserValidation : IAsyncDisposable
                 }
 
                 var tiles = (int)Math.Ceiling(height / (double)TileHeight);
-                await ReportProgressAsync(0, tiles, "正在截取整页");
                 using var full = new Bitmap(width, height, PixelFormat.Format24bppRgb);
-                using (var graphics = Graphics.FromImage(full))
+                for (var attempt = 1; ; attempt++)
                 {
-                    graphics.Clear(Color.White);
-                    for (var index = 0; index < tiles; index++)
+                    await ReportProgressAsync(0, tiles, "正在截取整页");
+                    using (var graphics = Graphics.FromImage(full))
                     {
-                        token.ThrowIfCancellationRequested();
-                        if (Volatile.Read(ref _navigationGeneration) != generation || !IsTargetUrl(_currentUrl))
-                            return new BrowserCaptureResult(SessionId, DeclarationNo, "error", null, "捕获期间页面已导航，未保存截图。");
-                        var y = index * TileHeight;
-                        var tileHeight = Math.Min(TileHeight, height - y);
-                        var response = await cdp.SendAsync("Page.captureScreenshot", new
+                        graphics.Clear(Color.White);
+                        for (var index = 0; index < tiles; index++)
                         {
-                            format = "png",
-                            fromSurface = true,
-                            captureBeyondViewport = true,
-                            clip = new { x = 0, y, width, height = tileHeight, scale = 1 }
-                        }, token);
-                        var data = Convert.FromBase64String(response.GetProperty("result").GetProperty("data").GetString()!);
-                        using var stream = new MemoryStream(data);
-                        using var tile = new Bitmap(stream);
-                        graphics.DrawImageUnscaled(tile, 0, y);
-                        await ReportProgressAsync(index + 1, tiles, null);
+                            token.ThrowIfCancellationRequested();
+                            if (Volatile.Read(ref _navigationGeneration) != generation || !IsTargetUrl(_currentUrl))
+                                return new BrowserCaptureResult(SessionId, DeclarationNo, "error", null, "捕获期间页面已导航，未保存截图。");
+                            var y = index * TileHeight;
+                            var tileHeight = Math.Min(TileHeight, height - y);
+                            using var tile = await CaptureClipAsync(cdp, 0, y, width, tileHeight, token);
+                            graphics.DrawImageUnscaled(tile, 0, y);
+                            await ReportProgressAsync(index + 1, tiles, null);
+                        }
                     }
+                    // Even after the frame reported itself visible, its tiles can still be rastered
+                    // after the capture drew the frame (seen 1/80 under load): the saved band is blank
+                    // while a later look shows content. Re-check each out-of-process frame's bottom
+                    // band against a fresh clip and capture again instead of saving a blank frame.
+                    if (capturedOopif.Count == 0) break;
+                    var paint = await CheckOopifPaintAsync(cdp, full, capturedOopif, token);
+                    if (paint == OopifPaintCheck.Consistent) break;
+                    AppLog.Write($"跨进程框架绘制复核第 {attempt} 次：{paint}。");
+                    if (attempt >= 3)
+                    {
+                        if (paint == OopifPaintCheck.Unpainted)
+                            return new BrowserCaptureResult(SessionId, DeclarationNo, "error", null,
+                                "跨进程网页框架多次截取仍未完成绘制，为避免保存空白截图，已拒绝本次截图。");
+                        // The frame is painted; only its content keeps changing (for example an
+                        // animation), which the result fingerprint check below still guards.
+                        break;
+                    }
+                    var repaintProblem = await WaitForEnlargedPaintAsync(paintWidth, paintHeight, capturedOopif, token);
+                    if (repaintProblem is not null)
+                        return new BrowserCaptureResult(SessionId, DeclarationNo, "error", null,
+                            $"跨进程网页框架未能完成重绘（{repaintProblem}），为避免保存空白截图，已拒绝本次截图。");
                 }
                 // Final identity/generation re-validation before the atomic move.
                 if (Volatile.Read(ref _navigationGeneration) != generation || !IsTargetUrl(_currentUrl))
@@ -1134,6 +1151,69 @@ internal sealed class BrowserValidation : IAsyncDisposable
             if (attempt < 3) await Task.Delay(150, token);
         }
         return null;
+    }
+
+    private async Task<Bitmap> CaptureClipAsync(CdpClient cdp, int x, int y, int width, int height, CancellationToken token)
+    {
+        var response = await cdp.SendAsync("Page.captureScreenshot", new
+        {
+            format = "png",
+            fromSurface = true,
+            captureBeyondViewport = true,
+            clip = new { x, y, width, height, scale = 1 }
+        }, token);
+        var data = Convert.FromBase64String(response.GetProperty("result").GetProperty("data").GetString()!);
+        using var stream = new MemoryStream(data);
+        // Bitmap(Stream) keeps reading the stream lazily; copy so the result owns its pixels.
+        using var decoded = new Bitmap(stream);
+        return new Bitmap(decoded);
+    }
+
+    private enum OopifPaintCheck { Consistent, Changed, Unpainted }
+
+    /// <summary>
+    /// Compares the bottom band of every captured out-of-process frame in the stitched image
+    /// with a fresh clip of the same page area. Unpainted: the stitched band is a single flat
+    /// colour while the fresh clip is not (the frame was drawn before its tiles existed).
+    /// Changed: the bands differ otherwise (live content). Consistent: they match.
+    /// </summary>
+    private async Task<OopifPaintCheck> CheckOopifPaintAsync(CdpClient cdp, Bitmap full, IReadOnlyList<OopifPaintRange> frames, CancellationToken token)
+    {
+        var result = OopifPaintCheck.Consistent;
+        foreach (var frame in frames)
+        {
+            var left = Math.Clamp(frame.Left, 0, full.Width - 1);
+            var right = Math.Clamp(frame.Right, left + 1, full.Width);
+            var bottom = Math.Clamp(frame.Bottom, 1, full.Height);
+            var top = Math.Max(0, bottom - 360);
+            if (right - left < 4 || bottom - top < 4) continue;
+            using var fresh = await CaptureClipAsync(cdp, left, top, right - left, bottom - top, token);
+            var width = Math.Min(fresh.Width, right - left);
+            var height = Math.Min(fresh.Height, bottom - top);
+            var samples = 0;
+            var differences = 0;
+            var stitchedFlat = true;
+            var freshFlat = true;
+            var stitchedFirst = full.GetPixel(left, top);
+            var freshFirst = fresh.GetPixel(0, 0);
+            for (var y = 0; y < height; y += 3)
+                for (var x = 0; x < width; x += 3)
+                {
+                    var a = full.GetPixel(left + x, top + y);
+                    var b = fresh.GetPixel(x, y);
+                    samples++;
+                    if (!Near(a, b)) differences++;
+                    if (stitchedFlat && !Near(a, stitchedFirst)) stitchedFlat = false;
+                    if (freshFlat && !Near(b, freshFirst)) freshFlat = false;
+                }
+            if (samples == 0 || differences <= samples / 200) continue;
+            if (stitchedFlat && !freshFlat) return OopifPaintCheck.Unpainted;
+            result = OopifPaintCheck.Changed;
+        }
+        return result;
+
+        static bool Near(Color a, Color b) =>
+            Math.Abs(a.R - b.R) <= 8 && Math.Abs(a.G - b.G) <= 8 && Math.Abs(a.B - b.B) <= 8;
     }
 
     private const int PaintWaitMilliseconds = 8000;
@@ -1406,7 +1486,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
         "function(){ if(!this||this.tagName!=='IFRAME') return JSON.stringify({ok:false,reason:'not-iframe'});" +
         " var r=this.getBoundingClientRect(); var mh=getComputedStyle(this).maxHeight||'';" +
         " return JSON.stringify({ok:true,client:this.clientHeight||0,rect:Math.round(r.height),maxHeight:mh," +
-        " bottom:Math.round(r.bottom+(window.scrollY||0)),right:Math.round(r.right+(window.scrollX||0))}); }";
+        " bottom:Math.round(r.bottom+(window.scrollY||0)),right:Math.round(r.right+(window.scrollX||0)),left:Math.round(r.left+(window.scrollX||0))}); }";
 
     private static readonly string GrowFrameFunction =
         "function(h){ if(!this||this.tagName!=='IFRAME') return '0';" +
@@ -1421,8 +1501,9 @@ internal sealed class BrowserValidation : IAsyncDisposable
         " if(this.__cccPrevMaxHeight!==undefined){ if(this.__cccPrevMaxHeight) this.style.setProperty('max-height', this.__cccPrevMaxHeight, this.__cccPrevMaxHeightPriority||''); else this.style.removeProperty('max-height'); delete this.__cccPrevMaxHeight; delete this.__cccPrevMaxHeightPriority; }" +
         " return 'ok'; }";
 
-    private static bool TryReadFrameGeometry(string json, out int visibleHeight, out double maxHeight, out int bottom, out int right)
+    private static bool TryReadFrameGeometry(string json, out int visibleHeight, out double maxHeight, out int bottom, out int right, out int left)
     {
+        left = 0;
         visibleHeight = 0;
         maxHeight = double.PositiveInfinity;
         bottom = 0;
@@ -1435,6 +1516,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
             visibleHeight = root.TryGetProperty("client", out var client) ? client.GetInt32() : 0;
             bottom = root.TryGetProperty("bottom", out var bottomElement) ? bottomElement.GetInt32() : 0;
             right = root.TryGetProperty("right", out var rightElement) ? rightElement.GetInt32() : 0;
+            left = root.TryGetProperty("left", out var leftElement) ? leftElement.GetInt32() : 0;
             if (root.TryGetProperty("maxHeight", out var max))
             {
                 var text = max.GetString() ?? "";
@@ -1453,7 +1535,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
     /// beyond it; tying that decision to "did we change the owner" misses a frame that was
     /// already tall enough for its content but still taller than the physical viewport.
     /// </summary>
-    private sealed record OopifPaintRange(string FrameId, int Bottom, int Right, int ContextId, string? SessionId);
+    private sealed record OopifPaintRange(string FrameId, int Left, int Bottom, int Right, int ContextId, string? SessionId);
 
     /// <summary>
     /// Grows every authorized sub-frame's owner element to the frame document height using
@@ -1529,7 +1611,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
                 if (string.IsNullOrEmpty(objectId)) { AppLog.Write($"扩展框架 {frameId} 失败：找不到 owner 元素（session={session ?? "-"}）。"); failed.Add(frameId); continue; }
                 var ownerSession = OwnerSessionForFrame(frameId);
                 var beforeJson = await CallFunctionOnAsync(objectId, ReadFrameGeometryFunction, null, token, ownerSession);
-                if (!TryReadFrameGeometry(beforeJson, out var beforeVisible, out var beforeMax, out var beforeBottom, out var beforeRight)) { AppLog.Write($"扩展框架 {frameId} 失败：前置几何读取失败（{beforeJson}）。"); failed.Add(frameId); continue; }
+                if (!TryReadFrameGeometry(beforeJson, out var beforeVisible, out var beforeMax, out var beforeBottom, out var beforeRight, out var beforeLeft)) { AppLog.Write($"扩展框架 {frameId} 失败：前置几何读取失败（{beforeJson}）。"); failed.Add(frameId); continue; }
                 AppLog.Write($"扩展框架 {frameId}：内容高 {frameContent}，前置可视 {beforeVisible}/{beforeMax}，范围右/下 {beforeRight}/{beforeBottom}。");
                 // Already fully exposed: nothing to change and nothing to restore. An attached
                 // child-session frame still participates in the capture, though, and if its box
@@ -1538,7 +1620,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
                 if (beforeVisible >= frameContent - 2 && beforeMax >= frameContent - 2)
                 {
                     if (session is not null)
-                        capturedOopif.Add(new OopifPaintRange(frameId, beforeBottom, beforeRight, contextId.Value, session));
+                        capturedOopif.Add(new OopifPaintRange(frameId, beforeLeft, beforeBottom, beforeRight, contextId.Value, session));
                     continue;
                 }
 
@@ -1548,11 +1630,11 @@ internal sealed class BrowserValidation : IAsyncDisposable
                 await Task.Delay(120, token);
 
                 var afterJson = await CallFunctionOnAsync(objectId, ReadFrameGeometryFunction, null, token, ownerSession);
-                if (!TryReadFrameGeometry(afterJson, out var afterVisible, out var afterMax, out var afterBottom, out var afterRight)) { AppLog.Write($"扩展框架 {frameId} 失败：后置几何读取失败（{afterJson}）。"); failed.Add(frameId); continue; }
+                if (!TryReadFrameGeometry(afterJson, out var afterVisible, out var afterMax, out var afterBottom, out var afterRight, out var afterLeft)) { AppLog.Write($"扩展框架 {frameId} 失败：后置几何读取失败（{afterJson}）。"); failed.Add(frameId); continue; }
                 // A grown attached child-session frame is an OOPIF; captureBeyondViewport does
                 // not repaint those beyond the real viewport, so the caller enlarges it first.
                 if (session is not null)
-                    capturedOopif.Add(new OopifPaintRange(frameId, afterBottom, afterRight, contextId.Value, session));
+                    capturedOopif.Add(new OopifPaintRange(frameId, afterLeft, afterBottom, afterRight, contextId.Value, session));
                 var viewportJson = await EvaluateContextAsync(
                     "JSON.stringify({content:Math.max(document.documentElement?document.documentElement.scrollHeight:0,document.body?document.body.scrollHeight:0),viewport:window.innerHeight||0})",
                     contextId, session, token, awaitPromise: false);
@@ -1711,7 +1793,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
             try
             {
                 monitor = await SafeEvaluateAsync(
-                    "JSON.stringify({monitor:!!window.__customsConsoleMonitor,queryAt:(window.__customsConsoleMonitor&&window.__customsConsoleMonitor.queryAt)||0,href:location.href,ready:document.readyState})",
+                    "JSON.stringify({monitor:!!window.__customsConsoleMonitor,bound:!!(window.__customsConsoleMonitor&&window.__customsConsoleMonitor.document===document),queryAt:(window.__customsConsoleMonitor&&window.__customsConsoleMonitor.queryAt)||0,href:location.href,ready:document.readyState})",
                     context.ContextId, context.SessionId, token);
             }
             catch (Exception ex) { monitor = "error:" + ex.Message; }
@@ -2358,6 +2440,8 @@ internal sealed class CdpClient : IAsyncDisposable
     private Task? _reader;
     private volatile bool _closed;
 
+    private static readonly TimeSpan CommandTimeout = TimeSpan.FromSeconds(90);
+
     public event Action<string>? Closed;
     public bool IsClosed => _closed;
 
@@ -2392,7 +2476,10 @@ internal sealed class CdpClient : IAsyncDisposable
             try { await _socket.SendAsync(payload, WebSocketMessageType.Text, true, token); }
             finally { _sendLock.Release(); }
             using var registration = token.Register(() => completion.TrySetCanceled(token));
-            return await completion.Task;
+            // A renderer that hangs without closing the socket would otherwise leave the caller
+            // (and a running capture's single-owner gate) waiting forever. Generous bound: the
+            // slowest legitimate command is a 12000px screenshot tile.
+            return await completion.Task.WaitAsync(CommandTimeout, token);
         }
         finally
         {

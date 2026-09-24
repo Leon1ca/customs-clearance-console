@@ -31,7 +31,7 @@ internal static class BrowserCaptureE2E
     {
         Directory.CreateDirectory(outputFolder);
         var checks = new List<Scenario>();
-        var browser = BrowserValidation.FindBrowser("Edge") ?? BrowserValidation.FindBrowser("Chrome");
+        var browser = TestBrowser();
         if (browser is null)
         {
             WriteReport(outputFolder, checks, ["未找到 Edge 或 Chrome，无法运行受控浏览器截图 E2E。"]);
@@ -86,6 +86,17 @@ internal static class BrowserCaptureE2E
         foreach (var check in checks)
             Console.WriteLine($"  {(check.Pass ? "PASS" : "FAIL")}: {check.Name} · {string.Join(" | ", check.Details)}");
         return issues.Count == 0 ? 0 : 1;
+    }
+
+    /// <summary>
+    /// Edge/Chrome for the controlled E2E. CUSTOMS_CONSOLE_E2E_BROWSER may name another Chromium
+    /// executable (the portable harness in tests/BrowserE2E.Portable uses it on Linux/macOS).
+    /// </summary>
+    internal static string? TestBrowser()
+    {
+        var configured = Environment.GetEnvironmentVariable("CUSTOMS_CONSOLE_E2E_BROWSER");
+        if (!string.IsNullOrWhiteSpace(configured) && File.Exists(configured)) return configured;
+        return BrowserValidation.FindBrowser("Edge") ?? BrowserValidation.FindBrowser("Chrome");
     }
 
     private static BrowserCaptureResult Harness(BrowserValidation session, string message) =>
@@ -1477,7 +1488,7 @@ internal static class BrowserCaptureE2E
             // removes only the artificial race, not the verification.
             var resultRowJson = JsonSerializer.Serialize(resultRow);
             var errorScript = autoQuery
-                ? "(function(){var tries=0;function fire(){if(!window.__customsConsoleMonitor&&tries++<800){setTimeout(fire,25);return;}" +
+                ? "(function(){var tries=0;function fire(){var m=window.__customsConsoleMonitor;if(!(m&&m.document===document)&&tries++<800){setTimeout(fire,25);return;}" +
                   "var q=document.getElementById('query');if(q)q.click();" +
                   "var r=document.getElementById('result');if(r)r.innerHTML=" + resultRowJson + ";}" +
                   "fire();})();"
