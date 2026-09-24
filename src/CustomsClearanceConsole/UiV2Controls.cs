@@ -396,7 +396,7 @@ internal sealed class RecordStatePanel : Control
             using var zonePath = Theme.RoundedPath(zone, S(8));
             using var zoneFill = new SolidBrush(UiTokens.Colors.DropZoneBg);
             graphics.FillPath(zoneFill, zonePath);
-            using var dash = new Pen(UiTokens.Colors.DropZoneBorder, S(1.5F)) { DashStyle = DashStyle.Dash };
+            using var dash = new Pen(UiTokens.Colors.DropZoneBorder, 1.5F * DeviceDpi / 96F) { DashStyle = DashStyle.Dash };
             graphics.DrawPath(dash, zonePath);
         }
 

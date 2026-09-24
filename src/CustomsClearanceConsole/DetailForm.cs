@@ -91,7 +91,6 @@ internal sealed class DetailForm : Form
         frame.Controls.Add(content);
         frame.Controls.Add(header);
         frame.Controls.Add(footerPanel);
-        CancelButton = close;
         KeyPreview = true;
         KeyDown += (_, e) => { if (e.KeyCode == Keys.Escape) Close(); };
         header.MouseDown += (_, e) => { if (e.Button == MouseButtons.Left) BeginDialogDrag(); };
@@ -299,7 +298,7 @@ internal sealed class DetailForm : Form
         }
     }
 
-    private static IEnumerable<(Rectangle Rect, string Text, ContentAlignment Alignment)> Columns(int width, int dpi, int y, int height, string amountHeader)
+    private static List<(Rectangle Rect, string Text, ContentAlignment Alignment)> Columns(int width, int dpi, int y, int height, string amountHeader)
     {
         int S(int px) => (int)Math.Round(px * dpi / 96f);
         var padX = S(20);

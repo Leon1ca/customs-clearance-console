@@ -111,6 +111,7 @@ internal static class Theme
     public static readonly Color StrongValue = UiTokens.Colors.Ink;
     public static readonly Color FieldText = UiTokens.Colors.Ink;
     public static readonly Color DialogFooter = UiTokens.Colors.DialogFooter;
+    public static readonly Color DetailButtonBg = UiTokens.Colors.DetailButtonBg;
 
     public static Font UiFont(float pixels, FontStyle style = FontStyle.Regular) =>
         style == FontStyle.Bold ? AppFonts.Ui(pixels, UiWeight.Bold) : AppFonts.Ui(pixels);
