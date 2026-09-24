@@ -6,6 +6,12 @@ namespace CustomsClearanceConsole;
 /// <summary>Read-only declaration detail dialog (design spec 4.1, 600x480).</summary>
 internal sealed class DetailForm : DpiDialog
 {
+    protected override void OnResize(EventArgs e)
+    {
+        base.OnResize(e);
+        PopupFrame.ApplyRegion(this, 10, DeviceDpi);
+    }
+
     private readonly DeclarationRecord _record;
 
     public DetailForm(DeclarationRecord record)
@@ -18,7 +24,7 @@ internal sealed class DetailForm : DpiDialog
         BackColor = Color.White;
         StartPosition = FormStartPosition.CenterParent;
 
-        var frame = new RoundedPanel { Dock = DockStyle.Fill, Radius = 10, BorderColor = Theme.Border, BackColor = Color.White };
+        var frame = new RoundedPanel { Dock = DockStyle.Fill, WindowFrame = true, Radius = 10, BorderColor = Theme.Border, BackColor = Color.White };
         Controls.Add(frame);
 
         var header = new Panel { Dock = DockStyle.Top, Height = 74, BackColor = Color.White };

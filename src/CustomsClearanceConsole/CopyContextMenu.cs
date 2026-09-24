@@ -12,7 +12,7 @@ internal sealed class CopyContextMenu : ToolStripDropDown
         AutoClose = true;
         AutoSize = false;
         BackColor = Color.White;
-        DropShadowEnabled = true;
+        DropShadowEnabled = false;
         Padding = new Padding(4);
         Size = new Size(224, 56);
         _content = new CopyMenuItemControl(() => { copy(); Close(); }) { Size = new Size(214, 46) };
@@ -48,12 +48,8 @@ internal sealed class CopyContextMenu : ToolStripDropDown
 
     protected override void OnPaintBackground(PaintEventArgs e)
     {
-        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        using var path = Theme.RoundedPath(new RectangleF(.5F, .5F, Width - 1F, Height - 1F), 8F * (_content?.Dpi ?? DeviceDpi) / 96F);
-        using var brush = new SolidBrush(Color.White);
-        using var pen = new Pen(ColorTranslator.FromHtml("#C2C7CF"));
-        e.Graphics.FillPath(brush, path);
-        e.Graphics.DrawPath(pen, path);
+        e.Graphics.Clear(Color.White);
+        PopupFrame.PaintBorder(e.Graphics, Size, 8, _content?.Dpi ?? DeviceDpi, ColorTranslator.FromHtml("#C2C7CF"));
     }
 
     protected override void OnSizeChanged(EventArgs e)
@@ -64,11 +60,7 @@ internal sealed class CopyContextMenu : ToolStripDropDown
 
     private void UpdateRegion()
     {
-        if (Width <= 0 || Height <= 0) return;
-        using var path = Theme.RoundedPath(new RectangleF(0, 0, Width, Height), 8F * (_content?.Dpi ?? DeviceDpi) / 96F);
-        var oldRegion = Region;
-        Region = new Region(path);
-        oldRegion?.Dispose();
+        PopupFrame.ApplyRegion(this, 8, _content?.Dpi ?? DeviceDpi);
     }
 
     private sealed class CopyMenuItemControl : Control

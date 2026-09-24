@@ -41,6 +41,7 @@ internal sealed class ConfirmationDialog : DpiDialog
         var frame = new RoundedPanel
         {
             Dock = DockStyle.Fill,
+            WindowFrame = true,
             Radius = 12,
             BorderColor = ColorTranslator.FromHtml("#AEBED1"),
             BackColor = Color.White,
@@ -127,22 +128,9 @@ internal sealed class ConfirmationDialog : DpiDialog
     {
         base.OnResize(e);
         if (Width <= 0 || Height <= 0) return;
-        using var path = Theme.RoundedPath(new RectangleF(0, 0, Width, Height), 12 * DeviceDpi / 96F);
-        var oldRegion = Region;
-        Region = new Region(path);
-        oldRegion?.Dispose();
+        PopupFrame.ApplyRegion(this, 12, DeviceDpi);
     }
 
-    protected override CreateParams CreateParams
-    {
-        get
-        {
-            const int csDropShadow = 0x00020000;
-            var parameters = base.CreateParams;
-            parameters.ClassStyle |= csDropShadow;
-            return parameters;
-        }
-    }
 }
 
 internal sealed class DangerTrashIcon : Control
@@ -244,7 +232,7 @@ internal sealed class CleanupDialog : DpiDialog
         ShowInTaskbar = false;
         BackColor = Color.White;
 
-        var frame = new RoundedPanel { Dock = DockStyle.Fill, Radius = 10, BorderColor = Theme.Border, BackColor = Color.White };
+        var frame = new RoundedPanel { Dock = DockStyle.Fill, WindowFrame = true, Radius = 10, BorderColor = Theme.Border, BackColor = Color.White };
         _step = new Label
         {
             Text = string.Empty,
@@ -400,22 +388,9 @@ internal sealed class CleanupDialog : DpiDialog
     {
         base.OnResize(e);
         if (Width <= 0 || Height <= 0) return;
-        using var path = Theme.RoundedPath(new RectangleF(0, 0, Width, Height), 10 * DeviceDpi / 96F);
-        var oldRegion = Region;
-        Region = new Region(path);
-        oldRegion?.Dispose();
+        PopupFrame.ApplyRegion(this, 10, DeviceDpi);
     }
 
-    protected override CreateParams CreateParams
-    {
-        get
-        {
-            const int csDropShadow = 0x00020000;
-            var parameters = base.CreateParams;
-            parameters.ClassStyle |= csDropShadow;
-            return parameters;
-        }
-    }
 
     private sealed class CleanupIcon : Control
     {

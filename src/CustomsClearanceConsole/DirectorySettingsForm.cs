@@ -19,7 +19,7 @@ internal sealed class DirectorySettingsForm : DpiDialog
         BackColor = Color.White;
         StartPosition = FormStartPosition.CenterParent;
 
-        var frame = new RoundedPanel { Dock = DockStyle.Fill, Radius = 10, BorderColor = Theme.Border, BackColor = Color.White };
+        var frame = new RoundedPanel { Dock = DockStyle.Fill, WindowFrame = true, Radius = 10, BorderColor = Theme.Border, BackColor = Color.White };
         var header = new Panel { Location = new Point(1, 1), Size = new Size(518, 56), BackColor = Color.White };
         header.Paint += (_, e) =>
         {
@@ -198,20 +198,6 @@ internal sealed class DirectorySettingsForm : DpiDialog
     {
         base.OnResize(e);
         if (Width <= 0 || Height <= 0) return;
-        using var path = Theme.RoundedPath(new RectangleF(0, 0, Width, Height), 10 * DeviceDpi / 96F);
-        var oldRegion = Region;
-        Region = new Region(path);
-        oldRegion?.Dispose();
-    }
-
-    protected override CreateParams CreateParams
-    {
-        get
-        {
-            const int csDropShadow = 0x00020000;
-            var parameters = base.CreateParams;
-            parameters.ClassStyle |= csDropShadow;
-            return parameters;
-        }
+        PopupFrame.ApplyRegion(this, 10, DeviceDpi);
     }
 }

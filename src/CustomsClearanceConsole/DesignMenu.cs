@@ -99,13 +99,9 @@ internal sealed class DesignMenu : IDisposable
         int S(int px) => UiScale.Px((int)Math.Round(dpi), px);
         float Sf(float px) => px * dpi / 96F;
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        using (var path = Theme.RoundedPath(new RectangleF(.5F, .5F, width - 1F, Measure(entries, (int)Math.Round(dpi)) - 1F), Sf(8)))
-        {
-            using var fill = new SolidBrush(Color.White);
-            graphics.FillPath(fill, path);
-            using var border = new Pen(Theme.Border);
-            graphics.DrawPath(border, path);
-        }
+        var menuSize = new Size(width, Measure(entries, (int)Math.Round(dpi)));
+        graphics.Clear(Color.White);
+        PopupFrame.PaintBorder(graphics, menuSize, 8, (int)Math.Round(dpi), Theme.Border);
         var y = S(6);
         for (var i = 0; i < entries.Count; i++)
         {
@@ -179,25 +175,11 @@ internal sealed class DesignMenu : IDisposable
             Controls.Add(content);
         }
 
-        protected override CreateParams CreateParams
-        {
-            get
-            {
-                const int csDropShadow = 0x00020000;
-                var parameters = base.CreateParams;
-                parameters.ClassStyle |= csDropShadow;
-                return parameters;
-            }
-        }
 
         protected override void OnSizeChanged(EventArgs e)
         {
             base.OnSizeChanged(e);
-            if (Width <= 0 || Height <= 0) return;
-            using var path = Theme.RoundedPath(new RectangleF(0, 0, Width, Height), 8F * DeviceDpi / 96F);
-            var old = Region;
-            Region = new Region(path);
-            old?.Dispose();
+            PopupFrame.ApplyRegion(this, 8, DeviceDpi);
         }
     }
 

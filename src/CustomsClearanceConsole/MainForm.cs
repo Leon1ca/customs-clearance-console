@@ -910,6 +910,15 @@ internal sealed partial class MainForm : Form
         using (var back = new SolidBrush(Theme.PanelSubtle)) graphics.FillRectangle(back, bounds);
         using (var line = new Pen(Theme.Border)) graphics.DrawLine(line, bounds.Left, bounds.Bottom - 1, bounds.Right, bounds.Bottom - 1);
         var column = _grid.Columns[e.ColumnIndex];
+        // Short divider between titles (not after the last one): it separates the headings and
+        // marks where a column can be resized, without drawing column lines through the rows.
+        if (column != _grid.Columns.GetLastColumn(DataGridViewElementStates.Visible, DataGridViewElementStates.None))
+        {
+            var dividerHeight = Math.Max(S(12), bounds.Height * 4 / 10);
+            var dividerTop = bounds.Y + (bounds.Height - 1 - dividerHeight) / 2;
+            using var divider = new SolidBrush(Theme.Border);
+            graphics.FillRectangle(divider, bounds.Right - Math.Max(1, S(1)), dividerTop, Math.Max(1, S(1)), dividerHeight);
+        }
         var inset = column.Name == "Index" ? 0 : S(8);
         var text = new Rectangle(bounds.X + inset, bounds.Y, Math.Max(0, bounds.Width - inset * 2), bounds.Height - 1);
         var align = column.Name switch
@@ -1027,11 +1036,24 @@ internal sealed partial class MainForm : Form
             var text = amount.ToString("N2");
             var amountWidth = TextRenderer.MeasureText(graphics, text, amountFont, new Size(int.MaxValue, S(20)), TextFormatFlags.NoPadding).Width;
             var currencyWidth = TextRenderer.MeasureText(graphics, currency, currencyFont, new Size(int.MaxValue, S(20)), TextFormatFlags.NoPadding).Width;
+            var available = bounds.Width - S(8) - S(10);
             var amountLeft = bounds.Right - S(10) - amountWidth;
-            TextRenderer.DrawText(graphics, text, amountFont, new Rectangle(amountLeft, lineY, amountWidth, lineHeight),
-                reliable ? Theme.Text : Theme.Warning, TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
-            TextRenderer.DrawText(graphics, currency, currencyFont, new Rectangle(Math.Max(bounds.X, amountLeft - S(6) - currencyWidth), lineY, currencyWidth, lineHeight), Theme.Muted,
-                TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+            if (currencyWidth + S(6) + amountWidth <= available)
+            {
+                TextRenderer.DrawText(graphics, text, amountFont, new Rectangle(amountLeft, lineY, amountWidth, lineHeight),
+                    reliable ? Theme.Text : Theme.Warning, TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+                TextRenderer.DrawText(graphics, currency, currencyFont, new Rectangle(amountLeft - S(6) - currencyWidth, lineY, currencyWidth, lineHeight), Theme.Muted,
+                    TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+            }
+            else
+            {
+                // Too narrow for both parts: one string cut with an ellipsis like every other
+                // column, instead of the currency being drawn over the digits.
+                var box = new Rectangle(bounds.X + S(8), lineY, Math.Max(0, available), lineHeight);
+                TextRenderer.DrawText(graphics, $"{currency} {text}", amountFont, box, reliable ? Theme.Text : Theme.Warning,
+                    TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
+                amountLeft = box.X;
+            }
             if (!reliable)
             {
                 var underlineY = lineY + lineHeight / 2 + S(8);
@@ -1521,6 +1543,8 @@ internal sealed partial class MainForm : Form
         public Point MaxTrackSize;
     }
 
+    private bool _composedResize;
+
     protected override void WndProc(ref Message message)
     {
         const int wmNchittest = 0x84, wmGetMinMaxInfo = 0x24;
@@ -1549,15 +1573,22 @@ internal sealed partial class MainForm : Form
             Marshal.StructureToPtr(info, message.LParam, false);
             return;
         }
-        const int wmEnterSizeMove = 0x0231, wmExitSizeMove = 0x0232, gwlExStyle = -20, wsExComposited = 0x02000000;
-        if (message.Msg is wmEnterSizeMove or wmExitSizeMove)
+        const int wmSizing = 0x0214, wmExitSizeMove = 0x0232, gwlExStyle = -20, wsExComposited = 0x02000000;
+        if (message.Msg == wmSizing && !_composedResize)
         {
             // While the user drags the window edge, compose the whole window in one off-screen
             // pass so panels, grid and buttons move together instead of repainting one by one
-            // (flicker / tearing while stretching). Normal use keeps the cheaper painting.
-            var style = GetWindowLong(Handle, gwlExStyle);
-            SetWindowLong(Handle, gwlExStyle, message.Msg == wmEnterSizeMove ? style | wsExComposited : style & ~wsExComposited);
-            if (message.Msg == wmExitSizeMove) Invalidate(true);
+            // (flicker / tearing while stretching). Only a resize needs this: moving the window
+            // repaints nothing, and composing plus the full repaint afterwards made every drag
+            // of the title bar stutter. Normal use keeps the cheaper painting.
+            _composedResize = true;
+            SetWindowLong(Handle, gwlExStyle, GetWindowLong(Handle, gwlExStyle) | wsExComposited);
+        }
+        else if (message.Msg == wmExitSizeMove && _composedResize)
+        {
+            _composedResize = false;
+            SetWindowLong(Handle, gwlExStyle, GetWindowLong(Handle, gwlExStyle) & ~wsExComposited);
+            Invalidate(true);
         }
         if (message.Msg == wmNchittest && WindowState == FormWindowState.Normal)
         {

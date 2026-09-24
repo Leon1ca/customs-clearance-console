@@ -109,10 +109,22 @@ internal class RoundedPanel : Panel
     public Color AccentColor { get; set; } = Color.Transparent;
     public int AccentHeight { get; set; }
 
+    /// <summary>
+    /// The panel is the whole face of a borderless dialog: shape and border come from
+    /// <see cref="PopupFrame"/>, matching the dialog's own window region exactly.
+    /// </summary>
+    public bool WindowFrame { get; set; }
+
     protected override void OnResize(EventArgs eventArgs)
     {
         base.OnResize(eventArgs);
         if (Width <= 0 || Height <= 0) return;
+        if (WindowFrame)
+        {
+            PopupFrame.ApplyRegion(this, Radius, DeviceDpi);
+            Invalidate();
+            return;
+        }
         using var path = Theme.RoundedPath(new RectangleF(0, 0, Width, Height), ScaledRadius);
         var oldRegion = Region;
         Region = new Region(path);
@@ -122,6 +134,11 @@ internal class RoundedPanel : Panel
     protected override void OnPaint(PaintEventArgs eventArgs)
     {
         base.OnPaint(eventArgs);
+        if (WindowFrame)
+        {
+            PopupFrame.PaintBorder(eventArgs.Graphics, Size, Radius, DeviceDpi, BorderColor);
+            return;
+        }
         eventArgs.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
         // Whole-pixel border inset by half its width: crisp and equally heavy on every side.
         var penWidth = Math.Max(1F, MathF.Round(BorderWidth * DeviceDpi / 96F));
@@ -411,7 +428,7 @@ internal sealed class ModernDropDown : RoundedPanel
         {
             AutoSize = false;
             AutoClose = true;
-            DropShadowEnabled = true;
+            DropShadowEnabled = false;
             Padding = Padding.Empty;
             BackColor = Color.White;
         }
@@ -419,11 +436,7 @@ internal sealed class ModernDropDown : RoundedPanel
         protected override void OnSizeChanged(EventArgs e)
         {
             base.OnSizeChanged(e);
-            if (Width <= 0 || Height <= 0) return;
-            using var path = Theme.RoundedPath(new RectangleF(0, 0, Width, Height), 8F * DeviceDpi / 96F);
-            var oldRegion = Region;
-            Region = new Region(path);
-            oldRegion?.Dispose();
+            PopupFrame.ApplyRegion(this, 8, DeviceDpi);
         }
     }
 
@@ -494,9 +507,7 @@ internal sealed class ModernDropDown : RoundedPanel
                     }
                 }
             }
-            using var border = new Pen(Theme.Border);
-            using var borderPath = Theme.RoundedPath(new RectangleF(.5F, .5F, Width - 1, Height - 1), Sf(8));
-            e.Graphics.DrawPath(border, borderPath);
+            PopupFrame.PaintBorder(e.Graphics, Size, 8, DeviceDpi, Theme.Border);
         }
     }
 }
