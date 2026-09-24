@@ -49,7 +49,7 @@ internal sealed class CopyContextMenu : ToolStripDropDown
     protected override void OnPaintBackground(PaintEventArgs e)
     {
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        using var path = Theme.RoundedPath(new RectangleF(.5F, .5F, Width - 1F, Height - 1F), 8F * _content.Dpi / 96F);
+        using var path = Theme.RoundedPath(new RectangleF(.5F, .5F, Width - 1F, Height - 1F), 8F * (_content?.Dpi ?? DeviceDpi) / 96F);
         using var brush = new SolidBrush(Color.White);
         using var pen = new Pen(ColorTranslator.FromHtml("#C2C7CF"));
         e.Graphics.FillPath(brush, path);
@@ -65,7 +65,7 @@ internal sealed class CopyContextMenu : ToolStripDropDown
     private void UpdateRegion()
     {
         if (Width <= 0 || Height <= 0) return;
-        using var path = Theme.RoundedPath(new RectangleF(0, 0, Width, Height), 8F * _content.Dpi / 96F);
+        using var path = Theme.RoundedPath(new RectangleF(0, 0, Width, Height), 8F * (_content?.Dpi ?? DeviceDpi) / 96F);
         var oldRegion = Region;
         Region = new Region(path);
         oldRegion?.Dispose();
