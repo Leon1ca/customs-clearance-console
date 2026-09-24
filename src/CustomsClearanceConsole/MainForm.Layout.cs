@@ -154,6 +154,7 @@ internal sealed partial class MainForm
         _titleBlock = new TitleBlock { Dock = DockStyle.Fill, Margin = new Padding(0, 0, 12, 0) };
         row.Controls.Add(_titleBlock, 0, 0);
         _exportButton = Theme.IconButton("导出列表", Theme.SecondaryButton(""), Ui2.Export, 16, DeviceDpi);
+        if (_exportButton is RoundedButton exportRounded) exportRounded.DropDown = DropDownGlyph.Separated;
         _exportButton.Dock = DockStyle.Fill;
         _exportButton.Margin = new Padding(0, 11, 10, 11);
         _exportButton.AccessibleName = "导出列表";
@@ -211,6 +212,7 @@ internal sealed partial class MainForm
         _searchHost = new SearchField(_search) { Dock = DockStyle.Fill, Margin = new Padding(0, 11, 0, 11) };
         toolbar.Controls.Add(_searchHost, 1, 0);
         _cleanupButton = Theme.IconButton("清理", Theme.QuietButton(""), Ui2.TrashInk, 16, DeviceDpi);
+        if (_cleanupButton is RoundedButton cleanupRounded) cleanupRounded.DropDown = DropDownGlyph.Plain;
         _cleanupButton.Dock = DockStyle.Fill;
         _cleanupButton.Margin = new Padding(0, 11, 0, 11);
         _cleanupButton.AccessibleName = "清理";
@@ -295,7 +297,7 @@ internal sealed partial class MainForm
             EnableHeadersVisualStyles = false,
             ColumnHeadersHeight = 38,
             // Design 2.5: rows are separated by a 1px divider only; no vertical grid lines.
-            CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal,
+            CellBorderStyle = DataGridViewCellBorderStyle.None,
             ColumnHeadersBorderStyle = DataGridViewHeaderBorderStyle.None,
             ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing,
             RowTemplate = { Height = 54 },

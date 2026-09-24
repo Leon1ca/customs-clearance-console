@@ -807,8 +807,17 @@ internal sealed partial class MainForm : Form
         }
         if (e.RowIndex < 0 || e.ColumnIndex < 0 || _grid.Rows[e.RowIndex].Tag is not DeclarationRecord record) return;
         var name = _grid.Columns[e.ColumnIndex].Name;
-        if (name is not ("Index" or "Status" or "No" or "PortDest" or "Amount" or "Detail" or "Verify")) return;
-        e.Paint(e.CellBounds, DataGridViewPaintParts.Background | DataGridViewPaintParts.Border);
+        // Grid borders are off; every cell draws only its own 1px bottom divider (design 2.5).
+        // The grid's own SingleHorizontal style still produced column lines on real screens.
+        if (name is not ("Index" or "Status" or "No" or "PortDest" or "Amount" or "Detail" or "Verify"))
+        {
+            e.Paint(e.CellBounds, DataGridViewPaintParts.All & ~DataGridViewPaintParts.Border);
+            DrawRowDivider(e.Graphics!, e.CellBounds);
+            e.Handled = true;
+            return;
+        }
+        e.Paint(e.CellBounds, DataGridViewPaintParts.Background);
+        DrawRowDivider(e.Graphics!, e.CellBounds);
         var graphics = e.Graphics!;
         graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
         var dpi = DeviceDpi;
@@ -858,6 +867,12 @@ internal sealed partial class MainForm : Form
                 break;
         }
         e.Handled = true;
+    }
+
+    private static void DrawRowDivider(Graphics graphics, Rectangle bounds)
+    {
+        using var line = new Pen(Theme.Divider);
+        graphics.DrawLine(line, bounds.Left, bounds.Bottom - 1, bounds.Right, bounds.Bottom - 1);
     }
 
     /// <summary>

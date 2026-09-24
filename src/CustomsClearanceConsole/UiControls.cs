@@ -11,6 +11,8 @@ internal sealed class RoundedButton : Button
     public Color HoverBackColor { get; set; } = Color.White;
     public Color PressedBackColor { get; set; } = Color.White;
     public Color DisabledFill { get; set; } = Theme.DisabledFill;
+    /// <summary>Trailing dropdown chevron (design: "导出列表 | ⌄" with a separator, "清理 ⌄" without).</summary>
+    public DropDownGlyph DropDown { get; set; }
     private bool _hover;
     private bool _pressed;
 
@@ -39,13 +41,35 @@ internal sealed class RoundedButton : Button
         using (var brush = new SolidBrush(back)) e.Graphics.FillPath(brush, path);
         using (var pen = new Pen(border, 1F)) e.Graphics.DrawPath(pen, path);
 
+        var scale = DeviceDpi / 96F;
+        var chevronArea = 0;
+        if (DropDown != DropDownGlyph.None)
+        {
+            // Chevron 10x5 logical, 12 from the right edge; the separated variant adds a 1px
+            // line (height 18) 10px before it.
+            var right = Width - (int)Math.Round(12 * scale);
+            var half = 4.5F * scale;
+            var cx = right - half;
+            var cy = Height / 2F;
+            using (var chevron = new Pen(fore, Math.Max(1F, 1.5F * scale)) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round })
+                e.Graphics.DrawLines(chevron, [new PointF(cx - half, cy - half / 2), new PointF(cx, cy + half / 2), new PointF(cx + half, cy - half / 2)]);
+            chevronArea = Width - (int)(cx - half) + (int)Math.Round(8 * scale);
+            if (DropDown == DropDownGlyph.Separated)
+            {
+                var lineX = (int)(cx - half) - (int)Math.Round(10 * scale);
+                var lineHalf = 9 * scale;
+                using var separator = new Pen(Enabled ? UiTokens.Colors.BorderControl : border, 1F);
+                e.Graphics.DrawLine(separator, lineX, cy - lineHalf, lineX, cy + lineHalf);
+                chevronArea = Width - lineX + (int)Math.Round(4 * scale);
+            }
+        }
         var flags = TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding;
         var textSize = TextRenderer.MeasureText(e.Graphics, Text, Font, new Size(int.MaxValue, Height), flags);
         var image = Image;
-        var gap = image is null || string.IsNullOrEmpty(Text) ? 0 : 10;
+        var gap = image is null || string.IsNullOrEmpty(Text) ? 0 : (int)Math.Round(8 * scale);
         var imageWidth = image?.Width ?? 0;
         var contentWidth = imageWidth + gap + textSize.Width;
-        var startX = Math.Max(0, (Width - contentWidth) / 2);
+        var startX = Math.Max(0, (Width - chevronArea - contentWidth) / 2);
         if (image is not null)
         {
             var imageY = (Height - image.Height) / 2;
@@ -109,6 +133,8 @@ internal class RoundedPanel : Panel
 }
 
 internal enum CaptionGlyph { Minimize, Maximize, Close }
+
+internal enum DropDownGlyph { None, Plain, Separated }
 
 internal sealed class WindowCaptionButton : Control
 {

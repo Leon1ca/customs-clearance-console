@@ -301,9 +301,9 @@ jobs:
           if (-not $report.fontVerification.ok) { throw "解压后字体未真实加载：$($report.fontVerification.detail)" }
           Write-Host "干净解压包 DeviceDpi=$($report.dpi) 字体=$($report.fontVerification.detail)"
 
-      # Runs last because it changes the display scaling for the rest of the job. The
-      # runner's session keeps its 96-DPI system DPI, so windows here are created at 150%
-      # on a monitor whose DPI differs from the system DPI.
+      # Runs last because it changes the display scaling for the rest of the job. Processes
+      # started afterwards see 144 DPI as both system and window DPI, the same situation as a
+      # laptop that signs in at 150%. Every state must pass the geometry and text-fit checks.
       - name: 150% display scaling snapshots
         id: dpi150
         continue-on-error: true
@@ -362,6 +362,7 @@ jobs:
             'package'    = '${{ steps.package.outcome }}'
             'zipverify'  = '${{ steps.zipverify.outcome }}'
             'smoke'      = '${{ steps.smoke.outcome }}'
+            'dpi150'     = '${{ steps.dpi150.outcome }}'
           }
           $failed = @()
           foreach ($entry in $results.GetEnumerator()) {

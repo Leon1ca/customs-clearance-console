@@ -31,7 +31,8 @@ internal sealed class DirectorySettingsForm : DpiDialog
         {
             Text = "设置",
             Location = new Point(20, 0),
-            Size = new Size(200, 56),
+            // One pixel short of the header so the full-width divider below stays visible.
+            Size = new Size(200, 55),
             Font = Theme.UiFont(16F, FontStyle.Bold),
             ForeColor = Theme.Text,
             TextAlign = ContentAlignment.MiddleLeft
