@@ -271,11 +271,12 @@ using (var archive = System.IO.Compression.ZipFile.OpenRead(xlsx))
     var stylesDoc = System.Xml.Linq.XDocument.Load(archive.GetEntry("xl/styles.xml")!.Open());
     var customFormats = stylesDoc.Descendants(ns + "numFmt")
         .ToDictionary(x => (string?)x.Attribute("numFmtId") ?? "", x => (string?)x.Attribute("formatCode") ?? "");
-    var xfs = stylesDoc.Descendants(ns + "cellXfs").Elements(ns + "xf")
+    var xfs = stylesDoc.Descendants(ns + "cellXfs").Single().Elements(ns + "xf")
         .Select(x => (string?)x.Attribute("numFmtId") ?? "0").ToList();
     int DisplayCapacity(int style)
     {
-        if (style < 0 || style >= xfs.Count || !customFormats.TryGetValue(xfs[style], out var code) || !code.Contains('.')) return -1;
+        if (style < 0 || style >= xfs.Count) return -1;
+        if (!customFormats.TryGetValue(xfs[style], out var code) || !code.Contains('.')) return -1;
         return code[(code.IndexOf('.') + 1)..].Count(c => c == '#');
     }
     var detailDoc = System.Xml.Linq.XDocument.Load(archive.GetEntry("xl/worksheets/sheet2.xml")!.Open());
