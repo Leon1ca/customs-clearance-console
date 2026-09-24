@@ -6,11 +6,15 @@ internal sealed partial class MainForm
     {
         var root = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, ColumnCount = 1, Margin = Padding.Empty, BackColor = Theme.Canvas };
         _root = root;
+        // Explicit 100% columns: an implicit AutoSize column takes its widest child's current
+        // width, which after the DPI scale pass is wider than the window.
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, UiTokens.Metrics.Header));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.Controls.Add(BuildHeader(), 0, 0);
 
         _body = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, Margin = Padding.Empty, BackColor = Theme.Canvas };
+        _body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         _body.RowStyles.Add(new RowStyle(SizeType.Absolute, 62));   // title row
         _body.RowStyles.Add(new RowStyle(SizeType.Absolute, 130));  // stats row
         _body.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));    // progress strip
@@ -183,6 +187,7 @@ internal sealed partial class MainForm
         var panel = new RoundedPanel { Dock = DockStyle.Fill, BackColor = Theme.Surface, BorderColor = Theme.Border, Radius = 8, Margin = Padding.Empty };
         var content = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, Padding = new Padding(1), Margin = Padding.Empty, BackColor = Theme.Surface };
         _recordsContent = content;
+        content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 56));
         content.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
@@ -252,7 +257,7 @@ internal sealed partial class MainForm
         _previous.Dock = DockStyle.Fill;
         _previous.Margin = new Padding(0, 8, 6, 8);
         _previous.Click += (_, _) => { if (_page > 1) { _page--; RefreshGrid(); } };
-        _pageLabel = new Label { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, ForeColor = Theme.Text, Font = Theme.MonoFont(12.5F, true) };
+        _pageLabel = new PageBadge { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, ForeColor = Color.White, Font = Theme.MonoFont(12.5F, true) };
         _next = Theme.QuietButton("下一页");
         _next.Dock = DockStyle.Fill;
         _next.Margin = new Padding(6, 8, 0, 8);
@@ -289,6 +294,9 @@ internal sealed partial class MainForm
             MultiSelect = true,
             EnableHeadersVisualStyles = false,
             ColumnHeadersHeight = 38,
+            // Design 2.5: rows are separated by a 1px divider only; no vertical grid lines.
+            CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal,
+            ColumnHeadersBorderStyle = DataGridViewHeaderBorderStyle.None,
             ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing,
             RowTemplate = { Height = 54 },
             ClipboardCopyMode = DataGridViewClipboardCopyMode.Disable,

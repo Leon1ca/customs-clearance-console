@@ -12,7 +12,7 @@ internal sealed class DetailForm : DpiDialog
     {
         _record = record;
         Text = $"关单明细 · {record.DeclarationNo}";
-        ClientSize = new Size(600, 480);
+        LogicalClientSize = new Size(600, 480);
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         BackColor = Color.White;

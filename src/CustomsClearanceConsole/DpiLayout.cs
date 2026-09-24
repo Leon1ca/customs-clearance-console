@@ -50,6 +50,17 @@ internal static class DpiLayout
 internal class DpiDialog : Form
 {
     private int _layoutDpi = DpiLayout.LogicalDpi;
+    private Size _logicalClientSize;
+
+    /// <summary>
+    /// Design client size in logical pixels. Kept separately because ClientSize reads smaller
+    /// while the handle is being created, so it cannot be the source of the scaled size.
+    /// </summary>
+    protected Size LogicalClientSize
+    {
+        get => _logicalClientSize;
+        set { _logicalClientSize = value; ClientSize = DpiLayout.Scale(value, _layoutDpi); }
+    }
 
     /// <summary>The DPI the dialog's child bounds are currently expressed in.</summary>
     internal int LayoutDpi => _layoutDpi;
@@ -77,16 +88,13 @@ internal class DpiDialog : Form
     private void RescaleTo(int dpi, bool resizeWindow)
     {
         if (dpi == _layoutDpi || dpi <= 0) return;
-        var center = new Point(Left + Width / 2, Top + Height / 2);
-        var client = ClientSize;
+        var logical = _logicalClientSize.IsEmpty ? DpiLayout.Scale(ClientSize, DpiLayout.LogicalDpi * DpiLayout.LogicalDpi / _layoutDpi) : _logicalClientSize;
+        var center = new Point(Left + DpiLayout.Scale(logical.Width, _layoutDpi) / 2, Top + DpiLayout.Scale(logical.Height, _layoutDpi) / 2);
         SuspendLayout();
         try
         {
             DpiLayout.ScaleChildren(this, _layoutDpi, dpi);
-            if (resizeWindow)
-                ClientSize = new Size(
-                    (int)Math.Round(client.Width * dpi / (double)_layoutDpi),
-                    (int)Math.Round(client.Height * dpi / (double)_layoutDpi));
+            if (resizeWindow) ClientSize = DpiLayout.Scale(logical, dpi);
             _layoutDpi = dpi;
         }
         finally { ResumeLayout(true); }

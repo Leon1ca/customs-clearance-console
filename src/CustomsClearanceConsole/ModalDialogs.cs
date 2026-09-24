@@ -33,7 +33,7 @@ internal sealed class ConfirmationDialog : DpiDialog
     internal ConfirmationDialog(string titleText, string bodyText, string warningText, string confirmText = "确认清理")
     {
         Text = titleText;
-        ClientSize = new Size(640, 414);
+        LogicalClientSize = new Size(640, 414);
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         BackColor = Color.White;
@@ -239,7 +239,7 @@ internal sealed class CleanupDialog : DpiDialog
         _fileCount = fileCount;
         _listCount = listCount;
         _folder = folder;
-        ClientSize = new Size(440, 260);
+        LogicalClientSize = new Size(440, 260);
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         BackColor = Color.White;

@@ -766,6 +766,9 @@ internal sealed partial class MainForm : Form
             : _visible.Count != records.Count ? $"显示 {_visible.Count} 条，共 {records.Count} 条 · 重复记录置顶"
             : $"显示 {_visible.Count} 条，共 {records.Count} 条 · 重复记录置顶";
         _pageLabel.Text = $"{_page}";
+        // Design: with no data the page number uses the disabled style too.
+        _pageLabel.Enabled = records.Count > 0;
+        _pageLabel.Invalidate();
         _previous.Enabled = _page > 1;
         _next.Enabled = _page < PageCount();
         if (_pageSize.SelectedIndex < 0) _pageSize.SelectedItem = "50 条";
@@ -797,6 +800,11 @@ internal sealed partial class MainForm : Form
 
     private void PaintRecordCell(object? sender, DataGridViewCellPaintingEventArgs e)
     {
+        if (e.RowIndex == -1 && e.ColumnIndex >= 0)
+        {
+            PaintColumnHeader(e);
+            return;
+        }
         if (e.RowIndex < 0 || e.ColumnIndex < 0 || _grid.Rows[e.RowIndex].Tag is not DeclarationRecord record) return;
         var name = _grid.Columns[e.ColumnIndex].Name;
         if (name is not ("Index" or "Status" or "No" or "PortDest" or "Amount" or "Detail" or "Verify")) return;
@@ -849,6 +857,32 @@ internal sealed partial class MainForm : Form
                 else DrawVerifyButton(graphics, bounds, S);
                 break;
         }
+        e.Handled = true;
+    }
+
+    /// <summary>
+    /// Design 2.5 table header: panelSubtle background, 12.5px/500 muted text, only a 1px
+    /// border line at the bottom (no vertical grid lines).
+    /// </summary>
+    private void PaintColumnHeader(DataGridViewCellPaintingEventArgs e)
+    {
+        var graphics = e.Graphics!;
+        var bounds = e.CellBounds;
+        int S(int px) => (int)Math.Round(px * DeviceDpi / 96.0);
+        using (var back = new SolidBrush(Theme.PanelSubtle)) graphics.FillRectangle(back, bounds);
+        using (var line = new Pen(Theme.Border)) graphics.DrawLine(line, bounds.Left, bounds.Bottom - 1, bounds.Right, bounds.Bottom - 1);
+        var column = _grid.Columns[e.ColumnIndex];
+        var inset = column.Name == "Index" ? 0 : S(8);
+        var text = new Rectangle(bounds.X + inset, bounds.Y, Math.Max(0, bounds.Width - inset * 2), bounds.Height - 1);
+        var align = column.Name switch
+        {
+            "Index" or "Status" or "Detail" or "Verify" => TextFormatFlags.HorizontalCenter,
+            "Amount" => TextFormatFlags.Right,
+            _ => TextFormatFlags.Left
+        };
+        using var font = AppFonts.Ui(12.5F, UiWeight.Medium);
+        TextRenderer.DrawText(graphics, column.HeaderText, font, text, Theme.Muted,
+            align | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
         e.Handled = true;
     }
 
@@ -946,21 +980,25 @@ internal sealed partial class MainForm : Form
         var overflow = lines.Count > 2 ? S(14) : 0;
         var startY = bounds.Y + Math.Max(0, (bounds.Height - visible.Count * lineHeight - overflow) / 2);
         using var currencyFont = Theme.UiFont(11.5F);
+        using var amountFont = Theme.MonoFont(13.5F, true);
         for (var i = 0; i < visible.Count; i++)
         {
+            // Design 2.5: currency 11.5px muted, 6px gap, amount 500 weight; right aligned.
             var (currency, amount, reliable) = visible[i];
             var lineY = startY + i * lineHeight;
+            var text = amount.ToString("N2");
+            var amountWidth = TextRenderer.MeasureText(graphics, text, amountFont, new Size(int.MaxValue, S(20)), TextFormatFlags.NoPadding).Width;
             var currencyWidth = TextRenderer.MeasureText(graphics, currency, currencyFont, new Size(int.MaxValue, S(20)), TextFormatFlags.NoPadding).Width;
-            using (var amountFont = Theme.MonoFont(13.5F, true))
-                TextRenderer.DrawText(graphics, amount.ToString("N2"), amountFont, new Rectangle(bounds.X, lineY, Math.Max(S(10), bounds.Width - S(10) - currencyWidth - S(6)), lineHeight),
-                    reliable ? Theme.Text : Theme.Warning, TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
-            TextRenderer.DrawText(graphics, currency, currencyFont, new Rectangle(bounds.Right - S(10) - currencyWidth, lineY, currencyWidth, lineHeight), Theme.Muted,
+            var amountLeft = bounds.Right - S(10) - amountWidth;
+            TextRenderer.DrawText(graphics, text, amountFont, new Rectangle(amountLeft, lineY, amountWidth, lineHeight),
+                reliable ? Theme.Text : Theme.Warning, TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+            TextRenderer.DrawText(graphics, currency, currencyFont, new Rectangle(Math.Max(bounds.X, amountLeft - S(6) - currencyWidth), lineY, currencyWidth, lineHeight), Theme.Muted,
                 TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
             if (!reliable)
             {
                 var underlineY = lineY + lineHeight / 2 + S(8);
                 using var underline = new Pen(UiTokens.Status.AttentionUnderline, S(1)) { DashStyle = System.Drawing.Drawing2D.DashStyle.Dash };
-                graphics.DrawLine(underline, bounds.Right - S(10) - currencyWidth - S(64), underlineY, bounds.Right - S(10), underlineY);
+                graphics.DrawLine(underline, amountLeft, underlineY, bounds.Right - S(10), underlineY);
             }
         }
         if (overflow > 0)
@@ -1024,13 +1062,16 @@ internal sealed partial class MainForm : Form
         var iconWidth = icon?.Width ?? 0;
         var contentWidth = textWidth + (iconWidth > 0 ? S(5) + iconWidth : 0);
         var contentX = tag.X + (tag.Width - contentWidth) / 2;
-        TextRenderer.DrawText(graphics, "已留存", font, new Rectangle(contentX, tag.Y, textWidth + S(2), tag.Height), UiTokens.Status.Kept.Fg,
-            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+        // Design 01-main: the camera icon precedes the "已留存" text.
+        var textX = contentX;
         if (icon is not null)
         {
-            graphics.DrawImage(icon, contentX + textWidth + S(5), tag.Y + (tag.Height - icon.Height) / 2, icon.Width, icon.Height);
+            graphics.DrawImage(icon, contentX, tag.Y + (tag.Height - icon.Height) / 2, icon.Width, icon.Height);
+            textX = contentX + iconWidth + S(5);
             icon.Dispose();
         }
+        TextRenderer.DrawText(graphics, "已留存", font, new Rectangle(textX, tag.Y, textWidth + S(2), tag.Height), UiTokens.Status.Kept.Fg,
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
     }
 
     // ---- grid interactions ----

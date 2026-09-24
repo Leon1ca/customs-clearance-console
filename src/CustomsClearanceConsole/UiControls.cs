@@ -202,17 +202,18 @@ internal sealed class SearchField : RoundedPanel
 {
     public SearchField(TextBox textBox)
     {
-        Radius = 7;
-        BorderColor = Theme.Border;
+        // Design 2.5: height 34, 1px borderControl, radius 6, 16px search-muted icon.
+        Radius = 6;
+        BorderColor = Theme.BorderControl;
         BackColor = Color.White;
-        // 34px slot: leave the icon column (0-44) and just 5px vertical breathing room so the
-        // 14px input text is not clipped (R4-2).
-        Padding = new Padding(44, 5, 12, 5);
+        // Logical pixels; the window scales them to its DPI. Icon column 0-36, 7px vertical
+        // breathing room so the 13px input text is not clipped (R4-2).
+        Padding = new Padding(36, 7, 12, 6);
         textBox.Dock = DockStyle.Fill;
         textBox.Margin = new Padding(0);
-        textBox.Font = Theme.UiFont(14);
+        textBox.Font = Theme.UiFont(13);
         textBox.GotFocus += (_, _) => { BorderColor = Theme.BlueHover; BorderWidth = 2; Invalidate(); };
-        textBox.LostFocus += (_, _) => { BorderColor = Theme.Border; BorderWidth = 1; Invalidate(); };
+        textBox.LostFocus += (_, _) => { BorderColor = Theme.BorderControl; BorderWidth = 1; Invalidate(); };
         Click += (_, _) => textBox.Focus();
         Controls.Add(textBox);
     }
@@ -220,11 +221,10 @@ internal sealed class SearchField : RoundedPanel
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e);
-        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        using var pen = new Pen(Theme.Placeholder, 1.8F) { StartCap = LineCap.Round, EndCap = LineCap.Round };
-        var y = Height / 2F;
-        e.Graphics.DrawEllipse(pen, 20, y - 7, 13, 13);
-        e.Graphics.DrawLine(pen, 30.5F, y + 4, 37, y + 10.5F);
+        using var icon = UiV2Icons.Load(Ui2.Search, 16, DeviceDpi);
+        if (icon is null) return;
+        var x = (int)Math.Round(12 * DeviceDpi / 96F);
+        e.Graphics.DrawImage(icon, x, (Height - icon.Height) / 2, icon.Width, icon.Height);
     }
 }
 
@@ -492,5 +492,33 @@ internal sealed class OutlinedField : RoundedPanel
         control.Dock = DockStyle.Fill;
         control.Margin = new Padding(0);
         Controls.Add(control);
+    }
+}
+
+/// <summary>
+/// Current page number in the pager (design 2.5 footer): a 28px rounded square in the
+/// primary colour with white text, grey when there is nothing to page through.
+/// </summary>
+internal sealed class PageBadge : Label
+{
+    public PageBadge()
+    {
+        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint, true);
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        e.Graphics.Clear(Parent?.BackColor ?? Theme.Surface);
+        var scale = DeviceDpi / 96F;
+        var side = (int)Math.Round(28 * scale);
+        var textWidth = TextRenderer.MeasureText(e.Graphics, Text, Font, new Size(int.MaxValue, side), TextFormatFlags.NoPadding).Width;
+        var width = Math.Min(ClientSize.Width, Math.Max(side, textWidth + (int)Math.Round(16 * scale)));
+        var badge = new Rectangle((ClientSize.Width - width) / 2, (ClientSize.Height - side) / 2, width, side);
+        e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        using (var path = Theme.RoundedPath(badge, 4 * scale))
+        using (var fill = new SolidBrush(Enabled ? Theme.Primary : Theme.DisabledFill))
+            e.Graphics.FillPath(fill, path);
+        TextRenderer.DrawText(e.Graphics, Text, Font, badge, Enabled ? Color.White : Theme.DisabledText,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
     }
 }

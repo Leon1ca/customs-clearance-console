@@ -15,7 +15,7 @@ internal sealed class DirectorySettingsForm : DpiDialog
         Text = "设置";
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
-        ClientSize = new Size(520, 400);
+        LogicalClientSize = new Size(520, 400);
         BackColor = Color.White;
         StartPosition = FormStartPosition.CenterParent;
 
