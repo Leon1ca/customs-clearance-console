@@ -21,7 +21,8 @@
     restoreProperty(el, item, 'height');
     restoreProperty(el, item, 'max-height');
     restoreProperty(el, item, 'overflow-y');
-    if (!sameStyle(el, 'height', item.height) || !sameStyle(el, 'max-height', item.maxHeight) || !sameStyle(el, 'overflow-y', item.overflowY))
+    // The ledger stores each value under its CSS property name (see remember() in prepare).
+    if (!sameStyle(el, 'height', item.height) || !sameStyle(el, 'max-height', item['max-height']) || !sameStyle(el, 'overflow-y', item['overflow-y']))
       stylesRestored = false;
     try {
       el.scrollTop = item.scrollTop || 0; el.scrollLeft = item.scrollLeft || 0;
@@ -34,7 +35,7 @@
     if (!el || !el.style) continue;
     restoreProperty(el, item, 'height');
     restoreProperty(el, item, 'max-height');
-    if (!sameStyle(el, 'height', item.height) || !sameStyle(el, 'max-height', item.maxHeight)) stylesRestored = false;
+    if (!sameStyle(el, 'height', item.height) || !sameStyle(el, 'max-height', item['max-height'])) stylesRestored = false;
   }
   const widget = state.widget || document.getElementById('ccc-widget-host');
   if (widget && widget.style) restoreProperty(widget, {

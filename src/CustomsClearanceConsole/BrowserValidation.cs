@@ -30,6 +30,8 @@ internal sealed class BrowserValidation : IAsyncDisposable
 
     public event EventHandler<BrowserCaptureResult>? CaptureCompleted;
     public event EventHandler<string>? StatusChanged;
+    /// <summary>Raised once when the dedicated browser process exits (for example the user closed it).</summary>
+    public event EventHandler? Ended;
 
     private readonly string _targetFolder;
     private readonly string? _urlOverride;
@@ -62,9 +64,11 @@ internal sealed class BrowserValidation : IAsyncDisposable
     private (int Width, int Height, double Scale)? _clickBaselineViewport;
     private (int Width, int Height, double Scale)? _captureBaselineViewport;
     private string? _shellScriptIdentifier;
+    private string? _profileFolder;
+    private int _endedRaised;
     private string _mainFrameId = "";
     private string _currentUrl = "";
-    private bool _disposed;
+    private volatile bool _disposed;
 
     public BrowserValidation(string declarationNo, string targetFolder, string? urlOverride = null,
         string? browserPathOverride = null, long maxPixels = DefaultMaxPixels, bool headless = false,
@@ -211,6 +215,25 @@ internal sealed class BrowserValidation : IAsyncDisposable
         return IsAuthorizedFrameId(context.FrameId);
     }
 
+    /// <summary>Explains an authorization refusal in the log (registered frame, its URL and the main frame).</summary>
+    private string DescribeContextForLog(int contextId, string? sessionId)
+    {
+        FrameContext? context;
+        lock (_frameContexts)
+            context = _frameContexts.FirstOrDefault(x => x.ContextId == contextId && string.Equals(x.SessionId, sessionId, StringComparison.Ordinal));
+        string? frameUrl = null;
+        string main, current;
+        lock (_frameUrls)
+        {
+            if (context is not null) _frameUrls.TryGetValue(context.FrameId, out frameUrl);
+            main = _mainFrameId;
+            current = _currentUrl;
+        }
+        return context is null
+            ? $"未登记执行上下文 · main={main} · url={current}"
+            : $"frame={context.FrameId} · frameUrl={frameUrl ?? "(未知)"} · main={main} · url={current}";
+    }
+
     private bool IsAuthorizedFrameId(string frameId)
     {
         string? frameUrl;
@@ -238,7 +261,12 @@ internal sealed class BrowserValidation : IAsyncDisposable
 
         var url = string.IsNullOrWhiteSpace(_urlOverride) ? PrimaryUrl : _urlOverride;
         _debugPort = GetFreePort();
-        var profile = Path.Combine(AppLog.Folder, "BrowserProfiles", SessionId);
+        var profileRoot = Path.Combine(AppLog.Folder, "BrowserProfiles");
+        // Every session uses a throw-away profile; sweep the ones earlier runs could not delete
+        // (a crash or a browser that outlived the app) so they do not accumulate on disk.
+        _ = Task.Run(() => PurgeStaleProfiles(profileRoot, TimeSpan.FromHours(12)));
+        var profile = Path.Combine(profileRoot, SessionId);
+        _profileFolder = profile;
         Directory.CreateDirectory(profile);
         var start = new ProcessStartInfo { FileName = choice.Path, UseShellExecute = false };
         start.ArgumentList.Add($"--remote-debugging-port={_debugPort}");
@@ -262,6 +290,8 @@ internal sealed class BrowserValidation : IAsyncDisposable
             foreach (var argument in _extraBrowserArgs) start.ArgumentList.Add(argument);
         start.ArgumentList.Add(url);
         _process = Process.Start(start) ?? throw new InvalidOperationException("无法启动浏览器。");
+        _process.EnableRaisingEvents = true;
+        _process.Exited += OnBrowserExited;
 
         var websocket = await WaitForPageAsync(_debugPort, cancellationToken);
         await ConnectAsync(websocket, cancellationToken);
@@ -308,6 +338,10 @@ internal sealed class BrowserValidation : IAsyncDisposable
         // Seed the current URL/frame so binding validation works before the first
         // navigation event arrives. The complete frame tree is registered, not just the
         // root, so an already-loaded sub-frame is authorized (or refused) by its own URL.
+        // The snapshot can predate a navigation that commits while it is in flight (the
+        // initial document then reports an empty URL), and the frameNavigated event for that
+        // commit may already have been applied. The seed therefore only fills values that are
+        // still unknown and never replaces what a newer event recorded.
         try
         {
             var tree = await _cdp.SendAsync("Page.getFrameTree", null, token);
@@ -316,14 +350,18 @@ internal sealed class BrowserValidation : IAsyncDisposable
             CollectFrames(frameTree, frames);
             var parents = new Dictionary<string, string>(StringComparer.Ordinal);
             CollectFrameParents(frameTree, parents);
-            lock (_frameUrls)
-                foreach (var (id, url) in frames)
-                    if (id.Length > 0) _frameUrls[id] = url;
-            lock (_frameParents)
-                foreach (var pair in parents) _frameParents[pair.Key] = pair.Value;
             var root = frameTree.GetProperty("frame");
-            _mainFrameId = root.GetProperty("id").GetString() ?? "";
-            _currentUrl = root.TryGetProperty("url", out var current) ? current.GetString() ?? "" : "";
+            var rootId = root.GetProperty("id").GetString() ?? "";
+            var rootUrl = root.TryGetProperty("url", out var current) ? current.GetString() ?? "" : "";
+            lock (_frameUrls)
+            {
+                foreach (var (id, url) in frames)
+                    if (id.Length > 0 && url.Length > 0) _frameUrls.TryAdd(id, url);
+                if (_mainFrameId.Length == 0) _mainFrameId = rootId;
+                if (_currentUrl.Length == 0 && rootId.Equals(_mainFrameId, StringComparison.Ordinal)) _currentUrl = rootUrl;
+            }
+            lock (_frameParents)
+                foreach (var pair in parents) _frameParents.TryAdd(pair.Key, pair.Value);
         }
         catch (Exception ex) { AppLog.Write($"读取初始页面地址失败：{ex.Message}"); }
         await RegisterShellScriptAsync(token);
@@ -348,14 +386,31 @@ internal sealed class BrowserValidation : IAsyncDisposable
         catch (Exception ex) { AppLog.Write($"注册网页脚本失败：{ex.Message}"); }
     }
 
+    private bool BrowserExited
+    {
+        get
+        {
+            try { return _process is { HasExited: true }; }
+            catch (InvalidOperationException) { return true; }
+        }
+    }
+
+    private void OnBrowserExited(object? sender, EventArgs e)
+    {
+        if (_disposed || Interlocked.Exchange(ref _endedRaised, 1) != 0) return;
+        AppLog.Write($"核验浏览器已退出：{DeclarationNo}");
+        Ended?.Invoke(this, EventArgs.Empty);
+    }
+
     private void OnConnectionClosed(string reason)
     {
-        if (_disposed) return;
+        // A closed browser window is the normal end of a session, not a connection fault.
+        if (_disposed || BrowserExited) return;
         StatusChanged?.Invoke(this, "浏览器连接中断，正在尝试恢复……");
         // Keep an explicit recovery task running so the status message is truthful.
         _ = Task.Run(async () =>
         {
-            for (var attempt = 0; attempt < 8 && !_disposed; attempt++)
+            for (var attempt = 0; attempt < 8 && !_disposed && !BrowserExited; attempt++)
             {
                 try
                 {
@@ -588,6 +643,77 @@ internal sealed class BrowserValidation : IAsyncDisposable
         catch (Exception ex) when (!IsConnectionFailure(ex)) { AppLog.Write($"向主框架安装监视器失败：{ex.Message}"); }
     }
 
+    private bool IsUnknownFrameUrl(string frameId)
+    {
+        string? url;
+        lock (_frameUrls)
+        {
+            if (!_frameUrls.TryGetValue(frameId, out url) && frameId.Equals(_mainFrameId, StringComparison.Ordinal)) url = _currentUrl;
+        }
+        if (string.IsNullOrWhiteSpace(url)) return true;
+        // An in-process about:blank frame is a real, settled state (its navigations arrive on
+        // the root session). A child target still at about:blank has not reported its commit.
+        return url.StartsWith("about:", StringComparison.OrdinalIgnoreCase) && SessionForFrame(frameId) is not null;
+    }
+
+    /// <summary>
+    /// Resolves frames whose URL is still unknown (or about:blank) from the authoritative CDP
+    /// frame trees: the root session for in-process frames and each attached child session for
+    /// OOPIFs. An OOPIF usually attaches with an empty URL and its commit can land before the
+    /// child session enabled Page, so the one-shot lookup at attach time is not enough; without
+    /// this the frame stays unauthorized and its query result is never seen. Only unknown
+    /// entries are filled, so a URL recorded by a (newer) navigation event is never replaced.
+    /// </summary>
+    private async Task RefreshUnknownFrameUrlsAsync(CancellationToken token)
+    {
+        var cdp = _cdp;
+        if (cdp is null || cdp.IsClosed) return;
+        List<string> known;
+        lock (_frameContexts) known = _frameContexts.Select(x => x.FrameId).Where(x => x.Length > 0).Distinct().ToList();
+        lock (_frameTargetSessions) known.AddRange(_frameTargetSessions.Keys);
+        if (_mainFrameId.Length > 0) known.Add(_mainFrameId);
+        var unknown = known.Distinct(StringComparer.Ordinal).Where(IsUnknownFrameUrl).ToList();
+        if (unknown.Count == 0) return;
+
+        void Fill(string frameId, string url)
+        {
+            // A still-blank document is not an answer; leave it unknown so a later call retries.
+            if (frameId.Length == 0 || url.Length == 0 || url.StartsWith("about:", StringComparison.OrdinalIgnoreCase)) return;
+            // Only a child target may replace a recorded about:blank (its commit event can be
+            // lost); an in-process or main frame at about:blank is a settled newer state.
+            var childTarget = SessionForFrame(frameId) is not null;
+            lock (_frameUrls)
+            {
+                if (_frameUrls.TryGetValue(frameId, out var existing) && existing.Length > 0 &&
+                    !(childTarget && existing.StartsWith("about:", StringComparison.OrdinalIgnoreCase))) return;
+                _frameUrls[frameId] = url;
+                if (frameId.Equals(_mainFrameId, StringComparison.Ordinal) && _currentUrl.Length == 0) _currentUrl = url;
+            }
+        }
+
+        try
+        {
+            var tree = await cdp.SendAsync("Page.getFrameTree", null, token);
+            var frames = new List<(string FrameId, string Url)>();
+            CollectFrames(tree.GetProperty("result").GetProperty("frameTree"), frames);
+            foreach (var (id, url) in frames) Fill(id, url);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException) { AppLog.Write($"刷新框架地址失败：{ex.Message}"); }
+
+        foreach (var frameId in unknown.Where(IsUnknownFrameUrl))
+        {
+            var session = SessionForFrame(frameId);
+            if (session is null) continue;
+            try
+            {
+                var tree = await cdp.SendAsync("Page.getFrameTree", null, token, session);
+                var frame = tree.GetProperty("result").GetProperty("frameTree").GetProperty("frame");
+                Fill(frame.GetProperty("id").GetString() ?? "", frame.TryGetProperty("url", out var url) ? url.GetString() ?? "" : "");
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException) { AppLog.Write($"刷新子框架地址失败 {frameId}：{ex.Message}"); }
+        }
+    }
+
     private bool IsPendingChildFrame(string frameId)
     {
         string? url;
@@ -640,12 +766,42 @@ internal sealed class BrowserValidation : IAsyncDisposable
             var name = parameters.GetProperty("name").GetString();
             var contextId = parameters.TryGetProperty("executionContextId", out var context) ? context.GetInt32() : -1;
             var sessionId = SessionIdOf(message);
-            if (!IsAuthorizedContext(contextId, sessionId))
+            if (IsAuthorizedContext(contextId, sessionId))
             {
-                AppLog.Write($"已忽略来源页面的网页请求：{name} · context={contextId} · url={_currentUrl}");
-                _ = SetWidgetStateAsync("error", "当前页面不是核验目标页，已忽略网页请求。");
+                HandleAuthorizedBinding(name, contextId);
                 return;
             }
+            // The frame URL can still be unknown right after (re)connecting or attaching: the
+            // frame-tree snapshot may predate the commit. Resolve it from CDP once before
+            // judging, instead of refusing a legitimate click on the target page.
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    using var refresh = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+                    refresh.CancelAfter(TimeSpan.FromSeconds(5));
+                    await RefreshUnknownFrameUrlsAsync(refresh.Token);
+                }
+                catch (Exception ex) { AppLog.Write($"复核网页请求来源失败：{ex.Message}"); }
+                if (IsAuthorizedContext(contextId, sessionId))
+                {
+                    HandleAuthorizedBinding(name, contextId);
+                    return;
+                }
+                AppLog.Write($"已忽略来源页面的网页请求：{name} · context={contextId} · session={sessionId ?? "-"} · {DescribeContextForLog(contextId, sessionId)}");
+                await SetWidgetStateAsync("error", "当前页面不是核验目标页，已忽略网页请求。");
+            });
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write($"处理网页请求失败：{ex.Message}");
+        }
+    }
+
+    private void HandleAuthorizedBinding(string? name, int contextId)
+    {
+        try
+        {
             if (name == "cccRequestCapture")
             {
                 if (Interlocked.CompareExchange(ref _captureGate, 1, 0) != 0)
@@ -868,7 +1024,14 @@ internal sealed class BrowserValidation : IAsyncDisposable
                         deviceScaleFactor = viewportScale,
                         mobile = false
                     }, token);
-                    await Task.Delay(200, token);
+                    // Never capture on a fixed delay: under load the out-of-process frame has not
+                    // yet learned that it is fully visible and its lower part is saved blank. Wait
+                    // (bounded) until the page reports the enlarged viewport and every captured
+                    // child frame reports itself completely inside it, then for fresh frames.
+                    var paintProblem = await WaitForEnlargedPaintAsync(Math.Max(viewportWidth, width), Math.Max(viewportHeight, height), capturedOopif, token);
+                    if (paintProblem is not null)
+                        return new BrowserCaptureResult(SessionId, DeclarationNo, "error", null,
+                            $"跨进程网页框架未能在放大视口后完成重绘（{paintProblem}），为避免保存空白截图，已拒绝本次截图。");
                     // The enlarged viewport can change the content size; re-read and never
                     // shrink below the frame content that was already grown.
                     var expandedMetrics = await cdp.SendAsync("Page.getLayoutMetrics", null, token);
@@ -973,6 +1136,91 @@ internal sealed class BrowserValidation : IAsyncDisposable
         return null;
     }
 
+    private const int PaintWaitMilliseconds = 8000;
+
+    /// <summary>
+    /// Resolves once the top-level page reports at least the enlarged viewport and has produced
+    /// two further frames. Bounded: a missing frame clock resolves with a reason, never hangs.
+    /// </summary>
+    private static string MainViewportPaintScript(int width, int height) => FormattableString.Invariant($$"""
+        new Promise(function (resolve) {
+          var deadline = Date.now() + {{PaintWaitMilliseconds}}, done = false;
+          function finish(v) { if (!done) { done = true; resolve(v); } }
+          setTimeout(function () { finish('no-frames:' + window.innerWidth + 'x' + window.innerHeight); }, {{PaintWaitMilliseconds + 500}});
+          function step() {
+            if (done) return;
+            if (window.innerWidth >= {{width}} - 1 && window.innerHeight >= {{height}} - 1) {
+              requestAnimationFrame(function () { requestAnimationFrame(function () { finish('ready'); }); });
+              return;
+            }
+            if (Date.now() > deadline) { finish('viewport:' + window.innerWidth + 'x' + window.innerHeight); return; }
+            requestAnimationFrame(step);
+          }
+          requestAnimationFrame(step);
+        })
+        """);
+
+    /// <summary>
+    /// Runs inside an out-of-process frame: resolves once that frame's renderer reports its whole
+    /// visible document inside the top-level viewport (IntersectionObserver uses the embedder's
+    /// real viewport intersection, which is what the compositor paints by) and two further frames
+    /// were produced. A fresh observer per frame always delivers the current state.
+    /// </summary>
+    private static readonly string OopifVisiblePaintScript = FormattableString.Invariant($$"""
+        new Promise(function (resolve) {
+          var deadline = Date.now() + {{PaintWaitMilliseconds}}, done = false, last = 'none';
+          function finish(v) { if (!done) { done = true; resolve(v); } }
+          setTimeout(function () { finish('no-frames:' + last); }, {{PaintWaitMilliseconds + 500}});
+          var el = document.documentElement;
+          if (!el || typeof IntersectionObserver !== 'function') { finish('unsupported'); return; }
+          function check() {
+            if (done) return;
+            if (Date.now() > deadline) { finish('hidden:' + last); return; }
+            var io = new IntersectionObserver(function (entries) {
+              io.disconnect();
+              var e = entries[entries.length - 1];
+              var needH = Math.min(window.innerHeight, e.boundingClientRect.height) - 2;
+              var needW = Math.min(window.innerWidth, e.boundingClientRect.width) - 2;
+              last = Math.round(e.intersectionRect.width) + 'x' + Math.round(e.intersectionRect.height) + '/' + Math.round(needW + 2) + 'x' + Math.round(needH + 2);
+              if (e.intersectionRect.height >= needH && e.intersectionRect.width >= needW)
+                requestAnimationFrame(function () { requestAnimationFrame(function () { finish('visible'); }); });
+              else requestAnimationFrame(check);
+            });
+            io.observe(el);
+          }
+          check();
+        })
+        """);
+
+    /// <summary>
+    /// Bounded paint-readiness gate after the real viewport was enlarged for an OOPIF capture.
+    /// Returns null when every participant is ready, otherwise a short reason.
+    /// </summary>
+    private async Task<string?> WaitForEnlargedPaintAsync(int width, int height, IReadOnlyList<OopifPaintRange> frames, CancellationToken token)
+    {
+        using var bounded = CancellationTokenSource.CreateLinkedTokenSource(token);
+        bounded.CancelAfter(TimeSpan.FromMilliseconds(PaintWaitMilliseconds + 3000));
+        try
+        {
+            var main = await EvaluateContextAsync(MainViewportPaintScript(width, height), null, bounded.Token, awaitPromise: true);
+            if (main != "ready") return $"page={main}";
+            foreach (var frame in frames)
+            {
+                var state = await EvaluateContextAsync(OopifVisiblePaintScript, frame.ContextId, frame.SessionId, bounded.Token, awaitPromise: true);
+                if (state != "visible") return $"{frame.FrameId}={state}";
+            }
+            return null;
+        }
+        catch (OperationCanceledException) when (!token.IsCancellationRequested)
+        {
+            return "timeout";
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException && !IsConnectionFailure(ex))
+        {
+            return ex.Message;
+        }
+    }
+
     /// <summary>
     /// Layout-independent result fingerprint used to detect in-flight changes. Only the
     /// top-level shell and the frames that actually hold the query result are consulted:
@@ -1029,6 +1277,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
     /// </summary>
     private async Task<List<EvalTarget>> AuthorizedEvalTargetsAsync(CancellationToken token)
     {
+        await RefreshUnknownFrameUrlsAsync(token);
         var targets = new List<EvalTarget> { new(_mainFrameId, null, null) };
         List<string> frameIds;
         lock (_frameUrls) frameIds = _frameUrls.Keys.ToList();
@@ -1204,7 +1453,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
     /// beyond it; tying that decision to "did we change the owner" misses a frame that was
     /// already tall enough for its content but still taller than the physical viewport.
     /// </summary>
-    private sealed record OopifPaintRange(string FrameId, int Bottom, int Right);
+    private sealed record OopifPaintRange(string FrameId, int Bottom, int Right, int ContextId, string? SessionId);
 
     /// <summary>
     /// Grows every authorized sub-frame's owner element to the frame document height using
@@ -1289,7 +1538,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
                 if (beforeVisible >= frameContent - 2 && beforeMax >= frameContent - 2)
                 {
                     if (session is not null)
-                        capturedOopif.Add(new OopifPaintRange(frameId, beforeBottom, beforeRight));
+                        capturedOopif.Add(new OopifPaintRange(frameId, beforeBottom, beforeRight, contextId.Value, session));
                     continue;
                 }
 
@@ -1303,7 +1552,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
                 // A grown attached child-session frame is an OOPIF; captureBeyondViewport does
                 // not repaint those beyond the real viewport, so the caller enlarges it first.
                 if (session is not null)
-                    capturedOopif.Add(new OopifPaintRange(frameId, afterBottom, afterRight));
+                    capturedOopif.Add(new OopifPaintRange(frameId, afterBottom, afterRight, contextId.Value, session));
                 var viewportJson = await EvaluateContextAsync(
                     "JSON.stringify({content:Math.max(document.documentElement?document.documentElement.scrollHeight:0,document.body?document.body.scrollHeight:0),viewport:window.innerHeight||0})",
                     contextId, session, token, awaitPromise: false);
@@ -1459,10 +1708,17 @@ internal sealed class BrowserValidation : IAsyncDisposable
             string? url;
             lock (_frameUrls) _frameUrls.TryGetValue(context.FrameId, out url);
             string monitor;
-            try { monitor = await SafeEvaluateAsync("!!window.__customsConsoleMonitor", context.ContextId, context.SessionId, token); }
+            try
+            {
+                monitor = await SafeEvaluateAsync(
+                    "JSON.stringify({monitor:!!window.__customsConsoleMonitor,queryAt:(window.__customsConsoleMonitor&&window.__customsConsoleMonitor.queryAt)||0,href:location.href,ready:document.readyState})",
+                    context.ContextId, context.SessionId, token);
+            }
             catch (Exception ex) { monitor = "error:" + ex.Message; }
             parts.Add($"frame={context.FrameId};session={context.SessionId ?? "-"};authorized={IsAuthorizedFrameId(context.FrameId)};url={url};monitor={monitor}");
         }
+        lock (_frameTargetSessions)
+            foreach (var pair in _frameTargetSessions) parts.Add($"target={pair.Key};session={pair.Value}");
         return parts.Count == 0 ? "(未登记任何执行上下文)" : string.Join(" | ", parts);
     }
 
@@ -1521,6 +1777,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
         var cdp = _cdp ?? throw new InvalidOperationException("浏览器控制连接已断开。");
         LastClickFailure = "";
         LastClickExactHit = "";
+        LastClickPointer = "";
         // The card is hidden and shown around every capture. A CDP click dispatched before the
         // card is painted again can be lost (a compositor/paint risk to verify, not a proven
         // cause), so the single click is gated on a bounded render-readiness condition instead
@@ -1570,10 +1827,60 @@ internal sealed class BrowserValidation : IAsyncDisposable
         LastClickHitTarget = topIsHost ? "host" : "none";
         if (!exactButtonHit || !topIsHost)
             return FailClick($"发送前精确命中复核失败（exact={exactButtonHit},host={topIsHost}）：{Shorten(LastClickExactHit)}");
-        await cdp.SendAsync("Input.dispatchMouseEvent", new { type = "mouseMoved", x, y, button = "none", clickCount = 0 }, token);
-        await cdp.SendAsync("Input.dispatchMouseEvent", new { type = "mousePressed", x, y, button = "left", clickCount = 1 }, token);
-        await cdp.SendAsync("Input.dispatchMouseEvent", new { type = "mouseReleased", x, y, button = "left", clickCount = 1 }, token);
+        // The page's own hit test runs on fresh layout, but the browser routes real input by the
+        // compositor's hit-test data, which can still describe the frame that was grown during
+        // the previous capture. A click sent then lands in that frame and is silently lost. So the
+        // real mouse is moved first and only pressed once the button itself has received the
+        // move; a move is not a click, and exactly one press/release is sent.
+        var routed = await WaitForPointerRoutedAsync(cdp, x, y, token);
+        if (routed is null)
+            return FailClick($"真实指针移动未到达卡片按钮，未发送按下：{Shorten(LastClickPointer)}");
+        var (clickX, clickY) = routed.Value;
+        await cdp.SendAsync("Input.dispatchMouseEvent", new { type = "mousePressed", x = clickX, y = clickY, button = "left", clickCount = 1 }, token);
+        await cdp.SendAsync("Input.dispatchMouseEvent", new { type = "mouseReleased", x = clickX, y = clickY, button = "left", clickCount = 1 }, token);
         return true;
+    }
+
+    /// <summary>Evidence of the pointer-routing handshake before the last real card click.</summary>
+    public string LastClickPointer { get; private set; } = "";
+
+    private async Task<long> ReadPointerMovesAsync(CancellationToken token)
+    {
+        var value = await EvaluateContextAsync(
+            "String((window.__cccWidget && window.__cccWidget.diagnostics) ? window.__cccWidget.diagnostics().pointerMoveCount : -1)",
+            null, token, awaitPromise: false);
+        return long.TryParse(value, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var count) ? count : -1;
+    }
+
+    /// <summary>
+    /// Moves the real mouse inside the button (a small alternating offset so every move is a
+    /// genuine position change) until the button reports a routed pointermove, bounded to a
+    /// few seconds. Returns the point that was confirmed, or null.
+    /// </summary>
+    private async Task<(double X, double Y)?> WaitForPointerRoutedAsync(CdpClient cdp, double x, double y, CancellationToken token)
+    {
+        var baseline = await ReadPointerMovesAsync(token);
+        if (baseline < 0) { LastClickPointer = "卡片不支持指针计数"; return null; }
+        var started = DateTime.UtcNow;
+        for (var attempt = 0; DateTime.UtcNow - started < TimeSpan.FromSeconds(5); attempt++)
+        {
+            var offset = attempt % 2 == 0 ? -2.0 : 2.0;
+            var pointX = x + offset;
+            await cdp.SendAsync("Input.dispatchMouseEvent", new { type = "mouseMoved", x = pointX, y, button = "none", clickCount = 0 }, token);
+            var waitStarted = DateTime.UtcNow;
+            while (DateTime.UtcNow - waitStarted < TimeSpan.FromMilliseconds(200))
+            {
+                var moves = await ReadPointerMovesAsync(token);
+                if (moves > baseline)
+                {
+                    LastClickPointer = FormattableString.Invariant($"moves={attempt + 1};routed={moves - baseline}");
+                    return (pointX, y);
+                }
+                await Task.Delay(25, token);
+            }
+        }
+        LastClickPointer = FormattableString.Invariant($"5 秒内指针移动未路由到按钮；基线={baseline}");
+        return null;
     }
 
     private bool FailClick(string reason)
@@ -1841,6 +2148,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
         results.Add(main);
         if (Accepted(main, acceptedMarkers)) return main;
 
+        await RefreshUnknownFrameUrlsAsync(token);
         var contexts = AuthorizedContexts();
         var ordered = childrenFirst
             ? contexts.OrderBy(x => x.FrameId.Equals(_mainFrameId, StringComparison.Ordinal) ? 1 : 0).ToList()
@@ -1858,6 +2166,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
     private async Task EvaluateAllContextsAsync(string expression, CancellationToken token, bool childrenFirst, bool bestEffort)
     {
         if (_cdp is null) return;
+        await RefreshUnknownFrameUrlsAsync(token);
         var contexts = AuthorizedContexts();
         var ordered = childrenFirst
             ? contexts.OrderBy(x => x.FrameId.Equals(_mainFrameId, StringComparison.Ordinal) ? 1 : 0).ToList()
@@ -1980,9 +2289,56 @@ internal sealed class BrowserValidation : IAsyncDisposable
             catch { }
             await cdp.DisposeAsync();
         }
-        try { if (_process is { HasExited: false }) _process.Kill(entireProcessTree: true); } catch { }
-        _process?.Dispose();
+        if (_process is not null)
+        {
+            _process.Exited -= OnBrowserExited;
+            try
+            {
+                if (!_process.HasExited) _process.Kill(entireProcessTree: true);
+                await _process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            catch { }
+            _process.Dispose();
+        }
         _lifetime.Dispose();
+        if (_profileFolder is not null) await DeleteProfileAsync(_profileFolder);
+    }
+
+    /// <summary>Best-effort removal of a session profile; browser helpers can hold files briefly after exit.</summary>
+    private static async Task DeleteProfileAsync(string folder)
+    {
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            try
+            {
+                if (Directory.Exists(folder)) Directory.Delete(folder, recursive: true);
+                return;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                if (attempt == 4) { AppLog.Write($"浏览器临时配置暂未删除（下次启动时清理）：{ex.Message}"); return; }
+            }
+            await Task.Delay(400);
+        }
+    }
+
+    /// <summary>Deletes session profiles older than <paramref name="age"/>; a profile still in use fails to delete and is kept.</summary>
+    internal static void PurgeStaleProfiles(string root, TimeSpan age)
+    {
+        try
+        {
+            if (!Directory.Exists(root)) return;
+            var cutoff = DateTime.UtcNow - age;
+            foreach (var folder in Directory.EnumerateDirectories(root))
+            {
+                try
+                {
+                    if (Directory.GetLastWriteTimeUtc(folder) < cutoff) Directory.Delete(folder, recursive: true);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+            }
+        }
+        catch (Exception ex) { AppLog.Write($"清理浏览器临时配置失败：{ex.Message}"); }
     }
 }
 

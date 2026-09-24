@@ -93,11 +93,13 @@
       <button class="ccc-btn" type="button" data-role="capture">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#fff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="12" height="9" rx="1.5"/><circle cx="8" cy="8.5" r="2.2"/><path d="M6 4l1-1.5h2L10 4"/></svg><span data-role="capture-label">长截图</span>
       </button>
-      <div class="ccc-path">→ ${saveDir}</div>
+      <div class="ccc-path" data-role="save-dir"></div>
     `;
     shadow.appendChild(widget);
 
     widget.querySelector('.ccc-number').textContent = declarationNo;
+    // A Windows folder name may contain '&' or quotes; never parse it as markup.
+    widget.querySelector('[data-role=save-dir]').textContent = '→ ' + saveDir;
     const captureButton = widget.querySelector('[data-role=capture]');
     const captureLabel = widget.querySelector('[data-role=capture-label]');
     const openLink = widget.querySelector('[data-role=open]');
@@ -110,6 +112,10 @@
     // at the page handler; a binding call without a backend accept points at the CDP binding.
     let domClickCount = 0;
     let bindingCallCount = 0;
+    // Pointer moves that the browser actually routed to the capture button. The E2E moves the
+    // real mouse first and presses only once this advanced, which proves the browser-side input
+    // routing (not just the page's own layout) already delivers that point to this button.
+    let pointerMoveCount = 0;
 
     // The action button stays available in every non-capturing state so a failed or
     // rejected capture can always be retried without reloading the page.
@@ -169,7 +175,8 @@
           viewport: { w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio },
           hit: api.hitTest(centerX, centerY),
           domClickCount,
-          bindingCallCount
+          bindingCallCount,
+          pointerMoveCount
         };
       },
       // Bounded render-readiness gate used before a real CDP mouse click and before the
@@ -242,6 +249,7 @@
     };
     window.__cccWidget = api;
 
+    captureButton.addEventListener('pointermove', () => { pointerMoveCount += 1; });
     captureButton.addEventListener('click', () => {
       domClickCount += 1;
       if (api.isCapturing) return;

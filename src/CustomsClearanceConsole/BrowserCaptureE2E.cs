@@ -99,7 +99,13 @@ internal static class BrowserCaptureE2E
         if (waitForSettled)
         {
             var identity = await session.WaitForIdentitySettledAsync(TimeSpan.FromSeconds(30), CancellationToken.None);
-            if (identity.StartsWith("waiting|", StringComparison.Ordinal) || identity.Length == 0) return $"查询结果未就绪：{identity}";
+            if (identity.StartsWith("waiting|", StringComparison.Ordinal) || identity.Length == 0)
+            {
+                string frames;
+                try { frames = await session.DescribeFramesForTestAsync(CancellationToken.None); }
+                catch (Exception ex) { frames = "帧诊断失败：" + ex.Message; }
+                return $"查询结果未就绪：{identity}；帧诊断：{frames}";
+            }
         }
         return null;
     }
@@ -114,12 +120,12 @@ internal static class BrowserCaptureE2E
         {
             var before = await WidgetSnapshotAsync(session);
             if (!await session.ClickCaptureButtonAsync(CancellationToken.None))
-                return Harness(session, $"未找到可见的卡片按钮，未执行真实点击；点击前卡片={before}；就绪={session.LastClickReadiness}；失败={session.LastClickFailure}。");
+                return Harness(session, $"未找到可见的卡片按钮，未执行真实点击；点击前卡片={before}；就绪={session.LastClickReadiness}；指针={session.LastClickPointer}；失败={session.LastClickFailure}。");
             try { return await completion.Task.WaitAsync(timeout); }
             catch (TimeoutException)
             {
                 var final = await WidgetSnapshotAsync(session);
-                return Harness(session, $"测试侧等待超时，未取得生产结论；点击前={before}；超时={final}；命中={session.LastClickHitTarget}；精确命中={session.LastClickExactHit}；就绪={session.LastClickReadiness}。");
+                return Harness(session, $"测试侧等待超时，未取得生产结论；点击前={before}；超时={final}；命中={session.LastClickHitTarget}；精确命中={session.LastClickExactHit}；就绪={session.LastClickReadiness}；指针={session.LastClickPointer}。");
             }
         }
         finally { session.CaptureCompleted -= handler; }
@@ -151,18 +157,18 @@ internal static class BrowserCaptureE2E
             // the CDP binding instead of being papered over with an automatic second click.
             var before = await WidgetSnapshotAsync(session);
             if (!await session.ClickCaptureButtonAsync(CancellationToken.None))
-                return (Harness(session, $"未找到可见的卡片按钮，未执行真实点击；点击前卡片={before}；就绪={session.LastClickReadiness}；失败={session.LastClickFailure}。"), gateHeld);
+                return (Harness(session, $"未找到可见的卡片按钮，未执行真实点击；点击前卡片={before}；就绪={session.LastClickReadiness}；指针={session.LastClickPointer}；失败={session.LastClickFailure}。"), gateHeld);
             var after = await WidgetSnapshotAsync(session);
             if (!await WaitForInputRegistrationAsync(session, before, TimeSpan.FromSeconds(5)))
             {
                 var stalled = await WidgetSnapshotAsync(session);
-                return (Harness(session, $"真实点击未到达生产后端（未自动补点）；点击前={before}；点击后={after}；5 秒后={stalled}；命中={session.LastClickHitTarget}；精确命中={session.LastClickExactHit}；就绪={session.LastClickReadiness}。"), gateHeld);
+                return (Harness(session, $"真实点击未到达生产后端（未自动补点）；点击前={before}；点击后={after}；5 秒后={stalled}；命中={session.LastClickHitTarget}；精确命中={session.LastClickExactHit}；就绪={session.LastClickReadiness}；指针={session.LastClickPointer}。"), gateHeld);
             }
             try { return (await completion.Task.WaitAsync(timeout), gateHeld); }
             catch (TimeoutException)
             {
                 var final = await WidgetSnapshotAsync(session);
-                return (Harness(session, $"测试侧等待超时，未取得生产结论；点击前={before}；点击后={after}；超时={final}；命中={session.LastClickHitTarget}；精确命中={session.LastClickExactHit}；就绪={session.LastClickReadiness}。"), gateHeld);
+                return (Harness(session, $"测试侧等待超时，未取得生产结论；点击前={before}；点击后={after}；超时={final}；命中={session.LastClickHitTarget}；精确命中={session.LastClickExactHit}；就绪={session.LastClickReadiness}；指针={session.LastClickPointer}。"), gateHeld);
             }
         }
         finally { session.CaptureCompleted -= handler; }
@@ -556,7 +562,7 @@ internal static class BrowserCaptureE2E
         {
             var final = await WidgetSnapshotAsync(session);
             return new Scenario("double-click-single-file", false,
-                [$"测试侧等待超时，未取得生产结论；卡片={final}；命中={session.LastClickHitTarget}；就绪={session.LastClickReadiness}。"]);
+                [$"测试侧等待超时，未取得生产结论；卡片={final}；命中={session.LastClickHitTarget}；就绪={session.LastClickReadiness}；指针={session.LastClickPointer}。"]);
         }
         var files = Directory.EnumerateFiles(folder, "*.png").ToList();
         var details = new List<string>();
