@@ -61,7 +61,9 @@ internal static class BrowserCaptureE2E
             checks.Add(await RunPrepareFailureRestoresAsync(outputFolder, browser, server));
             checks.Add(await RunCrossOriginFrameAsync(outputFolder, browser, server));
             checks.Add(await RunCrossSiteOopifFrameAsync(outputFolder, browser, server));
+            checks.Add(await RunCrossSiteOopifPreexpandedAsync(outputFolder, browser, server));
             checks.Add(await RunChildSessionNavigationAsync(outputFolder, browser, server));
+            checks.Add(await RunOopifViewportReadFailureAsync(outputFolder, browser, server));
             checks.Add(await RunOfficialDomSuccessAsync(outputFolder, browser, server));
             checks.Add(await RunOfficialDomWrongNumberAsync(outputFolder, browser, server));
             checks.Add(await RunOfficialDomEmptyAsync(outputFolder, browser, server));
@@ -125,8 +127,23 @@ internal static class BrowserCaptureE2E
         public Exception? BeforeError { get; set; }
     }
 
+    /// <summary>
+    /// Carries the real viewport (innerWidth/innerHeight/DPR) read before and after a capture
+    /// that temporarily enlarges it, so the restoration is asserted from runtime evidence
+    /// instead of trusting that the finally branch exists in source.
+    /// </summary>
+    private sealed class ViewportEvidence
+    {
+        public string? Before { get; set; }
+        public string? BeforeError { get; set; }
+        public string? After { get; set; }
+        public string? AfterError { get; set; }
+    }
+
+    private const string ViewportProbe = "JSON.stringify({w:window.innerWidth,h:window.innerHeight,dpr:window.devicePixelRatio})";
+
     private static async Task<BrowserCaptureResult> DriveAsync(BrowserValidation session, string? evidencePath, bool waitForSettled,
-        FrameStyleEvidence? styleEvidence = null)
+        FrameStyleEvidence? styleEvidence = null, ViewportEvidence? viewportEvidence = null)
     {
         var problem = await StartAndWaitAsync(session, waitForSettled);
         // The page is loaded by now; let the scenario snapshot the original inline style
@@ -141,9 +158,21 @@ internal static class BrowserCaptureE2E
             if (styleEvidence.BeforeError is not null)
                 return Harness(session, $"捕获前读取 iframe 原样式失败，场景失败：{styleEvidence.BeforeError.Message}");
         }
+        if (viewportEvidence is not null)
+        {
+            try { viewportEvidence.Before = await session.EvaluateRawAsync(ViewportProbe, CancellationToken.None); }
+            catch (Exception ex) { viewportEvidence.BeforeError = ex.Message; }
+            if (viewportEvidence.BeforeError is not null)
+                return Harness(session, $"捕获前读取真实视口失败，场景失败：{viewportEvidence.BeforeError}");
+        }
         if (problem is not null) return Harness(session, problem);
         if (!waitForSettled) await Task.Delay(1200);
         var result = await ClickAndAwaitAsync(session, TimeSpan.FromSeconds(120));
+        if (viewportEvidence is not null)
+        {
+            try { viewportEvidence.After = await session.EvaluateRawAsync(ViewportProbe, CancellationToken.None); }
+            catch (Exception ex) { viewportEvidence.AfterError = ex.Message; }
+        }
         if (evidencePath is not null && result.State == "saved" && result.FilePath is not null && File.Exists(result.FilePath))
             File.Copy(result.FilePath, evidencePath, overwrite: true);
         return result;
@@ -207,6 +236,102 @@ internal static class BrowserCaptureE2E
             if (!string.Equals(before[field], after[field], StringComparison.Ordinal))
                 details.Add($"{label}：{field} 未复原，原=\"{before[field]}\" 现=\"{after[field]}\"。");
         }
+    }
+
+    private static bool TryParseViewport(string? json, out int width, out int height, out double scale, out string error)
+    {
+        width = 0;
+        height = 0;
+        scale = 0;
+        if (string.IsNullOrWhiteSpace(json)) { error = "读取结果为空"; return false; }
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) { error = $"根节点不是对象（{root.ValueKind}）"; return false; }
+            if (!root.TryGetProperty("w", out var w) || w.ValueKind != JsonValueKind.Number) { error = "缺少数值字段 w"; return false; }
+            if (!root.TryGetProperty("h", out var h) || h.ValueKind != JsonValueKind.Number) { error = "缺少数值字段 h"; return false; }
+            if (!root.TryGetProperty("dpr", out var dpr) || dpr.ValueKind != JsonValueKind.Number) { error = "缺少数值字段 dpr"; return false; }
+            width = w.GetInt32();
+            height = h.GetInt32();
+            scale = dpr.GetDouble();
+            if (width <= 0 || height <= 0) { error = $"视口尺寸非正：w={width},h={height}"; return false; }
+            error = "";
+            return true;
+        }
+        catch (JsonException ex) { error = $"JSON 解析失败：{ex.Message}"; return false; }
+    }
+
+    /// <summary>
+    /// Asserts the temporarily enlarged viewport really returned to its original value after the
+    /// capture. Both readings must be concrete evidence first; the finally branch existing in
+    /// source is not runtime restoration evidence.
+    /// </summary>
+    private static void AssertViewportRestored(ViewportEvidence evidence, string label, List<string> details)
+    {
+        var beforeValid = TryParseViewport(evidence.Before, out var beforeWidth, out var beforeHeight, out var beforeScale, out var beforeError);
+        var afterValid = TryParseViewport(evidence.After, out var afterWidth, out var afterHeight, out var afterScale, out var afterError);
+        if (!beforeValid) details.Add($"{label}：捕获前视口证据无效，无法断言恢复（{evidence.BeforeError ?? beforeError}）。");
+        if (!afterValid) details.Add($"{label}：捕获后视口证据无效，无法断言恢复（{evidence.AfterError ?? afterError}）。");
+        if (!beforeValid || !afterValid) return;
+        if (beforeWidth != afterWidth || beforeHeight != afterHeight || Math.Abs(beforeScale - afterScale) > 0.001)
+            details.Add($"{label}：临时放大视口未恢复原值（前 {beforeWidth}x{beforeHeight}@{beforeScale}，后 {afterWidth}x{afterHeight}@{afterScale}）。");
+    }
+
+    /// <summary>
+    /// Full-frame completeness evidence for an out-of-process frame capture: the frame's top
+    /// marker, its internal scroll tail, the query result row between them and the frame's
+    /// bottom marker must all be painted. A saved file alone cannot prove the cross-process
+    /// frame was repainted below the physical viewport, which is the exact prior regression.
+    /// Returns true when a marker is missing or the image is short (truncation).
+    /// </summary>
+    private static bool AssertOopifFrameComplete(Bitmap image, string label, List<string> details)
+    {
+        var truncated = false;
+        if (image.Height < 700) { details.Add($"{label}：截图高度 {image.Height} 未覆盖整页，可能被截断。"); truncated = true; }
+        if (!RegionContainsColor(image, new Rectangle(0, 0, image.Width, Math.Min(500, image.Height)), Color.FromArgb(0x00, 0x88, 0xCC)))
+            details.Add($"{label}：frame 顶部标记未入图。");
+        var internalTail = FindColorRows(image, Color.FromArgb(0xCC, 0x00, 0xCC));
+        if (internalTail.Count == 0)
+        { details.Add($"{label}：frame 内部滚动尾标未入图（独立进程内容被截断）。"); truncated = true; }
+        var frameBottom = FindColorRows(image, Color.FromArgb(0x77, 0x00, 0xAA));
+        if (frameBottom.Count == 0)
+        { details.Add($"{label}：frame 底部紫标未入图（独立进程内容被截断）。"); truncated = true; }
+        if (internalTail.Count > 0 && frameBottom.Count > 0)
+        {
+            var top = Math.Min(internalTail[^1] + 1, image.Height);
+            var bottom = Math.Min(frameBottom[0], image.Height);
+            if (bottom <= top) details.Add($"{label}：frame 内部尾标与底部紫标顺序异常（{top}/{bottom}）。");
+            else if (!RegionHasDarkText(image, top, bottom))
+                details.Add($"{label}：frame 查询结果行未入图。");
+        }
+        return truncated;
+    }
+
+    private static List<int> FindColorRows(Bitmap image, Color expected)
+    {
+        var rows = new List<int>();
+        for (var y = 0; y < image.Height; y += 2)
+        {
+            for (var x = 0; x < image.Width; x += 4)
+            {
+                var pixel = image.GetPixel(x, y);
+                if (Math.Abs(pixel.R - expected.R) <= 6 && Math.Abs(pixel.G - expected.G) <= 6 && Math.Abs(pixel.B - expected.B) <= 6)
+                { rows.Add(y); break; }
+            }
+        }
+        return rows;
+    }
+
+    private static bool RegionHasDarkText(Bitmap image, int top, int bottom)
+    {
+        for (var y = Math.Max(0, top); y < Math.Min(image.Height, bottom); y++)
+            for (var x = 0; x < image.Width; x += 2)
+            {
+                var pixel = image.GetPixel(x, y);
+                if (pixel.R < 70 && pixel.G < 70 && pixel.B < 80) return true;
+            }
+        return false;
     }
 
     private static async Task<Scenario> RunSuccessAsync(string outputFolder, string browser, TestServer server)
@@ -607,8 +732,9 @@ internal static class BrowserCaptureE2E
         await using var session = new BrowserValidation(number, folder, url, browser, headless: true, allowTestTarget: true,
             extraBrowserArgs: [$"--host-resolver-rules=MAP {host} 127.0.0.1"]);
         var styleEvidence = new FrameStyleEvidence();
+        var viewportEvidence = new ViewportEvidence();
         var result = await DriveAsync(session, Path.Combine(outputFolder, "capture-oopif-frame.png"), waitForSettled: true,
-            styleEvidence: styleEvidence);
+            styleEvidence: styleEvidence, viewportEvidence: viewportEvidence);
         var details = new List<string>();
         if (result.State != "saved")
         {
@@ -622,13 +748,7 @@ internal static class BrowserCaptureE2E
         else
         {
             using var image = new Bitmap(result.FilePath);
-            var truncated = false;
-            if (image.Height < 700) { details.Add($"跨站 OOPIF frame 高度不足，可能被截断：{image.Height}。"); truncated = true; }
-            if (!RegionContainsColor(image, new Rectangle(0, 0, image.Width, Math.Min(500, image.Height)), Color.FromArgb(0x00, 0x88, 0xCC)))
-                details.Add("跨站 OOPIF frame 顶部标记未入图。");
-            if (!ColumnContainsColor(image, Color.FromArgb(0x77, 0x00, 0xAA)))
-            { details.Add("跨站 OOPIF frame 底部标记未入图（独立进程内容被截断）。"); truncated = true; }
-            if (truncated)
+            if (AssertOopifFrameComplete(image, "跨站 OOPIF frame", details))
             {
                 try { details.Add("OOPIF 截断帧诊断：" + await session.DescribeFramesForTestAsync(CancellationToken.None)); }
                 catch (Exception ex) { details.Add("OOPIF 截断帧诊断失败：" + ex.Message); }
@@ -637,7 +757,59 @@ internal static class BrowserCaptureE2E
         var (afterStyle, afterError) = await ReadFrameStyleAsync(session);
         AssertFrameStyleRestored(styleEvidence.Before, styleEvidence.BeforeError?.Message, afterStyle, afterError,
             "OOPIF frame 原高度/max-height 及优先级", details);
-        return new Scenario("cross-site-oopif-frame", details.Count == 0, details.Count == 0 ? ["独立进程 OOPIF frame 内查询经 CDP session 完整捕获并复原样式"] : details);
+        AssertViewportRestored(viewportEvidence, "跨站 OOPIF frame", details);
+        return new Scenario("cross-site-oopif-frame", details.Count == 0, details.Count == 0 ? ["独立进程 OOPIF frame 内查询经 CDP session 完整捕获、样式与视口均复原"] : details);
+    }
+
+    /// <summary>
+    /// Regression for the second viewport gap: an attached child-session frame whose owner is
+    /// already tall enough for its own content (so the expand path has nothing to grow) but
+    /// still taller than the physical viewport must also get the real viewport enlarged. Tying
+    /// the enlargement to "did we grow the owner" left this frame on the known-blank
+    /// captureBeyondViewport path, so this fixture keeps the 1600px owner and asserts the same
+    /// full tail pixels instead of an equivalent "owner was grown" signal.
+    /// </summary>
+    private static async Task<Scenario> RunCrossSiteOopifPreexpandedAsync(string outputFolder, string browser, TestServer server)
+    {
+        using var other = new TestServer();
+        other.Start();
+        const string host = "e2e-frame.test";
+        var folder = Path.Combine(outputFolder, "oopif-preexpanded");
+        Directory.CreateDirectory(folder);
+        const string number = "310120260000000028";
+        var frameUrl = $"http://{host}:{other.Port}/frame?content=800&result={number}&query=1";
+        // frameh=1600 is intentionally taller than the frame document (~1454px) and the real
+        // viewport, with no max-height clamp: the owner already wraps its content.
+        var url = server.Url($"/page?content=300&result={number}&frame=cross&frameh=1600&xhost={Uri.EscapeDataString(frameUrl)}");
+        await using var session = new BrowserValidation(number, folder, url, browser, headless: true, allowTestTarget: true,
+            extraBrowserArgs: [$"--host-resolver-rules=MAP {host} 127.0.0.1"]);
+        var styleEvidence = new FrameStyleEvidence();
+        var viewportEvidence = new ViewportEvidence();
+        var result = await DriveAsync(session, Path.Combine(outputFolder, "capture-oopif-preexpanded.png"), waitForSettled: true,
+            styleEvidence: styleEvidence, viewportEvidence: viewportEvidence);
+        var details = new List<string>();
+        if (result.State != "saved")
+        {
+            details.Add($"预展开 OOPIF frame 截图失败：{result.Message}");
+            try { details.Add("OOPIF 帧诊断：" + await session.DescribeFramesForTestAsync(CancellationToken.None)); }
+            catch (Exception ex) { details.Add("OOPIF 帧诊断失败：" + ex.Message); }
+        }
+        if (result.FilePath is null || !File.Exists(result.FilePath)) details.Add("未生成预展开 OOPIF frame 截图。");
+        else
+        {
+            using var image = new Bitmap(result.FilePath);
+            if (AssertOopifFrameComplete(image, "预展开 OOPIF frame", details))
+            {
+                try { details.Add("OOPIF 截断帧诊断：" + await session.DescribeFramesForTestAsync(CancellationToken.None)); }
+                catch (Exception ex) { details.Add("OOPIF 截断帧诊断失败：" + ex.Message); }
+            }
+        }
+        var (afterStyle, afterError) = await ReadFrameStyleAsync(session);
+        AssertFrameStyleRestored(styleEvidence.Before, styleEvidence.BeforeError?.Message, afterStyle, afterError,
+            "预展开 OOPIF frame 原高度/max-height 及优先级", details);
+        AssertViewportRestored(viewportEvidence, "预展开 OOPIF frame", details);
+        return new Scenario("cross-site-oopif-preexpanded-frame", details.Count == 0,
+            details.Count == 0 ? ["原本已包住内容的跨进程 OOPIF 在不改 owner 高度时仍经真实视口完整绘制并复原样式/视口"] : details);
     }
 
     /// <summary>
@@ -701,7 +873,9 @@ internal static class BrowserCaptureE2E
         if (parentBefore is not null && !string.Equals(parentBefore, parentAfter, StringComparison.Ordinal))
             details.Add($"子 session 无 parentId 导航把已知父 frame 覆盖：前={parentBefore} 后={parentAfter}");
         // Both the top-level page and the navigated child frame must still be authorized, so a
-        // real card click must still produce a complete saved capture.
+        // real card click must still produce a complete saved capture; a saved file alone does
+        // not prove the cross-process frame was repainted, so the same full-tail assertions as
+        // the OOPIF scenario plus the restored viewport are required here too.
         if (!await session.WaitForWidgetAsync(TimeSpan.FromSeconds(30), token)) details.Add("子 frame 导航后未重新注入控件。");
         else
         {
@@ -710,13 +884,78 @@ internal static class BrowserCaptureE2E
                 details.Add($"子 frame 导航后查询结果未就绪：{identity}");
             else
             {
+                var viewportEvidence = new ViewportEvidence();
+                try { viewportEvidence.Before = await session.EvaluateRawAsync(ViewportProbe, token); }
+                catch (Exception ex) { viewportEvidence.BeforeError = ex.Message; }
                 var result = await ClickAndAwaitAsync(session, TimeSpan.FromSeconds(120));
+                try { viewportEvidence.After = await session.EvaluateRawAsync(ViewportProbe, token); }
+                catch (Exception ex) { viewportEvidence.AfterError = ex.Message; }
                 if (result.State != "saved") details.Add($"子 frame 导航后截图失败：{result.State}：{result.Message}");
                 else if (result.FilePath is null || !File.Exists(result.FilePath)) details.Add("子 frame 导航后未生成截图。");
+                else
+                {
+                    using var image = new Bitmap(result.FilePath);
+                    if (AssertOopifFrameComplete(image, "子 session 导航 OOPIF", details))
+                    {
+                        try { details.Add("子 session 导航 OOPIF 截断诊断：" + await session.DescribeFramesForTestAsync(token)); }
+                        catch (Exception ex) { details.Add("子 session 导航 OOPIF 截断诊断失败：" + ex.Message); }
+                    }
+                }
+                AssertViewportRestored(viewportEvidence, "子 session 导航 OOPIF", details);
             }
         }
         return new Scenario("oopif-child-session-navigation", details.Count == 0,
-            details.Count == 0 ? ["子 session 无 parentId 根导航未覆盖顶层身份/URL/代次，子 frame URL 更新且仍可完整截图"] : details);
+            details.Count == 0 ? ["子 session 无 parentId 根导航未覆盖顶层身份/URL/代次，子 frame URL 更新且整页首尾/查询结果完整、样式与视口复原"] : details);
+    }
+
+    /// <summary>
+    /// The real viewport read is a hard prerequisite when an attached child-session frame
+    /// participates: an unreadable viewport must reject the capture instead of silently falling
+    /// back to the blank captureBeyondViewport path. All three read attempts are injected as
+    /// failures, then the injection is exhausted and the same session must recover and save a
+    /// complete capture.
+    /// </summary>
+    private static async Task<Scenario> RunOopifViewportReadFailureAsync(string outputFolder, string browser, TestServer server)
+    {
+        using var other = new TestServer();
+        other.Start();
+        const string host = "e2e-frame.test";
+        var folder = Path.Combine(outputFolder, "oopif-viewport-read-failure");
+        Directory.CreateDirectory(folder);
+        const string number = "310120260000000029";
+        var frameUrl = $"http://{host}:{other.Port}/frame?content=800&result={number}&query=1";
+        var url = server.Url($"/page?content=300&result={number}&frame=cross&clamp=1&xhost={Uri.EscapeDataString(frameUrl)}");
+        await using var session = new BrowserValidation(number, folder, url, browser, headless: true, allowTestTarget: true,
+            extraBrowserArgs: [$"--host-resolver-rules=MAP {host} 127.0.0.1"]);
+        var details = new List<string>();
+        var problem = await StartAndWaitAsync(session, true);
+        if (problem is not null) return new Scenario("oopif-viewport-read-failure", false, [problem]);
+        // Three attempts are made per capture; fail all of them for the first click.
+        session.FailNextViewportReadsForTest(3);
+        var refused = await ClickAndAwaitAsync(session, TimeSpan.FromSeconds(120));
+        if (refused.State != "error") details.Add($"视口读取失败时未拒绝保存：{refused.State}：{refused.Message}");
+        else if (!refused.Message.Contains("视口", StringComparison.Ordinal)) details.Add($"拒绝结论未说明视口读取失败：{refused.Message}");
+        if (refused.FilePath is not null && File.Exists(refused.FilePath)) details.Add("视口读取失败时仍返回了截图文件。");
+        if (Directory.EnumerateFiles(folder, "*.png").Any()) details.Add("视口读取失败时目录内仍出现 PNG。");
+        // Injection exhausted: the same session must recover and save a complete capture.
+        if (!await session.CanCaptureAsync(CancellationToken.None)) details.Add("视口读取失败被拒后卡片按钮不可再次点击。");
+        else
+        {
+            var recovered = await ClickAndAwaitAsync(session, TimeSpan.FromSeconds(120));
+            if (recovered.State != "saved") details.Add($"注入结束后未恢复保存：{recovered.State}：{recovered.Message}");
+            else if (recovered.FilePath is null || !File.Exists(recovered.FilePath)) details.Add("注入结束后未生成截图。");
+            else
+            {
+                using var image = new Bitmap(recovered.FilePath);
+                if (AssertOopifFrameComplete(image, "视口失败恢复 OOPIF", details))
+                {
+                    try { details.Add("视口失败恢复 OOPIF 截断诊断：" + await session.DescribeFramesForTestAsync(CancellationToken.None)); }
+                    catch (Exception ex) { details.Add("视口失败恢复 OOPIF 截断诊断失败：" + ex.Message); }
+                }
+            }
+        }
+        return new Scenario("oopif-viewport-read-failure", details.Count == 0,
+            details.Count == 0 ? ["OOPIF 参与时视口读取失败会拒绝保存，注入结束后同一会话恢复并完整截图"] : details);
     }
 
     /// <summary>
@@ -1112,6 +1351,10 @@ internal static class BrowserCaptureE2E
             // A clamping iframe reproduces the R5-3 case: the element is capped by
             // max-height, so writing only a height would leave content truncated.
             var clamp = parameters.TryGetValue("clamp", out var cv) && cv == "1";
+            // frameh lets a fixture start with an owner iframe already tall enough for its
+            // document, so the expand path has nothing to grow while the frame still extends
+            // past the physical viewport (the pre-expanded OOPIF regression).
+            var frameHeight = parameters.TryGetValue("frameh", out var fh) && int.TryParse(fh, out var fhParsed) && fhParsed > 0 ? fhParsed : 400;
             // R5-2 failure injection: the first scroll container expands normally, then the
             // second one throws once on its first style write, exercising the production
             // prepare failure + finally restore + retry path.
@@ -1211,13 +1454,13 @@ internal static class BrowserCaptureE2E
             var body = frame == "cross"
                 ? $"""
                   <div id="top"></div>
-                  <iframe id="inner" src="{frameSrc}" style="width:100%;height:400px;{(clamp ? "max-height:400px !important;" : "")}border:0"></iframe>
+                  <iframe id="inner" src="{frameSrc}" style="width:100%;height:{frameHeight}px;{(clamp ? "max-height:400px !important;" : "")}border:0"></iframe>
                   <div id="bottom"></div>
                   """
                 : isFrame
                     ? $"""
                       <div id="top"></div>
-                      <iframe id="inner" src="{frameSrc}" style="width:100%;height:400px;border:0"></iframe>
+                      <iframe id="inner" src="{frameSrc}" style="width:100%;height:{frameHeight}px;border:0"></iframe>
                       <div id="bottom"></div>
                       """
                     : $"""

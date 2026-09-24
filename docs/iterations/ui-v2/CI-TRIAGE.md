@@ -154,6 +154,34 @@ FormHtml由固定400ms改成最多约20秒等候monitor，再对实际查询按�
 
 新增`oopif-child-session-navigation`虽然只检查saved/文件存在而Pass，实际PNG同样有上述白块；上一节的证据缺口现在已由坏图证实。给该场景加入与OOPIF场景同等的内部尾标、结果/底部内容检查，避免错误宣称“导航后完整截图”。顶层身份保持的导航断言可以独立成立，但不能替代图像完整性。
 
+## 82d0d81 新视口路径定点复核
+
+固定提交：`82d0d81f0c0e77c84bab2bd67d717ae3309e4ffe`，只审新增截图路径，未读移动工作区，未运行本机产品/测试。临时Emulation扩大viewport、重读总尺寸及finally清除override的正常处理已接入；实际渲染效果等待云端。以下是现有修复遗漏，非追加新功能要求。
+
+### P1：OOPIF原本就足够高时不会触发绘制修复
+
+ExpandFramesAsync只在owner需要GrowFrameFunction、`expanded.Add(frameId)`之后才加入expandedOopif。若iframe原始height已能包住其内容（例如1454px），但比真实浏览器viewport高，前面的`beforeVisible >= frameContent - 2 && beforeMax >= frameContent - 2`会直接continue。其本身无需增长，却仍需要把屏幕外内容绘入截图；主捕获路径因expandedOopif空而跳过视口调整，仍采用已被上一轮PNG证明可能漏画的旧路径。
+
+建议记录所有参与捕获的授权OOPIF及实际绘制范围，视口调整条件取决于它们是否超出当前真实viewport，不取决于此次有没有修改过iframe高度。以原始iframe足够高的同一OOPIF夹具覆盖即可，勿用“已扩大owner”的等价断言代替尾部像素。
+
+### P1：读取真实viewport失败后仍可能保存空白成功
+
+捕获路径读取window.innerWidth/innerHeight的异常仅记录日志，尺寸保持0；`enlargedViewport`因要求两值大于0而变false，随后照常截图与saved。缺失的是判断远程frame必须绘制范围的必要前置证据，因此有OOPIF时不能把读取失败当作“不需要修复”。应重读可靠的实际viewport或返回失败，避免恢复为上一轮白块成功路径。正常读取到非正数也须同样处理。
+
+### 已有测试缺口保持待修
+
+本提交未修改BrowserCaptureE2E，子session导航后仍只验证saved/文件存在；add0179该场景已产出坏图却Pass，应补同等内部尾标/结果及frame底标断言。临时viewport改变还应由本场景或既有恢复断言核对捕获后视口回到原值；finally调用clear的源码存在本身不是运行期恢复证据。
+
+随后固定`13c1641`仅增加读取devicePixelRatio并用作override的deviceScaleFactor，未改变以上候选登记、异常继续和E2E路径；两项遗漏及测试缺口结论不变。未重复整轮审查。
+
+## 13c1641 两张OOPIF实际图：本轮白块问题已修复
+
+证据：`/Users/leon1ca/Documents/Codex/2026-09-24/evidence-13c1641/browser/capture-oopif-frame.png`及`child-session-navigation/310120260000000025.png`，关联run35967517077。仅查看已下载实际PNG，未读取移动源码或运行产品。
+
+两图均清楚呈现顶部蓝标、完整内部滚动区及洋红末端、匹配本次单号的结果文本行、紫色frame底标和父页蓝色尾部。add0179从约1191px开始的白块已经消失，临时扩大实际viewport对这两个“需增长iframe”的场景有效。此前OOPIF下半部未绘制的实际症状可在这两张图上关闭。
+
+该图证不覆盖原本足够高无需增长的OOPIF、viewport读取失败路径及导航场景自动尾部断言；这些已交DeepSeek补修，最终仍须对修复后的同一SHA产物终验。
+
 ## 07851ef P2 修复实现记录（不改上节独立结论）
 
 上节为独立复核结论，保持原文；本节只记录针对该 P2 的实现响应，最终是否闭环以同一 SHA 云端运行和独立终验为准。

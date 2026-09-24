@@ -229,7 +229,7 @@
 
 ## 里程碑 M12 · 子 session 导航身份、序号表头真实 padding 与 OOPIF 展开定点修复
 
-基线 `5a5f9baf466bf7549aac319318bf2fbb921c828e`。独立报告见 `CI-TRIAGE.md` 的“5a5f9ba 小范围源码复核”和“07851ef 真实屏幕三项定点复验：关闭2项，保留1项”两节（保持原文）。本轮先读取固定 SHA 的云端运行 [35964565074](https://github.com/Leon1ca/customs-clearance-console/actions/runs/35964565074) 结果：核心/构建/UI 契约/字体/导出/快照/打包/ZIP/根启动器 smoke 原始 outcome 全 `success`，但 `browser` 原始 outcome 仍为 `failure`（`continue-on-error` 掩盖，门禁因此红）；浏览器 27/28 中唯一真实失败是 `cross-site-oopif-frame` 的“底部标记未入图（独立进程内容被截断）”。本轮据实修三项。
+基线 `5a5f9baf466bf7549aac319318bf2fbb921c828e`。独立报告见 `CI-TRIAGE.md` 的“5a5f9ba 小范围源码复核”和“07851ef 真实屏幕三项定点复验：关闭2项，保留1项”两节（保持原文）。本轮先读取固定 SHA 的云端运行 [35964565074](https://github.com/Leon1ca/customs-clearance-console/actions/runs/35964565074) 结果：核心/构建/UI 契约/字体/导出/快照/打包/ZIP/根启动器 smoke 原始 outcome 全 `success`，但 `browser` 原始 outcome 仍为 `failure`（`continue-on-error` 掩盖，门禁因此红）；浏览器 26/27 中唯一真实失败是 `cross-site-oopif-frame` 的“底部标记未入图（独立进程内容被截断）”。本轮据实修三项。
 
 ### P1 · 子 CDP session 根 frame 导航不得覆盖顶层身份
 
@@ -259,5 +259,33 @@
 
 | 运行 | 提交 | 结论 |
 |---|---|---|
-| [35964565074](https://github.com/Leon1ca/customs-clearance-console/actions/runs/35964565074) | `5a5f9ba` | 门禁 `browser=failure`：除浏览器外所有必需步骤原始 outcome `success`；浏览器 27/28，唯一失败 `cross-site-oopif-frame` 截断，已在本里程碑修复 |
+| [35964565074](https://github.com/Leon1ca/customs-clearance-console/actions/runs/35964565074) | `5a5f9ba` | 门禁 `browser=failure`：除浏览器外所有必需步骤原始 outcome `success`；浏览器 26/27，唯一失败 `cross-site-oopif-frame` 截断，已在本里程碑修复 |
 | 本轮 | 见最终报告 | P1/P2 + OOPIF 展开 + 子 session 导航回归，待同一最终 SHA 云端全绿验证 |
+
+## 里程碑 M13 · 视口放大的三个独立复核缺口定点修复
+
+基线 `82d0d81`/`13c1641`。独立复核原文见 `CI-TRIAGE.md` 的“82d0d81 新视口路径定点复核”一节（保持原文，不改一字）。先读取固定 SHA 的云端运行 [35967517077](https://github.com/Leon1ca/customs-clearance-console/actions/runs/35967517077)（`13c1641`）：门禁 `success`，核心 `success`，构建/原生 UI/浏览器 E2E/导出/打包 `success`；浏览器 28/28。实际 PNG 核对（`/tmp` 下载的 `ui-v2-validation-evidence`）：`capture-oopif-frame.png`、`child-session-navigation/310120260000000025.png` 均为 1256×1854，顶部蓝标 `#0088CC`、内部滚动尾标 `#CC00CC`、结果行深色文字、底部紫标 `#7700AA` 齐备，上一轮白块已被真实视口放大消除。故本里程碑只修独立复核指出的路径/断言缺口，不重开已闭环的产品行为。
+
+### P1 · 已包住内容但仍高于物理视口的 OOPIF 也必须触发真实视口绘制
+
+- 原实现只在 owner 需要 `GrowFrameFunction`、`expanded.Add(frameId)` 之后才登记 OOPIF；`beforeVisible >= frameContent - 2 && beforeMax >= frameContent - 2` 的已展开分支直接 `continue`，`expandedOopif` 为空，主捕获跳过视口放大，复用已证明空白的 `captureBeyondViewport` 路径。
+- 修复：`ExpandFramesAsync` 以 `List<OopifPaintRange>` 记录**所有参与捕获的已授权子 session frame**（frameId 及其 owner 盒在页面坐标的右/下界）；已展开分支在 `continue` 前也登记，增长分支用后置几何登记。视口放大条件改为“任一参与捕获的 OOPIF 绘制范围超出当前真实 viewport，或裁剪本身超出”，不再绑定“是否改过 owner”。
+
+### P1 · 有 OOPIF 时真实 viewport 读取失败必须拒绝或可靠重读
+
+- 原实现把 `window.innerWidth/innerHeight` 读取异常仅记日志、尺寸置 0，`enlargedViewport=false` 后照常截图并 `saved`，等于把必要前置证据缺失当成“无需修复”。
+- 修复：新增 `TryReadViewportAsync`，最多重读 3 次（瞬时 CDP/脚本异常与非正数均重试）；当 `capturedOopif.Count > 0` 且仍读不到正尺寸时返回 `error`、不保存，避免恢复为白块假成功。`finally` 的 `Emulation.clearDeviceMetricsOverride` 与 DPR（`deviceScaleFactor`）恢复保持不变。新增 `FailNextViewportReadsForTest` 测试注入钩子，仅 E2E 使用。
+
+### 测试缺口 · 子 session 导航补内部尾标/结果/紫标与视口恢复断言
+
+- 新增 `AssertOopifFrameComplete`：统一要求顶部蓝标、内部滚动洋红尾标、两标之间的查询结果深色文字行、底部紫标齐备；`cross-site-oopif-frame` 由原来的“顶部 + 单列紫标”升级为该完整断言（只增不减）。
+- `oopif-child-session-navigation` 不再只验证 `saved`/文件存在，改用同一完整断言；三处 OOPIF 场景均新增 `AssertViewportRestored`（前后读取 `innerWidth/innerHeight/devicePixelRatio`，两者都必须是有效证据再严格比较），以运行期证据核对临时视口已复原，而非只凭源码存在 `finally`。
+- 新增两个定点回归：`cross-site-oopif-preexpanded-frame`（`frameh=1600`、无 `max-height`，owner 已包住内容从而走 `continue` 分支，仍必须真实视口完整绘制）与 `oopif-viewport-read-failure`（注入 3 次读取失败断言拒绝且无 PNG，注入结束后同一会话恢复并完整截图）。浏览器场景 28 → 30。
+- 未删除或弱化身份/授权/`prepare` 失败/首尾/接缝/样式恢复等任何既有断言；未泛化重构。
+
+### 云端运行记录（M13）
+
+| 运行 | 提交 | 结论 |
+|---|---|---|
+| [35967517077](https://github.com/Leon1ca/customs-clearance-console/actions/runs/35967517077) | `13c1641` | 门禁 `success`，核心与构建/原生 UI/浏览器 E2E/导出/打包 `success`；浏览器 28/28，两个 OOPIF PNG 首尾与内部尾标齐备 |
+| 本轮 | 见最终报告 | 上述两处 P1 与测试缺口修复，待同一最终 SHA 云端全绿验证 |

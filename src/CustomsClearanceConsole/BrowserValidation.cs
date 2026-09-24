@@ -55,6 +55,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
     private int _debugPort;
     private int _captureGate;
     private int _navigationGeneration;
+    private int _viewportReadFailures;
     private string? _shellScriptIdentifier;
     private string _mainFrameId = "";
     private string _currentUrl = "";
@@ -742,7 +743,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
         Directory.CreateDirectory(_targetFolder);
         var preparedTargets = new List<EvalTarget>();
         var expandedFrames = new List<string>();
-        var expandedOopif = new List<string>();
+        var capturedOopif = new List<OopifPaintRange>();
         try
         {
             try
@@ -758,7 +759,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
             // Cross-origin frames cannot be resized from page JS. The CDP frame owner is
             // grown to the frame document height so the complete frame content is painted;
             // a frame that cannot be expanded rejects the capture instead of truncating it.
-            var failedFrames = await ExpandFramesAsync(expandedFrames, expandedOopif, token);
+            var failedFrames = await ExpandFramesAsync(expandedFrames, capturedOopif, token);
             if (failedFrames.Count > 0)
                 return new BrowserCaptureResult(SessionId, DeclarationNo, "error", null,
                     $"存在无法完整捕获的网页框架（{string.Join("、", failedFrames)}），未保存截图。");
@@ -773,25 +774,32 @@ internal sealed class BrowserValidation : IAsyncDisposable
             if ((long)width * height > _maxPixels || width > 16_384 || height > 65_535)
                 return new BrowserCaptureResult(SessionId, DeclarationNo, "too-long", null, "页面超过 6000 万像素，未保存截图；请使用浏览器分段保存。");
 
-            // captureBeyondViewport does not re-render an out-of-process iframe larger than
-            // the real viewport: an expanded OOPIF is painted only up to the old viewport and
-            // the rest is captured blank. Enlarge the real viewport to the clip size for the
-            // capture and restore it afterwards. Same-process frames already render fully, so
-            // this only runs when an attached child-session frame was actually grown.
+            // captureBeyondViewport does not reliably re-render an out-of-process iframe whose
+            // painted box extends past the real viewport: the region below the viewport is
+            // captured blank. Every authorized attached child-session frame that participates in
+            // the capture is recorded above with its painted extent, whether or not this run had
+            // to grow its owner; the real viewport is enlarged whenever the clip or any such
+            // frame exceeds the current viewport. Reading the real viewport is therefore a
+            // required prerequisite here, not an optional optimization: when a child-session
+            // frame participates and the viewport cannot be read reliably, the capture is
+            // rejected instead of falling back to the known-blank path. The override, including
+            // the original device pixel ratio, is cleared in the finally below.
+            var viewport = capturedOopif.Count > 0 ? await TryReadViewportAsync(token) : null;
+            if (capturedOopif.Count > 0 && viewport is null)
+                return new BrowserCaptureResult(SessionId, DeclarationNo, "error", null,
+                    "无法读取浏览器实际视口尺寸，为避免保存空白跨进程框架截图，已拒绝本次截图。");
             var viewportWidth = 0;
             var viewportHeight = 0;
             var viewportScale = 1.0;
-            try
+            if (viewport is { } readViewport)
             {
-                using var viewportDoc = JsonDocument.Parse(await EvaluateContextAsync(
-                    "JSON.stringify({w:window.innerWidth||0,h:window.innerHeight||0,dpr:window.devicePixelRatio||1})", null, token, awaitPromise: false));
-                viewportWidth = viewportDoc.RootElement.GetProperty("w").GetInt32();
-                viewportHeight = viewportDoc.RootElement.GetProperty("h").GetInt32();
-                viewportScale = viewportDoc.RootElement.TryGetProperty("dpr", out var dpr) && dpr.GetDouble() > 0 ? dpr.GetDouble() : 1;
+                viewportWidth = readViewport.Width;
+                viewportHeight = readViewport.Height;
+                viewportScale = readViewport.Scale;
             }
-            catch (Exception ex) { AppLog.Write($"读取视口尺寸失败：{ex.Message}"); }
-            var enlargedViewport = expandedOopif.Count > 0 && viewportWidth > 0 && viewportHeight > 0
-                && (width > viewportWidth || height > viewportHeight);
+            var enlargedViewport = viewport is not null
+                && (width > viewportWidth || height > viewportHeight
+                    || capturedOopif.Any(frame => frame.Bottom > viewportHeight || frame.Right > viewportWidth));
             try
             {
                 if (enlargedViewport)
@@ -868,6 +876,44 @@ internal sealed class BrowserValidation : IAsyncDisposable
             await RestoreFramesAsync(expandedFrames, restore.Token);
             await RestoreContextsAsync(BrowserScript("capture-restore"), preparedTargets, restore.Token);
         }
+    }
+
+    /// <summary>
+    /// Reads the real CSS viewport and device pixel ratio the capture must enlarge to paint an
+    /// out-of-process frame. Transient CDP/script failures and non-positive readings are retried
+    /// because an unreadable viewport must never be mistaken for "no enlargement needed" and
+    /// fall back to the blank capture path; the caller rejects when this still returns null.
+    /// </summary>
+    private async Task<(int Width, int Height, double Scale)?> TryReadViewportAsync(CancellationToken token)
+    {
+        for (var attempt = 1; attempt <= 3; attempt++)
+        {
+            try
+            {
+                if (Volatile.Read(ref _viewportReadFailures) > 0)
+                {
+                    Interlocked.Decrement(ref _viewportReadFailures);
+                    AppLog.Write($"注入视口读取失败（第 {attempt}/3 次）。");
+                }
+                else
+                {
+                    using var document = JsonDocument.Parse(await EvaluateContextAsync(
+                        "JSON.stringify({w:window.innerWidth||0,h:window.innerHeight||0,dpr:window.devicePixelRatio||1})",
+                        null, token, awaitPromise: false));
+                    var width = document.RootElement.GetProperty("w").GetInt32();
+                    var height = document.RootElement.GetProperty("h").GetInt32();
+                    var scale = document.RootElement.TryGetProperty("dpr", out var dpr) && dpr.GetDouble() > 0 ? dpr.GetDouble() : 1;
+                    if (width > 0 && height > 0) return (width, height, scale);
+                    AppLog.Write($"读取视口尺寸无效（第 {attempt}/3 次）：w={width},h={height}。");
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                AppLog.Write($"读取视口尺寸失败（第 {attempt}/3 次）：{ex.Message}");
+            }
+            if (attempt < 3) await Task.Delay(150, token);
+        }
+        return null;
     }
 
     /// <summary>
@@ -1053,7 +1099,8 @@ internal sealed class BrowserValidation : IAsyncDisposable
     private static readonly string ReadFrameGeometryFunction =
         "function(){ if(!this||this.tagName!=='IFRAME') return JSON.stringify({ok:false,reason:'not-iframe'});" +
         " var r=this.getBoundingClientRect(); var mh=getComputedStyle(this).maxHeight||'';" +
-        " return JSON.stringify({ok:true,client:this.clientHeight||0,rect:Math.round(r.height),maxHeight:mh}); }";
+        " return JSON.stringify({ok:true,client:this.clientHeight||0,rect:Math.round(r.height),maxHeight:mh," +
+        " bottom:Math.round(r.bottom+(window.scrollY||0)),right:Math.round(r.right+(window.scrollX||0))}); }";
 
     private static readonly string GrowFrameFunction =
         "function(h){ if(!this||this.tagName!=='IFRAME') return '0';" +
@@ -1068,16 +1115,20 @@ internal sealed class BrowserValidation : IAsyncDisposable
         " if(this.__cccPrevMaxHeight!==undefined){ if(this.__cccPrevMaxHeight) this.style.setProperty('max-height', this.__cccPrevMaxHeight, this.__cccPrevMaxHeightPriority||''); else this.style.removeProperty('max-height'); delete this.__cccPrevMaxHeight; delete this.__cccPrevMaxHeightPriority; }" +
         " return 'ok'; }";
 
-    private static bool TryReadFrameGeometry(string json, out int visibleHeight, out double maxHeight)
+    private static bool TryReadFrameGeometry(string json, out int visibleHeight, out double maxHeight, out int bottom, out int right)
     {
         visibleHeight = 0;
         maxHeight = double.PositiveInfinity;
+        bottom = 0;
+        right = 0;
         try
         {
             using var document = JsonDocument.Parse(json);
             var root = document.RootElement;
             if (!root.TryGetProperty("ok", out var ok) || !ok.GetBoolean()) return false;
             visibleHeight = root.TryGetProperty("client", out var client) ? client.GetInt32() : 0;
+            bottom = root.TryGetProperty("bottom", out var bottomElement) ? bottomElement.GetInt32() : 0;
+            right = root.TryGetProperty("right", out var rightElement) ? rightElement.GetInt32() : 0;
             if (root.TryGetProperty("maxHeight", out var max))
             {
                 var text = max.GetString() ?? "";
@@ -1090,13 +1141,22 @@ internal sealed class BrowserValidation : IAsyncDisposable
     }
 
     /// <summary>
+    /// An attached child-session (out-of-process) frame that participates in the capture, with
+    /// its owner box's page-space bottom/right. It is recorded whether or not the owner had to
+    /// be grown, because the real viewport must be enlarged whenever such a frame is painted
+    /// beyond it; tying that decision to "did we change the owner" misses a frame that was
+    /// already tall enough for its content but still taller than the physical viewport.
+    /// </summary>
+    private sealed record OopifPaintRange(string FrameId, int Bottom, int Right);
+
+    /// <summary>
     /// Grows every authorized sub-frame's owner element to the frame document height using
     /// CDP (so cross-origin and OOPIF frames are included). It is not enough to write a
     /// height: the element's real rendered height, its computed max-height and the frame's
     /// own viewport are read back after a layout tick. A frame that cannot be fully exposed
     /// is reported so the capture fails instead of truncating (R5-3).
     /// </summary>
-    private async Task<List<string>> ExpandFramesAsync(List<string> expanded, List<string> expandedOopif, CancellationToken token)
+    private async Task<List<string>> ExpandFramesAsync(List<string> expanded, List<OopifPaintRange> capturedOopif, CancellationToken token)
     {
         var failed = new List<string>();
         if (_cdp is null) return failed;
@@ -1163,21 +1223,30 @@ internal sealed class BrowserValidation : IAsyncDisposable
                 if (string.IsNullOrEmpty(objectId)) { AppLog.Write($"扩展框架 {frameId} 失败：找不到 owner 元素（session={session ?? "-"}）。"); failed.Add(frameId); continue; }
                 var ownerSession = OwnerSessionForFrame(frameId);
                 var beforeJson = await CallFunctionOnAsync(objectId, ReadFrameGeometryFunction, null, token, ownerSession);
-                if (!TryReadFrameGeometry(beforeJson, out var beforeVisible, out var beforeMax)) { AppLog.Write($"扩展框架 {frameId} 失败：前置几何读取失败（{beforeJson}）。"); failed.Add(frameId); continue; }
-                AppLog.Write($"扩展框架 {frameId}：内容高 {frameContent}，前置可视 {beforeVisible}/{beforeMax}。");
-                // Already fully exposed: nothing to change and nothing to restore.
-                if (beforeVisible >= frameContent - 2 && beforeMax >= frameContent - 2) continue;
+                if (!TryReadFrameGeometry(beforeJson, out var beforeVisible, out var beforeMax, out var beforeBottom, out var beforeRight)) { AppLog.Write($"扩展框架 {frameId} 失败：前置几何读取失败（{beforeJson}）。"); failed.Add(frameId); continue; }
+                AppLog.Write($"扩展框架 {frameId}：内容高 {frameContent}，前置可视 {beforeVisible}/{beforeMax}，范围右/下 {beforeRight}/{beforeBottom}。");
+                // Already fully exposed: nothing to change and nothing to restore. An attached
+                // child-session frame still participates in the capture, though, and if its box
+                // extends past the real viewport the capture must enlarge the viewport even
+                // without any owner mutation (otherwise the OOPIF below the fold stays blank).
+                if (beforeVisible >= frameContent - 2 && beforeMax >= frameContent - 2)
+                {
+                    if (session is not null)
+                        capturedOopif.Add(new OopifPaintRange(frameId, beforeBottom, beforeRight));
+                    continue;
+                }
 
                 // Register before mutation so restore runs even if the response is lost.
                 expanded.Add(frameId);
-                // A grown attached child-session frame is an OOPIF; captureBeyondViewport does
-                // not repaint those beyond the real viewport, so the caller enlarges it first.
-                if (session is not null) expandedOopif.Add(frameId);
                 await CallFunctionOnAsync(objectId, GrowFrameFunction, new { value = frameContent }, token, ownerSession);
                 await Task.Delay(120, token);
 
                 var afterJson = await CallFunctionOnAsync(objectId, ReadFrameGeometryFunction, null, token, ownerSession);
-                if (!TryReadFrameGeometry(afterJson, out var afterVisible, out var afterMax)) { AppLog.Write($"扩展框架 {frameId} 失败：后置几何读取失败（{afterJson}）。"); failed.Add(frameId); continue; }
+                if (!TryReadFrameGeometry(afterJson, out var afterVisible, out var afterMax, out var afterBottom, out var afterRight)) { AppLog.Write($"扩展框架 {frameId} 失败：后置几何读取失败（{afterJson}）。"); failed.Add(frameId); continue; }
+                // A grown attached child-session frame is an OOPIF; captureBeyondViewport does
+                // not repaint those beyond the real viewport, so the caller enlarges it first.
+                if (session is not null)
+                    capturedOopif.Add(new OopifPaintRange(frameId, afterBottom, afterRight));
                 var viewportJson = await EvaluateContextAsync(
                     "JSON.stringify({content:Math.max(document.documentElement?document.documentElement.scrollHeight:0,document.body?document.body.scrollHeight:0),viewport:window.innerHeight||0})",
                     contextId, session, token, awaitPromise: false);
@@ -1471,6 +1540,13 @@ internal sealed class BrowserValidation : IAsyncDisposable
 
     /// <summary>Aborts the control socket so the reconnect production path can be exercised.</summary>
     public void SimulateConnectionDropForTest() => _cdp?.AbortForTest();
+
+    /// <summary>
+    /// E2E-only fault injection: makes the next <paramref name="count"/> viewport reads fail so
+    /// the required reject-on-unreadable behavior for an OOPIF capture is exercised without a
+    /// real browser fault. Normal runs never set this.
+    /// </summary>
+    public void FailNextViewportReadsForTest(int count) => _viewportReadFailures = Math.Max(0, count);
 
     public Task<string> CurrentUrlAsync(CancellationToken token) =>
         EvaluateContextAsync("location.href", null, token, awaitPromise: false);
