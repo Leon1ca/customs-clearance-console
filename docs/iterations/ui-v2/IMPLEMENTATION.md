@@ -289,3 +289,28 @@
 |---|---|---|
 | [35967517077](https://github.com/Leon1ca/customs-clearance-console/actions/runs/35967517077) | `13c1641` | 门禁 `success`，核心与构建/原生 UI/浏览器 E2E/导出/打包 `success`；浏览器 28/28，两个 OOPIF PNG 首尾与内部尾标齐备 |
 | [35968581532](https://github.com/Leon1ca/customs-clearance-console/actions/runs/35968581532) | `a2ddbb2` | 门禁 `success`；`core`、`build`、`uicontract`、`envreport`（DPI/字体）、`export`、`snapshots`、`browser`、`package`、`zipverify`、`smoke`（根启动器）全部原始 outcome `success`；浏览器 **30/30**。产物：`ui-v2-validation-evidence`（3,005,612 B，含 `capture-oopif-frame.png` 1256×1854、`capture-oopif-preexpanded.png` 1256×2000、`child-session-navigation/310120260000000025.png` 1256×1854、`oopif-viewport-read-failure/310120260000000029.png` 1256×1854，四图顶部蓝标/内部洋红尾标/结果行/底部紫标齐备）、`ui-v2-portable-package`（219,468,714 B）、`core-regression-log`。日志确认预展开场景走“前置可视 1600/∞”的免增长分支、注入 3 次视口读取失败后拒绝并在同一会话恢复保存 |
+
+## 里程碑 M14 · 完成事件与截图锁释放顺序竞态定点修复
+
+基线 `57134d0`（产品码同 `a2ddbb2`）。独立复核原文见 `CI-TRIAGE.md` 的“重复运行35969514354：完成通知与gate释放存在明确竞态”一节（保持原文，不改一字）。独立路由发现：`CaptureAndReportAsync` 先 `ReportAsync` 启用网页按钮、再发布 `CaptureCompleted`，而 `_captureGate` 要到外层 `Task.Run` 的 `finally` 才归零；快速重试的真实点击若在此窗口把绑定送达，会被忙分支直接 `return`，网页已置 capturing/disabled 且不再有完成事件，表现为 120 秒无生产结论（`oopif-viewport-read-failure` 重复运行 29/30）。
+
+### 生产修复（单一 owner、释放先于发布）
+
+- `CaptureAndReportAsync` 在捕获与页面恢复全部结束后的 `finally` 中、且仅在此时，由该请求释放 `_captureGate`；释放发生在 `ReportAsync` 发布可重试网页状态与 `CaptureCompleted` 之前。
+- 删除旧的 `Task.Run` 外层 `finally` 二次释放；忙分支只记录日志并返回，绝不触碰 gate，避免把下一已接受请求的锁清零。
+- `finally` 覆盖失败、取消与结论/上报异常，锁不会永久占用；同一会话并发防重不变（`CompareExchange` 仍只允许一个在途捕获）。
+- 新增日志区分路径：接受请求、忙拒绝、锁释放、结论状态。
+
+### 测试补强（保留真实鼠标点击）
+
+- 回退“用 `requestCapture()` 内部 API 绕过真实点击”的临时规避；恢复并保留真实 CDP 鼠标点击的第二次重试。
+- 新增确定性状态契约 `CaptureLockHeldForTest` 与 `ClickAndAwaitContractAsync`：在完成事件处理器内同步读取 gate，断言完成事件发布时锁已释放（旧顺序下该断言必然失败），可作为竞态回归证据。
+- `oopif-viewport-read-failure` 在注入拒绝、无 PNG、按钮可重试断言之后，用真实点击恢复并追加 2 次“完成即重试”的快速循环，且断言最终恰好 3 张完整首尾截图；“无 PNG→恢复→下一次完整截图”与 OOPIF 首尾像素断言全部保留。
+- `repeat-capture-visible-retry` 的第二次真实点击同样加锁契约断言；`ClickAndAwaitAsync` 在结束时解除订阅，避免连续重试累积旧处理器。
+- 未增加等待、未放宽任何身份/授权/像素/恢复断言、未泛化新架构。
+
+### 云端运行记录（M14）
+
+| 运行 | 提交 | 结论 |
+|---|---|---|
+| 本轮 | 见最终报告 | 待同一 SHA 云端 core/build/native/font/export/browser/package/ZIP/root launcher smoke 全绿验证 |

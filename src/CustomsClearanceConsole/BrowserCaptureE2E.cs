@@ -108,11 +108,44 @@ internal static class BrowserCaptureE2E
     private static async Task<BrowserCaptureResult> ClickAndAwaitAsync(BrowserValidation session, TimeSpan timeout)
     {
         var completion = new TaskCompletionSource<BrowserCaptureResult>(TaskCreationOptions.RunContinuationsAsynchronously);
-        session.CaptureCompleted += (_, value) => completion.TrySetResult(value);
-        if (!await session.ClickCaptureButtonAsync(CancellationToken.None))
-            return Harness(session, "未找到可见的卡片按钮，未执行真实点击。");
-        try { return await completion.Task.WaitAsync(timeout); }
-        catch (TimeoutException) { return Harness(session, "测试侧等待超时，未取得生产结论。"); }
+        EventHandler<BrowserCaptureResult> handler = (_, value) => completion.TrySetResult(value);
+        session.CaptureCompleted += handler;
+        try
+        {
+            if (!await session.ClickCaptureButtonAsync(CancellationToken.None))
+                return Harness(session, "未找到可见的卡片按钮，未执行真实点击。");
+            try { return await completion.Task.WaitAsync(timeout); }
+            catch (TimeoutException) { return Harness(session, "测试侧等待超时，未取得生产结论。"); }
+        }
+        finally { session.CaptureCompleted -= handler; }
+    }
+
+    /// <summary>
+    /// Real-mouse click that also asserts the deterministic retry ordering contract: the
+    /// single-owner capture gate must already be released at the moment the production
+    /// completion event is published. The event handler runs synchronously on the capture
+    /// thread, so a gate released only in an outer finally (the fixed race) is observed as
+    /// held and the immediate retry would be swallowed while the card stays capturing.
+    /// </summary>
+    private static async Task<(BrowserCaptureResult Result, bool GateHeldAtCompletion)> ClickAndAwaitContractAsync(
+        BrowserValidation session, TimeSpan timeout)
+    {
+        var completion = new TaskCompletionSource<BrowserCaptureResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var gateHeld = false;
+        EventHandler<BrowserCaptureResult> handler = (_, value) =>
+        {
+            if (session.CaptureLockHeldForTest) gateHeld = true;
+            completion.TrySetResult(value);
+        };
+        session.CaptureCompleted += handler;
+        try
+        {
+            if (!await session.ClickCaptureButtonAsync(CancellationToken.None))
+                return (Harness(session, "未找到可见的卡片按钮，未执行真实点击。"), gateHeld);
+            try { return (await completion.Task.WaitAsync(timeout), gateHeld); }
+            catch (TimeoutException) { return (Harness(session, "测试侧等待超时，未取得生产结论。"), gateHeld); }
+        }
+        finally { session.CaptureCompleted -= handler; }
     }
 
     /// <summary>
@@ -529,7 +562,8 @@ internal static class BrowserCaptureE2E
         var first = await DriveAsync(session, null, waitForSettled: true);
         if (first.State != "saved") details.Add($"首次截图失败：{first.Message}");
         if (!await session.CanCaptureAsync(CancellationToken.None)) details.Add("首次截图后按钮不可用，无法重新截图。");
-        var second = await ClickAndAwaitAsync(session, TimeSpan.FromSeconds(120));
+        var (second, gateHeldAtCompletion) = await ClickAndAwaitContractAsync(session, TimeSpan.FromSeconds(120));
+        if (gateHeldAtCompletion) details.Add("重截完成事件发布时截图锁仍被持有，后续快速重试可能被吞掉。");
         if (second.State != "saved") details.Add($"重新截图失败：{second.Message}");
         var files = Directory.EnumerateFiles(folder, "*.png").ToList();
         if (files.Count != 2) details.Add($"重新截图应生成 2 个唯一文件，实际 {files.Count}。");
@@ -932,16 +966,26 @@ internal static class BrowserCaptureE2E
         if (problem is not null) return new Scenario("oopif-viewport-read-failure", false, [problem]);
         // Three attempts are made per capture; fail all of them for the first click.
         session.FailNextViewportReadsForTest(3);
-        var refused = await ClickAndAwaitAsync(session, TimeSpan.FromSeconds(120));
+        // The refusal uses the real mouse path. Its completion event is also the deterministic
+        // ordering contract: the single-owner capture gate must already be free when the
+        // production completion is published, otherwise an immediate retry's binding can be
+        // delivered into the still-held gate and swallowed while the card stays capturing.
+        var (refused, gateHeldAtRefusal) = await ClickAndAwaitContractAsync(session, TimeSpan.FromSeconds(120));
+        if (gateHeldAtRefusal) details.Add("视口失败完成事件发布时截图锁仍被持有，快速重试可能被忙拒绝吞掉。");
         if (refused.State != "error") details.Add($"视口读取失败时未拒绝保存：{refused.State}：{refused.Message}");
         else if (!refused.Message.Contains("视口", StringComparison.Ordinal)) details.Add($"拒绝结论未说明视口读取失败：{refused.Message}");
         if (refused.FilePath is not null && File.Exists(refused.FilePath)) details.Add("视口读取失败时仍返回了截图文件。");
         if (Directory.EnumerateFiles(folder, "*.png").Any()) details.Add("视口读取失败时目录内仍出现 PNG。");
-        // Injection exhausted: the same session must recover and save a complete capture.
+        // Injection exhausted: the same session must recover through the real mouse path and
+        // save a complete capture. A small immediate-retry loop then re-clicks as soon as each
+        // capture completes, which is exactly the ordering the fix must keep safe; a retry that
+        // is busy-rejected while the card is already capturing would leave it stuck with no
+        // further completion event and fail the wait below.
         if (!await session.CanCaptureAsync(CancellationToken.None)) details.Add("视口读取失败被拒后卡片按钮不可再次点击。");
         else
         {
-            var recovered = await ClickAndAwaitAsync(session, TimeSpan.FromSeconds(120));
+            var (recovered, gateHeldAtRecovery) = await ClickAndAwaitContractAsync(session, TimeSpan.FromSeconds(120));
+            if (gateHeldAtRecovery) details.Add("注入结束恢复完成事件发布时截图锁仍被持有。");
             if (recovered.State != "saved") details.Add($"注入结束后未恢复保存：{recovered.State}：{recovered.Message}");
             else if (recovered.FilePath is null || !File.Exists(recovered.FilePath)) details.Add("注入结束后未生成截图。");
             else
@@ -953,9 +997,19 @@ internal static class BrowserCaptureE2E
                     catch (Exception ex) { details.Add("视口失败恢复 OOPIF 截断诊断失败：" + ex.Message); }
                 }
             }
+            for (var retry = 1; retry <= 2 && details.Count == 0; retry++)
+            {
+                if (!await session.CanCaptureAsync(CancellationToken.None)) { details.Add($"快速重试第 {retry} 次前卡片按钮不可点击。"); break; }
+                var (again, gateHeldAtRetry) = await ClickAndAwaitContractAsync(session, TimeSpan.FromSeconds(120));
+                if (gateHeldAtRetry) { details.Add($"快速重试第 {retry} 次完成事件发布时截图锁仍被持有。"); break; }
+                if (again.State != "saved") { details.Add($"快速重试第 {retry} 次未保存：{again.State}：{again.Message}"); break; }
+                if (again.FilePath is null || !File.Exists(again.FilePath)) { details.Add($"快速重试第 {retry} 次未生成截图。"); break; }
+            }
         }
+        var produced = Directory.EnumerateFiles(folder, "*.png").Count();
+        if (details.Count == 0 && produced != 3) details.Add($"注入拒绝后应恰好生成 3 张截图（恢复 + 2 次快速重试），实际 {produced}。");
         return new Scenario("oopif-viewport-read-failure", details.Count == 0,
-            details.Count == 0 ? ["OOPIF 参与时视口读取失败会拒绝保存，注入结束后同一会话恢复并完整截图"] : details);
+            details.Count == 0 ? ["OOPIF 参与时视口读取失败会拒绝保存，注入结束后同一会话经真实点击恢复并可立即重试完整截图"] : details);
     }
 
     /// <summary>

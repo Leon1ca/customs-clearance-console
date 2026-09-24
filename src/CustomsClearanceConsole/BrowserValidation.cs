@@ -643,11 +643,20 @@ internal sealed class BrowserValidation : IAsyncDisposable
             }
             if (name == "cccRequestCapture")
             {
-                if (Interlocked.CompareExchange(ref _captureGate, 1, 0) != 0) return;
+                if (Interlocked.CompareExchange(ref _captureGate, 1, 0) != 0)
+                {
+                    // Another capture already owns the single-owner gate. Reject without
+                    // touching the gate: the running capture publishes the next retryable
+                    // page state, so a card that switched itself to capturing does not need a
+                    // second completion event to recover.
+                    AppLog.Write($"忙拒绝网页截图请求：已有截图正在进行（context={contextId}）。");
+                    return;
+                }
+                AppLog.Write($"接受网页截图请求并持有截图锁（context={contextId}）。");
                 _ = Task.Run(async () =>
                 {
                     try { await CaptureAndReportAsync(); }
-                    finally { Interlocked.Exchange(ref _captureGate, 0); }
+                    catch (Exception ex) { AppLog.Write($"截图任务异常：{ex.Message}"); }
                 });
             }
             else if (name == "cccOpenFolder")
@@ -677,17 +686,33 @@ internal sealed class BrowserValidation : IAsyncDisposable
         BrowserCaptureResult result;
         try
         {
-            result = await CaptureWithRetryAsync(_lifetime.Token);
+            try
+            {
+                result = await CaptureWithRetryAsync(_lifetime.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                result = new BrowserCaptureResult(SessionId, DeclarationNo, "cancelled", null, "截图已取消。");
+            }
+            catch (Exception ex)
+            {
+                AppLog.Write(ex);
+                result = new BrowserCaptureResult(SessionId, DeclarationNo, "error", null, $"截图未保存：{ex.Message}");
+            }
         }
-        catch (OperationCanceledException)
+        finally
         {
-            result = new BrowserCaptureResult(SessionId, DeclarationNo, "cancelled", null, "截图已取消。");
+            // The capture and every page restore are finished, so this request no longer owns
+            // the capture resource. Release the single-owner gate here, before the retryable
+            // page state and the completion event are published, so a fast retry whose real
+            // click lands right after the button is re-enabled can never be delivered into a
+            // still-held gate and swallowed. This is the only release: the busy path never
+            // touches the gate, and the finally keeps the gate from being held forever on a
+            // failure, cancellation or reporting exception.
+            Interlocked.Exchange(ref _captureGate, 0);
+            AppLog.Write("网页截图锁已释放。");
         }
-        catch (Exception ex)
-        {
-            AppLog.Write(ex);
-            result = new BrowserCaptureResult(SessionId, DeclarationNo, "error", null, $"截图未保存：{ex.Message}");
-        }
+        AppLog.Write($"网页截图结论：{result.State}。");
         await ReportAsync(result);
         CaptureCompleted?.Invoke(this, result);
     }
@@ -1553,6 +1578,13 @@ internal sealed class BrowserValidation : IAsyncDisposable
 
     public Task<bool> CanCaptureAsync(CancellationToken token) =>
         EvaluateBooleanAsync("!!(window.__cccWidget && window.__cccWidget.canCapture())", token);
+
+    /// <summary>
+    /// E2E contract hook: whether the single-owner capture gate is currently held. The
+    /// production completion event must never be observed while this is true, so a fast retry
+    /// can always run once the page shows a retryable button.
+    /// </summary>
+    public bool CaptureLockHeldForTest => Volatile.Read(ref _captureGate) != 0;
 
     public Task<int> CountWidgetHostsAsync(CancellationToken token) =>
         EvaluateIntAsync("document.querySelectorAll('#ccc-widget-host').length", token);
