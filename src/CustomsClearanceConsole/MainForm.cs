@@ -1033,6 +1033,7 @@ internal sealed partial class MainForm : Form
         _browserSessions[session.SessionId] = session;
         session.CaptureCompleted += OnBrowserCaptureCompleted;
         session.StatusChanged += OnBrowserStatusChanged;
+        session.Ended += OnBrowserSessionEnded;
         ShowToast($"正在打开核验页面：{record.DeclarationNo}");
         try
         {
@@ -1042,12 +1043,33 @@ internal sealed partial class MainForm : Form
         catch (Exception ex)
         {
             AppLog.Write(ex);
-            session.CaptureCompleted -= OnBrowserCaptureCompleted;
-            session.StatusChanged -= OnBrowserStatusChanged;
+            DetachBrowserSession(session);
             _browserSessions.Remove(session.SessionId);
             await session.DisposeAsync();
             MessageBox.Show($"无法启动核验浏览器：{ex.Message}\n\n请确认已安装 Microsoft Edge 或 Google Chrome。", "网页核验", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
+    }
+
+    private void DetachBrowserSession(BrowserValidation session)
+    {
+        session.CaptureCompleted -= OnBrowserCaptureCompleted;
+        session.StatusChanged -= OnBrowserStatusChanged;
+        session.Ended -= OnBrowserSessionEnded;
+    }
+
+    /// <summary>
+    /// The user closed the verification browser: release the session (control socket, process
+    /// handle and its throw-away profile) instead of keeping it until the batch changes.
+    /// </summary>
+    private void OnBrowserSessionEnded(object? sender, EventArgs e)
+    {
+        if (IsDisposed) return;
+        if (InvokeRequired) { BeginInvoke((Action)(() => OnBrowserSessionEnded(sender, e))); return; }
+        if (sender is not BrowserValidation session ||
+            !_browserSessions.TryGetValue(session.SessionId, out var active) || !ReferenceEquals(active, session)) return;
+        _browserSessions.Remove(session.SessionId);
+        DetachBrowserSession(session);
+        _ = session.DisposeAsync();
     }
 
     private void OnBrowserStatusChanged(object? sender, string message)
@@ -1100,8 +1122,7 @@ internal sealed partial class MainForm : Form
         if (_browserSessions.Count == 0) return;
         foreach (var session in _browserSessions.Values.ToList())
         {
-            session.CaptureCompleted -= OnBrowserCaptureCompleted;
-            session.StatusChanged -= OnBrowserStatusChanged;
+            DetachBrowserSession(session);
             _ = session.DisposeAsync();
         }
         _browserSessions.Clear();
@@ -1294,9 +1315,11 @@ internal sealed partial class MainForm : Form
     {
         base.OnResize(e);
         if (Width <= 0 || Height <= 0) return;
-        if (WindowState == FormWindowState.Maximized) { Region = null; return; }
+        if (WindowState == FormWindowState.Maximized) { var maximizedRegion = Region; Region = null; maximizedRegion?.Dispose(); return; }
         using var path = Theme.RoundedPath(new RectangleF(0, 0, Width, Height), 10);
+        var oldRegion = Region;
         Region = new Region(path);
+        oldRegion?.Dispose();
         ApplyResponsiveLayout();
         LayoutRecordState();
     }

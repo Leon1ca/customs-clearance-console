@@ -47,9 +47,38 @@ namespace CustomsLauncher
             }
         }
 
+        // Windows command-line quoting (CommandLineToArgvW rules). Backslashes are only special
+        // before a quote, so a folder argument ending in '\' (for example "D:\out\") must have its
+        // trailing backslashes doubled or it would escape the closing quote and swallow the next
+        // argument. Kept to C# 5 syntax because build-launcher.ps1 compiles with the .NET
+        // Framework csc.
         private static string Quote(string value)
         {
-            return "\"" + value.Replace("\"", "\\\"") + "\"";
+            var builder = new StringBuilder();
+            builder.Append('"');
+            var backslashes = 0;
+            foreach (var c in value)
+            {
+                if (c == '\\')
+                {
+                    backslashes++;
+                    continue;
+                }
+                if (c == '"')
+                {
+                    builder.Append('\\', backslashes * 2 + 1);
+                    builder.Append('"');
+                }
+                else
+                {
+                    builder.Append('\\', backslashes);
+                    builder.Append(c);
+                }
+                backslashes = 0;
+            }
+            builder.Append('\\', backslashes * 2);
+            builder.Append('"');
+            return builder.ToString();
         }
     }
 }

@@ -49,29 +49,54 @@ internal static class UiV2Icons
     private static readonly int[] Sizes = [16, 24, 32, 48];
     private static readonly HashSet<string> Missing = new(StringComparer.Ordinal);
 
+    // Decoded masters per stem/size. Icons are drawn from OnPaint and per grid cell, so reading
+    // and decoding the PNG from disk on every call made each repaint pay file I/O per visible row.
+    // A null entry records a missing/unreadable file so it is not probed again.
+    private static readonly Dictionary<string, Bitmap?> Decoded = new(StringComparer.Ordinal);
+
+    /// <summary>Returns a caller-owned copy (dispose it) of the icon closest to the DPI-scaled size.</summary>
     public static Bitmap? Load(string stem, int logicalSize, float dpi)
     {
         var target = (int)Math.Round(logicalSize * dpi / 96F, MidpointRounding.AwayFromZero);
         var ordered = Sizes.OrderBy(size => Math.Abs(size - target)).ToArray();
-        var root = Path.Combine(AppContext.BaseDirectory, "assets", "ui-v2", "icons", "png");
-        foreach (var size in ordered)
+        // GDI+ images are not safe to read from two threads at once, so the copy is made under
+        // the same lock that guards the cache.
+        lock (Decoded)
         {
-            var path = Path.Combine(root, $"{stem}-{size}.png");
-            if (!File.Exists(path)) continue;
-            try
+            foreach (var size in ordered)
             {
-                using var source = new Bitmap(path);
-                var copy = new Bitmap(source);
+                var master = Master(stem, size);
+                if (master is null) continue;
+                var copy = new Bitmap(master);
                 copy.SetResolution(dpi, dpi);
                 return copy;
+            }
+            if (Missing.Add(stem)) AppLog.Write($"缺少界面图标：{stem}");
+            return null;
+        }
+    }
+
+    private static Bitmap? Master(string stem, int size)
+    {
+        var key = $"{stem}|{size}";
+        if (Decoded.TryGetValue(key, out var cached)) return cached;
+        Bitmap? master = null;
+        var path = Path.Combine(AppContext.BaseDirectory, "assets", "ui-v2", "icons", "png", $"{stem}-{size}.png");
+        if (File.Exists(path))
+        {
+            try
+            {
+                // Copy so the master does not keep the PNG file open for the process lifetime.
+                using var source = new Bitmap(path);
+                master = new Bitmap(source);
             }
             catch (Exception ex)
             {
                 if (Missing.Add($"{path}|{ex.GetType().Name}")) AppLog.Write($"图标加载失败：{path} · {ex.Message}");
             }
         }
-        if (Missing.Add(stem)) AppLog.Write($"缺少界面图标：{stem}");
-        return null;
+        Decoded[key] = master;
+        return master;
     }
 
     public static Bitmap? Load(string stem, float dpi) => Load(stem, 16, dpi);

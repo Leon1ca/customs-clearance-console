@@ -130,7 +130,9 @@ internal sealed class ConfirmationDialog : Form
         base.OnResize(e);
         if (Width <= 0 || Height <= 0) return;
         using var path = Theme.RoundedPath(new RectangleF(0, 0, Width, Height), 12);
+        var oldRegion = Region;
         Region = new Region(path);
+        oldRegion?.Dispose();
     }
 
     protected override CreateParams CreateParams
@@ -397,7 +399,9 @@ internal sealed class CleanupDialog : Form
         base.OnResize(e);
         if (Width <= 0 || Height <= 0) return;
         using var path = Theme.RoundedPath(new RectangleF(0, 0, Width, Height), 10);
+        var oldRegion = Region;
         Region = new Region(path);
+        oldRegion?.Dispose();
     }
 
     protected override CreateParams CreateParams

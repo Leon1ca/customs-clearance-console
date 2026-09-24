@@ -52,7 +52,9 @@ internal sealed class CopyContextMenu : ToolStripDropDown
     {
         if (Width <= 0 || Height <= 0) return;
         using var path = Theme.RoundedPath(new RectangleF(0, 0, Width, Height), 8F);
+        var oldRegion = Region;
         Region = new Region(path);
+        oldRegion?.Dispose();
     }
 
     private sealed class CopyMenuItemControl : Control

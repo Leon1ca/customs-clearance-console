@@ -65,7 +65,9 @@ internal sealed class RoundedButton : Button
         base.OnResize(e);
         if (Width <= 0 || Height <= 0) return;
         using var path = Theme.RoundedPath(new RectangleF(0, 0, Width, Height), Radius);
+        var oldRegion = Region;
         Region = new Region(path);
+        oldRegion?.Dispose();
     }
 }
 
@@ -82,7 +84,9 @@ internal class RoundedPanel : Panel
         base.OnResize(eventArgs);
         if (Width <= 0 || Height <= 0) return;
         using var path = Theme.RoundedPath(new RectangleF(0, 0, Width, Height), Radius);
+        var oldRegion = Region;
         Region = new Region(path);
+        oldRegion?.Dispose();
     }
 
     protected override void OnPaint(PaintEventArgs eventArgs)

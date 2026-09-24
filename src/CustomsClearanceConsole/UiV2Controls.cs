@@ -327,7 +327,7 @@ internal sealed class MoneySummaryPanel : RoundedPanel
 
     private void DrawEmptyState(Graphics graphics, Func<int, int> S, int top)
     {
-        var stripePen = new Pen(UiTokens.Colors.EmptyStripe, S(1));
+        using var stripePen = new Pen(UiTokens.Colors.EmptyStripe, S(1));
         for (var y = top; y < Height - S(1); y += S(32))
             graphics.DrawLine(stripePen, 1, y, Width - 2, y);
         var icon = UiV2Icons.Load(Ui2.AmountEmpty, 24, DeviceDpi);
