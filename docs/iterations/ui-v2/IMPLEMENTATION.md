@@ -226,3 +226,37 @@
 |---|---|---|
 | [35963761182](https://github.com/Leon1ca/customs-clearance-console/actions/runs/35963761182) | `07851ef` | 门禁 `browser=failure`（`continue-on-error` 掩盖原始失败）：核心/构建/UI 契约/字体/导出/快照/打包/ZIP/根启动器 smoke 原始 outcome 全 `success`；浏览器 26/27，`cross-site-oopif-frame` 因 OOPIF URL 未登记而 `waiting|not-started`，已在本里程碑修复 |
 | 本轮 | 见下 | P2 证据校验 + OOPIF 授权修复，待同一最终 SHA 云端验证 |
+
+## 里程碑 M12 · 子 session 导航身份、序号表头真实 padding 与 OOPIF 展开定点修复
+
+基线 `5a5f9baf466bf7549aac319318bf2fbb921c828e`。独立报告见 `CI-TRIAGE.md` 的“5a5f9ba 小范围源码复核”和“07851ef 真实屏幕三项定点复验：关闭2项，保留1项”两节（保持原文）。本轮先读取固定 SHA 的云端运行 [35964565074](https://github.com/Leon1ca/customs-clearance-console/actions/runs/35964565074) 结果：核心/构建/UI 契约/字体/导出/快照/打包/ZIP/根启动器 smoke 原始 outcome 全 `success`，但 `browser` 原始 outcome 仍为 `failure`（`continue-on-error` 掩盖，门禁因此红）；浏览器 27/28 中唯一真实失败是 `cross-site-oopif-frame` 的“底部标记未入图（独立进程内容被截断）”。本轮据实修三项。
+
+### P1 · 子 CDP session 根 frame 导航不得覆盖顶层身份
+
+- `BrowserValidation.OnFrameNavigated` 之前只用 `parentId.Length == 0` 判定主 frame。子 target（OOPIF）自身根文档导航的 `Page.frameNavigated` 在子 session 上触发且通常无 `parentId`，会被误当整页主 frame。
+- 现读取 `SessionIdOf(message)`：只有 root session（无 `sessionId`）且无 `parentId` 才允许改写 `_mainFrameId`/`_currentUrl` 并递增顶层 `_navigationGeneration`；子 session 事件只更新该 frame 自己的 URL。
+- 子 session 事件缺少 `parentId` 时不再把 `_frameParents[frameId]` 写成空串，保留既有父关联；root 主 frame 无父属正常，不强制写入。
+- 严格的 `IsTargetUrl`/`IsTargetFrameUrl`/结果身份校验规则未放宽。
+
+### P2 · 序号表头 `#` 的真实裁剪根因与断言
+
+- 根因确认（对照 WinForms 源码）：`DataGridViewCellStyle.ApplyStyle` 对来源样式的 `Padding.Empty` 直接跳过，`DataGridViewColumnHeaderCell.GetInheritedStyle` 依次取 cell → `ColumnHeadersDefaultCellStyle` → `DefaultCellStyle`。因此旧代码把序号表头局部 `Padding` 设为空被忽略，仍继承公共/默认 8px，28px 列只剩极少绘制宽度而渲染成省略痕迹；旧断言只读局部 `Style` 因而假关闭。
+- 修复：把公共表头与默认单元格 `Padding` 设为 `Padding.Empty`，其他列的**表头**显式 `new Padding(8,0,8,0)`，**数据单元格**经各列 `DefaultCellStyle` 显式 `new Padding(8,0,8,0)`，序号列表头由此继承真正的 0 并居中绘制完整 `#`；未改其他视觉。
+- 断言改为读取真实 `HeaderCell.InheritedStyle`：要求 `Padding == Empty` 且居中，并按继承字体实测 `#` 宽度必须放得下（列宽 − padding − 2px×2 硬边距），不再用局部赋值冒充通过。
+
+### 真实 browser 残留 · OOPIF 展开遗漏
+
+- 运行证据显示 `cross-site-oopif-frame` 已能授权并保存，但截图恰为 200(top)+400(iframe)+200(bottom)=800px，OOPIF 内 `#7700AA` 底部标记缺失：`ExpandFramesAsync` 只枚举 root session 的 `Page.getFrameTree`，扁平 OOPIF 由子 target 表达、可能不在该树中，于是被静默跳过、捕获被截断。
+- 修复：在 root 树之外并入当前仍挂接的子 target frame id；从 root 树只回填非空 URL，避免空 stub 覆盖子 session 已登记的真实 OOPIF URL；保留“无法完整展开即失败”的既有拒绝语义。新增逐帧候选/内容高/前后几何/失败原因日志，并把这些日志接入证据（浏览器步骤固定 `CUSTOMS_CONSOLE_APILOG` 到 `artifacts/validation/browser/app.log`）。
+
+### 新增定点回归（浏览器 28 场景）
+
+- 新增 `oopif-child-session-navigation`：在已授权的跨站 OOPIF 上，通过子 CDP session 执行 `Page.navigate`（正是子 session 无 `parentId` 根导航路径），断言顶层 `frame id`/`URL`/导航代次不变、子 frame URL 更新、已知父关联不被空覆盖，且随后控件/身份/真实点击整页截图仍成立。
+- 未删除或弱化任何身份、授权、结果、首尾/接缝像素、恢复断言；`cross-site-oopif-frame` 截断时新增帧诊断输出。
+
+### 云端运行记录（M12）
+
+| 运行 | 提交 | 结论 |
+|---|---|---|
+| [35964565074](https://github.com/Leon1ca/customs-clearance-console/actions/runs/35964565074) | `5a5f9ba` | 门禁 `browser=failure`：除浏览器外所有必需步骤原始 outcome `success`；浏览器 27/28，唯一失败 `cross-site-oopif-frame` 截断，已在本里程碑修复 |
+| 本轮 | 见最终报告 | P1/P2 + OOPIF 展开 + 子 session 导航回归，待同一最终 SHA 云端全绿验证 |

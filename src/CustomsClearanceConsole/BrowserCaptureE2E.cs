@@ -61,6 +61,7 @@ internal static class BrowserCaptureE2E
             checks.Add(await RunPrepareFailureRestoresAsync(outputFolder, browser, server));
             checks.Add(await RunCrossOriginFrameAsync(outputFolder, browser, server));
             checks.Add(await RunCrossSiteOopifFrameAsync(outputFolder, browser, server));
+            checks.Add(await RunChildSessionNavigationAsync(outputFolder, browser, server));
             checks.Add(await RunOfficialDomSuccessAsync(outputFolder, browser, server));
             checks.Add(await RunOfficialDomWrongNumberAsync(outputFolder, browser, server));
             checks.Add(await RunOfficialDomEmptyAsync(outputFolder, browser, server));
@@ -621,16 +622,101 @@ internal static class BrowserCaptureE2E
         else
         {
             using var image = new Bitmap(result.FilePath);
-            if (image.Height < 700) details.Add($"跨站 OOPIF frame 高度不足，可能被截断：{image.Height}。");
+            var truncated = false;
+            if (image.Height < 700) { details.Add($"跨站 OOPIF frame 高度不足，可能被截断：{image.Height}。"); truncated = true; }
             if (!RegionContainsColor(image, new Rectangle(0, 0, image.Width, Math.Min(500, image.Height)), Color.FromArgb(0x00, 0x88, 0xCC)))
                 details.Add("跨站 OOPIF frame 顶部标记未入图。");
             if (!ColumnContainsColor(image, Color.FromArgb(0x77, 0x00, 0xAA)))
-                details.Add("跨站 OOPIF frame 底部标记未入图（独立进程内容被截断）。");
+            { details.Add("跨站 OOPIF frame 底部标记未入图（独立进程内容被截断）。"); truncated = true; }
+            if (truncated)
+            {
+                try { details.Add("OOPIF 截断帧诊断：" + await session.DescribeFramesForTestAsync(CancellationToken.None)); }
+                catch (Exception ex) { details.Add("OOPIF 截断帧诊断失败：" + ex.Message); }
+            }
         }
         var (afterStyle, afterError) = await ReadFrameStyleAsync(session);
         AssertFrameStyleRestored(styleEvidence.Before, styleEvidence.BeforeError?.Message, afterStyle, afterError,
             "OOPIF frame 原高度/max-height 及优先级", details);
         return new Scenario("cross-site-oopif-frame", details.Count == 0, details.Count == 0 ? ["独立进程 OOPIF frame 内查询经 CDP session 完整捕获并复原样式"] : details);
+    }
+
+    /// <summary>
+    /// Regression for the flattened child-session navigation bug: when a cross-site OOPIF
+    /// navigates its own root document, Page.frameNavigated arrives on the child CDP session
+    /// with no parentId. That event must never replace the top-level frame id/URL or bump the
+    /// capture generation, must keep the child frame's known parent link, and must still leave
+    /// both the page and the child frame authorized so the real click saves a full capture.
+    /// </summary>
+    private static async Task<Scenario> RunChildSessionNavigationAsync(string outputFolder, string browser, TestServer server)
+    {
+        using var other = new TestServer();
+        other.Start();
+        const string host = "e2e-frame.test";
+        var folder = Path.Combine(outputFolder, "child-session-navigation");
+        Directory.CreateDirectory(folder);
+        const string number = "310120260000000025";
+        var frameUrl = $"http://{host}:{other.Port}/frame?content=800&result={number}&query=1";
+        var navigatedUrl = $"http://{host}:{other.Port}/frame?content=800&result={number}&query=1&childnav=1";
+        var url = server.Url($"/page?content=300&result={number}&frame=cross&clamp=1&xhost={Uri.EscapeDataString(frameUrl)}");
+        await using var session = new BrowserValidation(number, folder, url, browser, headless: true, allowTestTarget: true,
+            extraBrowserArgs: [$"--host-resolver-rules=MAP {host} 127.0.0.1"]);
+        var details = new List<string>();
+        var problem = await StartAndWaitAsync(session, true);
+        if (problem is not null) return new Scenario("oopif-child-session-navigation", false, [problem]);
+        var token = CancellationToken.None;
+        var mainIdBefore = session.MainFrameIdForTest;
+        var mainUrlBefore = session.CurrentUrlForTest;
+        var generationBefore = session.NavigationGenerationForTest;
+        var childFrameId = session.FrameUrlsForTest()
+            .Where(x => !x.Key.Equals(mainIdBefore, StringComparison.Ordinal)
+                        && x.Value.Contains(host, StringComparison.OrdinalIgnoreCase))
+            .Select(x => x.Key)
+            .FirstOrDefault();
+        if (string.IsNullOrEmpty(childFrameId))
+        {
+            details.Add("未登记 OOPIF 子 frame，无法执行子 session 导航回归。");
+            try { details.Add("子 session 导航帧诊断：" + await session.DescribeFramesForTestAsync(token)); }
+            catch (Exception ex) { details.Add("子 session 导航帧诊断失败：" + ex.Message); }
+            return new Scenario("oopif-child-session-navigation", false, details);
+        }
+        var parentBefore = session.FrameParentForTest(childFrameId);
+        if (!await session.NavigateChildFrameForTestAsync(childFrameId, navigatedUrl, token))
+            details.Add("无法通过子 CDP session 导航 OOPIF 根文档（未找到子 session）。");
+        var childUpdated = false;
+        for (var attempt = 0; attempt < 80; attempt++)
+        {
+            await Task.Delay(250);
+            var current = session.FrameUrlsForTest().TryGetValue(childFrameId, out var value) ? value : "";
+            if (current.Contains("childnav=1", StringComparison.Ordinal)) { childUpdated = true; break; }
+        }
+        if (!childUpdated)
+            details.Add($"子 frame 根导航后其 URL 未更新为 {navigatedUrl}（当前 {session.FrameUrlsForTest().GetValueOrDefault(childFrameId)}）。");
+        if (!string.Equals(mainIdBefore, session.MainFrameIdForTest, StringComparison.Ordinal))
+            details.Add($"子 session 根导航覆盖了顶层 frame：前={mainIdBefore} 后={session.MainFrameIdForTest}");
+        if (!string.Equals(mainUrlBefore, session.CurrentUrlForTest, StringComparison.Ordinal))
+            details.Add($"子 session 根导航覆盖了顶层 URL：前={mainUrlBefore} 后={session.CurrentUrlForTest}");
+        if (generationBefore != session.NavigationGenerationForTest)
+            details.Add($"子 session 根导航递增了顶层导航代次：前={generationBefore} 后={session.NavigationGenerationForTest}");
+        var parentAfter = session.FrameParentForTest(childFrameId);
+        if (parentBefore is not null && !string.Equals(parentBefore, parentAfter, StringComparison.Ordinal))
+            details.Add($"子 session 无 parentId 导航把已知父 frame 覆盖：前={parentBefore} 后={parentAfter}");
+        // Both the top-level page and the navigated child frame must still be authorized, so a
+        // real card click must still produce a complete saved capture.
+        if (!await session.WaitForWidgetAsync(TimeSpan.FromSeconds(30), token)) details.Add("子 frame 导航后未重新注入控件。");
+        else
+        {
+            var identity = await session.WaitForIdentitySettledAsync(TimeSpan.FromSeconds(30), token);
+            if (identity.StartsWith("waiting|", StringComparison.Ordinal) || identity.Length == 0)
+                details.Add($"子 frame 导航后查询结果未就绪：{identity}");
+            else
+            {
+                var result = await ClickAndAwaitAsync(session, TimeSpan.FromSeconds(120));
+                if (result.State != "saved") details.Add($"子 frame 导航后截图失败：{result.State}：{result.Message}");
+                else if (result.FilePath is null || !File.Exists(result.FilePath)) details.Add("子 frame 导航后未生成截图。");
+            }
+        }
+        return new Scenario("oopif-child-session-navigation", details.Count == 0,
+            details.Count == 0 ? ["子 session 无 parentId 根导航未覆盖顶层身份/URL/代次，子 frame URL 更新且仍可完整截图"] : details);
     }
 
     /// <summary>

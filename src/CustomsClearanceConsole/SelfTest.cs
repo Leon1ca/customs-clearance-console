@@ -1130,11 +1130,23 @@ internal static class SelfTest
         var versionTextWidth = TextRenderer.MeasureText(headerVersion.Text, headerVersion.Font).Width;
         if (headerVersion.Text.Length == 0 || versionTextWidth > headerVersion.ClientSize.Width)
             throw new InvalidOperationException($"版本标签无法完整显示“{headerVersion.Text}”：需要 {versionTextWidth}px，标签仅 {headerVersion.ClientSize.Width}px（P2）。");
-        // P2: the index header must own its padding/alignment so "#" is not clipped inside
-        // the narrow index column.
-        var indexHeader = form.GridForTest.Columns["Index"].HeaderCell.Style;
-        if (indexHeader.Padding != new Padding(0) || indexHeader.Alignment != DataGridViewContentAlignment.MiddleCenter)
-            throw new InvalidOperationException($"序号表头 padding/对齐未按窄列修正：padding={indexHeader.Padding} alignment={indexHeader.Alignment}（P2）。");
+        // P2: the clipped "#" came from the index header inheriting the shared 8px header
+        // padding. A local Style.Padding = Padding.Empty is skipped by
+        // DataGridViewCellStyle.ApplyStyle, so the assertion must inspect the real
+        // InheritedStyle and must also prove the glyph physically fits the remaining content
+        // width; the old local-style-only check was a false close.
+        var indexColumn = form.GridForTest.Columns["Index"];
+        var indexHeader = indexColumn.HeaderCell.InheritedStyle;
+        if (indexHeader.Padding != Padding.Empty || indexHeader.Alignment != DataGridViewContentAlignment.MiddleCenter)
+            throw new InvalidOperationException($"序号表头继承 padding/对齐未按窄列修正：padding={indexHeader.Padding} alignment={indexHeader.Alignment}（P2）。");
+        if (indexHeader.Font is null)
+            throw new InvalidOperationException("序号表头没有可用字体，无法校验“#”宽度（P2）。");
+        // Header text is drawn with 2px hard margins on each side; the real glyph must fit
+        // that usable width or it will silently ellipsise again.
+        var glyphWidth = TextRenderer.MeasureText("#", indexHeader.Font, new Size(int.MaxValue, 100), TextFormatFlags.NoPadding).Width;
+        var usableWidth = indexColumn.Width - indexHeader.Padding.Horizontal - 4;
+        if (glyphWidth > usableWidth)
+            throw new InvalidOperationException($"序号表头“#”宽 {glyphWidth}px 超过可用 {usableWidth}px（列宽 {indexColumn.Width}，padding {indexHeader.Padding.Horizontal}，P2）。");
     }
 
     private sealed record SnapshotEvidence(int RequestedWidth, int RequestedHeight, int ActualWidth, int ActualHeight,

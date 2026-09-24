@@ -500,18 +500,26 @@ internal sealed class BrowserValidation : IAsyncDisposable
     {
         try
         {
+            // Events carry the flattened child sessionId when they come from an attached
+            // OOPIF. Only the page's own (root) session can speak for the top-level frame; a
+            // child target reports its own root frame with no parentId, so parentId alone is
+            // not enough to identify the page main frame.
+            var sessionId = SessionIdOf(message);
             var frame = message.GetProperty("params").GetProperty("frame");
             var frameId = frame.GetProperty("id").GetString() ?? "";
             var url = frame.TryGetProperty("url", out var value) ? value.GetString() ?? "" : "";
             var parentId = frame.TryGetProperty("parentId", out var parent) ? parent.GetString() ?? "" : "";
-            var isMain = parentId.Length == 0;
+            var isMain = sessionId is null && parentId.Length == 0;
             lock (_frameUrls)
             {
                 if (frameId.Length > 0) _frameUrls[frameId] = url;
                 if (isMain) { _mainFrameId = frameId; _currentUrl = url; }
             }
-            lock (_frameParents)
-                if (frameId.Length > 0) _frameParents[frameId] = parentId;
+            // A child-session frame without parentId must keep its already known parent link
+            // (its owner lives in the parent document); never overwrite a real parent with an
+            // empty string. The root main frame legitimately has no parent and is left unset.
+            if (frameId.Length > 0 && parentId.Length > 0)
+                lock (_frameParents) _frameParents[frameId] = parentId;
             if (isMain)
             {
                 Interlocked.Increment(ref _navigationGeneration);
@@ -1043,9 +1051,30 @@ internal sealed class BrowserValidation : IAsyncDisposable
         if (_cdp is null) return failed;
         JsonElement tree;
         try { tree = await _cdp.SendAsync("Page.getFrameTree", null, token); }
-        catch (Exception ex) { AppLog.Write($"读取框架树失败：{ex.Message}"); return failed; }
+        catch (Exception ex)
+        {
+            // A missing frame tree means the frame candidates could not be confirmed at all;
+            // returning an empty failure list here would let an unverified capture save.
+            AppLog.Write($"读取框架树失败：{ex.Message}");
+            return [$"(root frame tree 读取失败：{ex.Message})"];
+        }
         var frames = new List<(string FrameId, string Url)>();
         CollectFrames(tree.GetProperty("result").GetProperty("frameTree"), frames);
+        // Refresh real URLs from the root tree, but never let an empty stub URL clobber the
+        // child-session URL that attach/child-getFrameTree registered for an OOPIF.
+        foreach (var (id, url) in frames)
+            if (id.Length > 0 && url.Length > 0)
+                lock (_frameUrls) _frameUrls[id] = url;
+        // A flattened OOPIF is reached through its own child target and can be missing from
+        // the root session's Page.getFrameTree. Enumerate the live attached child targets too
+        // so the cross-process query frame is expanded and verified rather than silently
+        // truncating the capture.
+        var seenFrames = new HashSet<string>(frames.Select(x => x.FrameId), StringComparer.Ordinal);
+        lock (_frameTargetSessions)
+            foreach (var targetId in _frameTargetSessions.Keys)
+                if (targetId.Length > 0 && seenFrames.Add(targetId)) frames.Add((targetId, ""));
+        var candidateLog = frames.Select(x => x.FrameId + (IsAuthorizedFrameId(x.FrameId) ? "[授权]" : "[跳过]"));
+        AppLog.Write("框架扩展候选：" + string.Join("、", candidateLog));
         foreach (var (frameId, _) in frames)
         {
             if (frameId.Equals(_mainFrameId, StringComparison.Ordinal)) continue;
@@ -1058,7 +1087,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
                 var contextId = context?.ContextId;
                 if (contextId is null)
                     contextId = await CreateIsolatedWorldAsync(frameId, "customs-console-frame-expand", session, token);
-                if (contextId is null) { failed.Add(frameId); continue; }
+                if (contextId is null) { AppLog.Write($"扩展框架 {frameId} 失败：无执行环境（session={session ?? "-"}）。"); failed.Add(frameId); continue; }
 
                 var measured = await EvaluateContextAsync(
                     "JSON.stringify((function(){var d=document.documentElement,b=document.body;return {content:Math.max(d?d.scrollHeight:0,b?b.scrollHeight:0)};})())",
@@ -1069,14 +1098,22 @@ internal sealed class BrowserValidation : IAsyncDisposable
                     using var document = JsonDocument.Parse(measured);
                     frameContent = (int)Math.Ceiling(document.RootElement.GetProperty("content").GetDouble());
                 }
-                catch { failed.Add(frameId); continue; }
-                if (frameContent <= 0) continue;
+                catch { AppLog.Write($"扩展框架 {frameId} 失败：内容高度读取异常（{measured}）。"); failed.Add(frameId); continue; }
+                if (frameContent <= 0)
+                {
+                    // An attached child-session (OOPIF) query frame is never legitimately empty:
+                    // an unreadable height there must reject the capture, not pass as expanded.
+                    if (session is not null) { AppLog.Write($"扩展框架 {frameId} 失败：子 session frame 内容高度为 {frameContent}。"); failed.Add(frameId); }
+                    else AppLog.Write($"扩展框架 {frameId} 跳过：内容高度为 {frameContent}。");
+                    continue;
+                }
 
                 var objectId = await GetFrameOwnerObjectIdAsync(frameId, token);
-                if (string.IsNullOrEmpty(objectId)) { failed.Add(frameId); continue; }
+                if (string.IsNullOrEmpty(objectId)) { AppLog.Write($"扩展框架 {frameId} 失败：找不到 owner 元素（session={session ?? "-"}）。"); failed.Add(frameId); continue; }
                 var ownerSession = OwnerSessionForFrame(frameId);
                 var beforeJson = await CallFunctionOnAsync(objectId, ReadFrameGeometryFunction, null, token, ownerSession);
-                if (!TryReadFrameGeometry(beforeJson, out var beforeVisible, out var beforeMax)) { failed.Add(frameId); continue; }
+                if (!TryReadFrameGeometry(beforeJson, out var beforeVisible, out var beforeMax)) { AppLog.Write($"扩展框架 {frameId} 失败：前置几何读取失败（{beforeJson}）。"); failed.Add(frameId); continue; }
+                AppLog.Write($"扩展框架 {frameId}：内容高 {frameContent}，前置可视 {beforeVisible}/{beforeMax}。");
                 // Already fully exposed: nothing to change and nothing to restore.
                 if (beforeVisible >= frameContent - 2 && beforeMax >= frameContent - 2) continue;
 
@@ -1086,7 +1123,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
                 await Task.Delay(120, token);
 
                 var afterJson = await CallFunctionOnAsync(objectId, ReadFrameGeometryFunction, null, token, ownerSession);
-                if (!TryReadFrameGeometry(afterJson, out var afterVisible, out var afterMax)) { failed.Add(frameId); continue; }
+                if (!TryReadFrameGeometry(afterJson, out var afterVisible, out var afterMax)) { AppLog.Write($"扩展框架 {frameId} 失败：后置几何读取失败（{afterJson}）。"); failed.Add(frameId); continue; }
                 var viewportJson = await EvaluateContextAsync(
                     "JSON.stringify({content:Math.max(document.documentElement?document.documentElement.scrollHeight:0,document.body?document.body.scrollHeight:0),viewport:window.innerHeight||0})",
                     contextId, session, token, awaitPromise: false);
@@ -1097,10 +1134,11 @@ internal sealed class BrowserValidation : IAsyncDisposable
                     afterContent = (int)Math.Ceiling(document.RootElement.GetProperty("content").GetDouble());
                     afterViewport = (int)Math.Ceiling(document.RootElement.GetProperty("viewport").GetDouble());
                 }
-                catch { failed.Add(frameId); continue; }
+                catch { AppLog.Write($"扩展框架 {frameId} 失败：后置内容读取失败（{viewportJson}）。"); failed.Add(frameId); continue; }
 
                 var elementExposed = afterVisible >= Math.Max(frameContent, afterContent) - 2 && afterMax >= Math.Max(frameContent, afterContent) - 2;
                 var frameExposed = afterViewport >= afterContent - 2;
+                if (!elementExposed || !frameExposed) AppLog.Write($"扩展框架 {frameId} 失败：元素 {afterVisible}/{afterMax}，内容 {afterContent}，视口 {afterViewport}。");
                 if (!elementExposed || !frameExposed) failed.Add(frameId);
             }
             catch (Exception ex) when (!IsConnectionFailure(ex))
@@ -1246,6 +1284,48 @@ internal sealed class BrowserValidation : IAsyncDisposable
             parts.Add($"frame={context.FrameId};session={context.SessionId ?? "-"};authorized={IsAuthorizedFrameId(context.FrameId)};url={url};monitor={monitor}");
         }
         return parts.Count == 0 ? "(未登记任何执行上下文)" : string.Join(" | ", parts);
+    }
+
+    /// <summary>Top-level frame id owned by the root CDP session (E2E identity evidence).</summary>
+    public string MainFrameIdForTest
+    {
+        get { lock (_frameUrls) return _mainFrameId; }
+    }
+
+    /// <summary>Top-level page URL owned by the root CDP session (E2E identity evidence).</summary>
+    public string CurrentUrlForTest
+    {
+        get { lock (_frameUrls) return _currentUrl; }
+    }
+
+    /// <summary>Top-level navigation generation, only advanced by a real main-frame navigation.</summary>
+    public int NavigationGenerationForTest => Volatile.Read(ref _navigationGeneration);
+
+    /// <summary>Snapshot of every registered frame id and its last known URL.</summary>
+    public IReadOnlyDictionary<string, string> FrameUrlsForTest()
+    {
+        lock (_frameUrls) return new Dictionary<string, string>(_frameUrls);
+    }
+
+    /// <summary>The registered parent link for a frame, or null when no parent is known.</summary>
+    public string? FrameParentForTest(string frameId)
+    {
+        lock (_frameParents) return _frameParents.TryGetValue(frameId, out var parent) ? parent : null;
+    }
+
+    /// <summary>
+    /// Navigates a flattened child target's own document through its child CDP session. This
+    /// is the exact event path where Page.frameNavigated arrives with no parentId and must not
+    /// be mistaken for a top-level navigation (E2E regression helper).
+    /// </summary>
+    public async Task<bool> NavigateChildFrameForTestAsync(string frameId, string url, CancellationToken token)
+    {
+        var cdp = _cdp ?? throw new InvalidOperationException("浏览器控制连接已断开。");
+        string? session;
+        lock (_frameTargetSessions) _frameTargetSessions.TryGetValue(frameId, out session);
+        if (string.IsNullOrEmpty(session)) return false;
+        await cdp.SendAsync("Page.navigate", new { url }, token, session);
+        return true;
     }
 
     /// <summary>Hit-test result of the last real card-button click (E2E evidence).</summary>

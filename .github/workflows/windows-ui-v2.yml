@@ -186,6 +186,10 @@ jobs:
         id: browser
         continue-on-error: true
         timeout-minutes: 35
+        env:
+          # Keep the browser E2E app log inside the uploaded evidence so a frame/authorization
+          # failure ships the exact CDP-side reason instead of only the scenario summary.
+          CUSTOMS_CONSOLE_APILOG: ${{ github.workspace }}\artifacts\validation\browser\app.log
         run: dotnet "$env:APP_DLL" --browser-e2e artifacts/validation/browser
 
       - name: Portable package (root runtime + tools + launcher + app fonts/licences)

@@ -296,7 +296,11 @@ internal sealed partial class MainForm
             Alignment = DataGridViewContentAlignment.MiddleLeft,
             SelectionBackColor = Theme.PanelSubtle,
             SelectionForeColor = Theme.Muted,
-            Padding = new Padding(8, 0, 8, 0)
+            // Zero here: DataGridViewCellStyle inheritance skips a Padding.Empty at a lower
+            // level (DataGridViewColumnHeaderCell.GetInheritedStyle falls through cell ->
+            // ColumnHeadersDefaultCellStyle -> DefaultCellStyle), so the real zero must be the
+            // shared base. Non-index columns opt back into the 8px inset below (P2).
+            Padding = Padding.Empty
         };
         grid.DefaultCellStyle = new DataGridViewCellStyle
         {
@@ -305,7 +309,9 @@ internal sealed partial class MainForm
             Font = Theme.UiFont(13.5F),
             SelectionBackColor = UiTokens.Status.CellSelected,
             SelectionForeColor = Theme.Text,
-            Padding = new Padding(8, 0, 8, 0),
+            // Data cells keep their 8px inset through each column's DefaultCellStyle; the
+            // shared default is zero so the narrow index header can inherit a true zero.
+            Padding = Padding.Empty,
             Alignment = DataGridViewContentAlignment.MiddleLeft,
             NullValue = "—",
             WrapMode = DataGridViewTriState.False
@@ -324,13 +330,16 @@ internal sealed partial class MainForm
         AddColumn(grid, "Detail", "查看", DataGridViewContentAlignment.MiddleCenter);
         AddColumn(grid, "Verify", "网页核验", DataGridViewContentAlignment.MiddleCenter);
 
-        // The generic header style carries 8px left/right padding. Inside the 28px index
-        // column that leaves ~12px, which clipped the bold "#" to a sliver on real screens.
-        // The index column owns its header padding and is centre-drawn; every other column
-        // keeps the shared header style (P2).
+        // The shared header padding is a true zero so the 28px index column can inherit it
+        // and centre-draw the full "#". A local Padding.Empty on the index header would be
+        // ignored by DataGridViewCellStyle.ApplyStyle and silently fall back to the inherited
+        // 8px inset, which clipped the glyph to a sliver on real screens (P2). Every other
+        // column opts back into the 8px inset explicitly, keeping their previous appearance.
         var indexHeader = grid.Columns["Index"].HeaderCell.Style;
-        indexHeader.Padding = new Padding(0);
         indexHeader.Alignment = DataGridViewContentAlignment.MiddleCenter;
+        foreach (DataGridViewColumn column in grid.Columns)
+            if (column.Name != "Index")
+                column.HeaderCell.Style.Padding = new Padding(8, 0, 8, 0);
 
         grid.CellPainting += PaintRecordCell;
         grid.CellClick += GridCellClick;
@@ -362,7 +371,7 @@ internal sealed partial class MainForm
             SortMode = DataGridViewColumnSortMode.NotSortable,
             Resizable = DataGridViewTriState.True,
             MinimumWidth = name switch { "Index" => 28, "Status" => 64, "No" => 150, _ => 48 },
-            DefaultCellStyle = new DataGridViewCellStyle { Alignment = alignment, NullValue = "—" }
+            DefaultCellStyle = new DataGridViewCellStyle { Alignment = alignment, NullValue = "—", Padding = new Padding(8, 0, 8, 0) }
         });
 
     private void ApplyResponsiveLayout()

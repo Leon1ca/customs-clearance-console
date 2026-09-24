@@ -93,6 +93,44 @@ FormHtml由固定400ms改成最多约20秒等候monitor，再对实际查询按�
 
 此外EvaluateRawAsync底层在无value/结构不符时可返回空字符串，FrameStyleProbe在找不到iframe时返回`{missing:true}`。因此不能仅把null改成失败：前后值都应解析为有效对象、明确没有missing=true，并包含height/heightPriority/maxHeight/maxHeightPriority四个字符串字段，再逐值或严格序列化比较；允许合法的空属性值，但不允许缺失整个证据对象。前测异常应直接使场景失败（可用Harness结果或传播至统一失败路径），不可仅记日志继续宣称恢复通过。这是证据假阳性漏洞，尚不等同于已证实生产恢复失败。
 
+## 5a5f9ba 小范围源码复核
+
+固定提交：`5a5f9baf466bf7549aac319318bf2fbb921c828e`；仅复核前述测试漏洞及OOPIF URL登记/主子frame语义，未运行本机产品/测试。
+
+### 样式证据漏洞：源码关闭
+
+前测异常现在返回Harness失败；两场景均调用AssertFrameStyleRestored，先验证前后为非空JSON对象、非missing=true、四个字符串字段齐全，再逐字段严格比较。空字符串、缺字段、missing对象与读取异常均会增加失败详情，不能跳过断言并宣称恢复。允许具体CSS属性值为空是正确的，不等同于允许整份证据为空。
+
+### P1残留：子session根frame导航仍可覆盖顶层页面身份
+
+`BrowserValidation.cs` OnFrameNavigated（约509–524行）仍以`parentId.Length == 0`作为唯一isMain条件，不读取`SessionIdOf(message)`。CdpClient统一事件分发保留子sessionId并交给同一handler（约1664行）。因此，子target自身根frame的Page.frameNavigated在没有parentId时，会被当作整个页面的主frame，覆写`_mainFrameId`、`_currentUrl`，并增加顶层`_navigationGeneration`。这是确定的条件分支错误；本轮不声称已在云端复现该具体事件序列。
+
+触发影响：官方swapp子frame URL会走主页面IsTargetUrl校验并被判离开核验页；原主frame与子frame身份颠倒，ExpandFrameOwnersAsync还会跳过被误认作main的iframe，破坏截图前展开。新增attachUrl和child Page.getFrameTree仅补`_frameUrls`，没有消除这条导航路径。一次成功初始加载也不足以证明后续子frame导航不触发。
+
+最小修复：仅root CDP session、且无parentId的frame导航允许修改顶层身份/URL及顶层generation；子session导航只更新自己的URL/上下文信息。对子session事件缺少parentId，应保留既有父frame关联，不把已知父关系覆盖为空。补一条子session无parentId导航的定点回归，断言顶层身份保持、子frame URL更新及后续授权/截图仍正确；无需增加无关测试范围。
+
+## 07851ef 真实屏幕三项定点复验：关闭2项，保留1项
+
+证据目录：`/Users/leon1ca/Documents/Codex/2026-09-24/evidence-07851ef/ui-states`；实际查看1200×720的unloaded/ready/complete，以及1440×900 ready和1920×1080 unloaded，全部使用`-screen.png`。本次UI代码与5a5f9ba相同；不替代最终提交的产物验收。
+
+- **关闭：初始状态正文空白。** unloaded现在显示上传图标、“尚未载入关单”、说明和“选择关单目录”按钮；ready显示“已载入10个文件”及开始识别说明，实际可读。
+- **关闭：版本遮挡。** 五张真实图均完整显示`v1.5.0`及分隔线，与标题不重叠。
+- **仍保留P2：#表头。** 五张真实图最左表头仍只显示两点/细小省略痕迹，无法辨认为完整`#`，并非已经修好。前一节“源码根因已处理”不能作为该项关闭依据，现以真实图明确撤回其关闭预期。
+
+定点修复建议：检查Index.HeaderCell的**InheritedStyle.Padding**及原生表头绘制可用空间。当前把局部Style.Padding设为Padding.Empty的断言只证明赋值，不证明没有继续继承公共表头8px边距。可将公共header padding设0、仅其他列设置8px，或对Index表头单独绘制居中的#；最终以真实屏幕该字完整可辨认验收。无需改其他列或做整体视觉重设计。
+
+## 5a5f9ba OOPIF实际截断定点分析
+
+证据目录：`/Users/leon1ca/Documents/Codex/2026-09-24/evidence-5a5f9ba/browser`。browser-e2e.json为26/27，唯一失败为跨站OOPIF底部标记未入图。读取固定5a5f9ba源码与已有PNG，未运行本机产品。
+
+**实际截断确定：** `capture-oopif-frame.png`仅1241×800，顶部棕色块占y0–199，iframe区域y200–599仍正好原始400px，随后已是父页蓝色尾部。iframe只露出顶部蓝标、查询输入/按钮和滚动区域前段，查询结果行、内部滚动末端洋红色标、iframe底部紫标都缺失。对照`capture-cross-frame.png`约1854px高，三者均完整。这不是仅颜色断言写错，也不是页面已经完整而多余测试失败。
+
+**确定的源码漏检路径：** `ExpandFramesAsync`约1043–1052行只读取root session的Page.getFrameTree并CollectFrames遍历；没有并入已附加子target、已授权context或URL登记。身份与PrepareContexts使用注册frame/context集合，因此同一个已授权OOPIF可以成功返回身份、甚至展开其内部滚动容器，却不进入owner iframe高度检查/增长。候选遗漏会留下空failed集合，被上游视为全部展开成功而继续保存。另一个明确问题是Page.getFrameTree异常分支直接返回空failed，等价于“检查失败但全部通过”。
+
+**根因置信边界：** PNG证明owner仍400px；源码证明候选遗漏会无声保存，且与本次现象高度吻合。但产物没有本次root frame-tree/实际expand候选日志，不能排他证明该轮一定仅是树未列OOPIF；前述_mainFrameId被子session覆写也会让同一frame在1051行被跳过，应一并修复。
+
+最小修复建议：从root tree与已登记授权子frame/session/context构建去重的展开候选，逐个确认owner及完整可见高度，任何已授权候选无法确认都拒绝保存；root tree读取失败不得当空成功。为本场景输出候选frameId/session/parent、原owner高度、内容高度和展开后高度，下一轮同时保留首尾像素断言即可验证修复，无需扩展其他范围。
+
 ## 07851ef P2 修复实现记录（不改上节独立结论）
 
 上节为独立复核结论，保持原文；本节只记录针对该 P2 的实现响应，最终是否闭环以同一 SHA 云端运行和独立终验为准。
