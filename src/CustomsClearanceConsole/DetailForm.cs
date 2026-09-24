@@ -229,23 +229,23 @@ internal sealed class DetailForm : Form
                 using (var divider = new Pen(Theme.Divider))
                     graphics.DrawLine(divider, S(20), y + rowHeight - 1, Width - S(20), y + rowHeight - 1);
                 var columns = Columns(Width, dpi, y, rowHeight, "总价");
-                TextRenderer.DrawText(graphics, line.ItemNo, numberFont, columns[0], Theme.Ink2, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
-                TextRenderer.DrawText(graphics, line.DisplayProduct, nameFont, columns[1], Theme.Text,
+                TextRenderer.DrawText(graphics, line.ItemNo, numberFont, columns[0].Rect, Theme.Ink2, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+                TextRenderer.DrawText(graphics, line.DisplayProduct, nameFont, columns[1].Rect, Theme.Text,
                     TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
-                TextRenderer.DrawText(graphics, line.DisplayQuantityUnit, numberFont, columns[2], Theme.Ink2, TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
-                TextRenderer.DrawText(graphics, line.DisplayUnitPrice, numberFont, columns[3], Theme.Ink2, TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+                TextRenderer.DrawText(graphics, line.DisplayQuantityUnit, numberFont, columns[2].Rect, Theme.Ink2, TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+                TextRenderer.DrawText(graphics, line.DisplayUnitPrice, numberFont, columns[3].Rect, Theme.Ink2, TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
                 var amountColor = line.IsReliable ? Theme.Text : Theme.Warning;
-                TextRenderer.DrawText(graphics, line.Amount.ToString("N2"), amountFont, columns[4], amountColor, TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+                TextRenderer.DrawText(graphics, line.Amount.ToString("N2"), amountFont, columns[4].Rect, amountColor, TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
                 if (!line.IsReliable)
                 {
                     var underlineY = y + rowHeight / 2 + S(11);
                     using var underline = new Pen(UiTokens.Status.AttentionUnderline, S(1)) { DashStyle = DashStyle.Dash };
-                    graphics.DrawLine(underline, columns[4].Right - S(74), underlineY, columns[4].Right, underlineY);
+                    graphics.DrawLine(underline, columns[4].Rect.Right - S(74), underlineY, columns[4].Rect.Right, underlineY);
                     if (line.VerificationAmount is not null)
                     {
                         using var noteFont = Theme.UiFont(11F);
                         TextRenderer.DrawText(graphics, $"另一引擎 {line.VerificationAmount.Value:N2}", noteFont,
-                            new Rectangle(columns[4].X, y + rowHeight / 2 + S(8), columns[4].Width, S(16)), Theme.Warning,
+                            new Rectangle(columns[4].Rect.X, y + rowHeight / 2 + S(8), columns[4].Rect.Width, S(16)), Theme.Warning,
                             TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
                     }
                 }
