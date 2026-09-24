@@ -1,0 +1,171 @@
+name: Windows UI v2 validation
+
+on:
+  push:
+    branches: [codex/ui-v2-iteration]
+  workflow_dispatch:
+
+# Least privilege: this workflow only reads the repository and its release assets,
+# and uploads build evidence as job artifacts.
+permissions:
+  contents: read
+
+concurrency:
+  group: ui-v2-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: "1"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1"
+  APP_DLL: src/CustomsClearanceConsole/bin/Release/net8.0-windows/关单核验台.dll
+
+jobs:
+  core-regression:
+    name: Core regression (net8.0)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: .nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('NuGet.Config', '**/*.csproj') }}
+          restore-keys: ${{ runner.os }}-nuget-
+      - name: Run core regression
+        run: dotnet run --project tests/CoreRegression/CoreRegression.csproj -c Release
+      - name: Upload core regression log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-regression-log
+          path: |
+            tests/CoreRegression/bin/Release/**
+          if-no-files-found: ignore
+
+  windows-validation:
+    name: Build, native UI, browser E2E, export and portable package
+    runs-on: windows-latest
+    timeout-minutes: 120
+    needs: core-regression
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: .nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('NuGet.Config', '**/*.csproj') }}
+          restore-keys: ${{ runner.os }}-nuget-
+
+      - name: Prepare OCR and native dependencies from the v1.4.0 release (verify SHA256SUMS)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'v140'
+          New-Item -ItemType Directory -Force $root | Out-Null
+          gh release download v1.4.0 --repo $env:GITHUB_REPOSITORY --pattern 'SHA256SUMS.txt' --dir $root --clobber
+          gh release download v1.4.0 --repo $env:GITHUB_REPOSITORY --pattern '*.zip' --dir $root --clobber
+          $zip = Get-ChildItem -LiteralPath $root -Filter *.zip | Select-Object -First 1
+          if (-not $zip) { throw 'v1.4.0 发布包缺少 ZIP 资产。' }
+          $sumsPath = Join-Path $root 'SHA256SUMS.txt'
+          if (-not (Test-Path -LiteralPath $sumsPath)) { throw 'v1.4.0 发布包缺少 SHA256SUMS.txt。' }
+          $line = (Get-Content -LiteralPath $sumsPath | Where-Object { $_.Trim().Length -gt 0 } | Select-Object -First 1)
+          $expected = ($line -split '\s+')[0].Trim().ToLowerInvariant()
+          $actual = (Get-FileHash -LiteralPath $zip.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          Write-Host "ZIP       : $($zip.Name)"
+          Write-Host "Expected  : $expected"
+          Write-Host "Actual    : $actual"
+          if ($actual -ne $expected) { throw 'v1.4.0 发布包 SHA256 与 SHA256SUMS.txt 不一致。' }
+          $pkg = Join-Path $root 'pkg'
+          Expand-Archive -LiteralPath $zip.FullName -DestinationPath $pkg -Force
+          & "$env:GITHUB_WORKSPACE/scripts/bootstrap-from-release.ps1" -PackageRoot $pkg
+          # Keep the runtime folder for the portable package later.
+          Copy-Item -LiteralPath (Join-Path $pkg 'runtime') -Destination (Join-Path $env:RUNNER_TEMP 'portable-runtime') -Recurse -Force
+
+      - name: Build main application
+        run: dotnet build src/CustomsClearanceConsole/CustomsClearanceConsole.csproj -c Release
+
+      - name: Native UI contract self-test
+        run: dotnet "$env:APP_DLL" --ui-contract-self-test
+
+      - name: Environment and font report
+        run: dotnet "$env:APP_DLL" --env-report artifacts/validation/environment
+
+      - name: Excel and Markdown export validation
+        run: dotnet "$env:APP_DLL" --export-samples artifacts/validation/export
+
+      - name: Native UI state snapshots and layout assertions
+        run: dotnet "$env:APP_DLL" --ui-state-snapshot artifacts/validation/ui-states
+
+      - name: Controlled browser long-screenshot E2E
+        run: dotnet "$env:APP_DLL" --browser-e2e artifacts/validation/browser
+
+      - name: Portable package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = ([xml](Get-Content 'src/CustomsClearanceConsole/CustomsClearanceConsole.csproj' -Raw)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "项目版本无效：$version" }
+          $root = Join-Path $env:GITHUB_WORKSPACE 'artifacts/local-current'
+          Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force (Join-Path $root 'app') | Out-Null
+          dotnet publish src/CustomsClearanceConsole/CustomsClearanceConsole.csproj -c Release -o (Join-Path $root 'app')
+          if ($LASTEXITCODE -ne 0) { throw "dotnet publish 失败：$LASTEXITCODE" }
+          Copy-Item -LiteralPath (Join-Path $env:RUNNER_TEMP 'portable-runtime') -Destination (Join-Path $root 'runtime') -Recurse -Force
+          & "$env:GITHUB_WORKSPACE/scripts/build-launcher.ps1"
+          if ($LASTEXITCODE -ne 0) { throw "启动器构建失败：$LASTEXITCODE" }
+          Copy-Item -LiteralPath 'artifacts/launcher/关单核验台.exe' -Destination (Join-Path $root '关单核验台.exe') -Force
+          Copy-Item -LiteralPath "docs/release-notes-v$version.md" -Destination (Join-Path $root "更新说明-v$version.md") -Force
+          Copy-Item -LiteralPath 'src/CustomsClearanceConsole/使用说明.txt' -Destination (Join-Path $root '使用说明.txt') -Force
+          # Fonts and licences must ship inside the portable app folder.
+          $fontDir = Join-Path $root 'app/fonts'
+          if (-not (Test-Path -LiteralPath $fontDir)) { throw '便携包缺少 fonts 目录。' }
+          foreach ($font in @('NotoSansSC-Variable.ttf', 'JetBrainsMono-Regular.ttf', 'JetBrainsMono-Medium.ttf', 'NotoSansSC-OFL.txt', 'JetBrainsMono-OFL.txt')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $fontDir $font))) { throw "便携包缺少字体或许可：$font" }
+          }
+          if (-not (Test-Path -LiteralPath (Join-Path $root 'app/assets/ui-v2/icons/png/play-white-24.png'))) { throw '便携包缺少 UI v2 图标。' }
+          & "$env:GITHUB_WORKSPACE/scripts/package-release.ps1" -SourceRoot $root
+
+      - name: Verify portable ZIP contents
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = Get-ChildItem -LiteralPath 'artifacts/releases' -Recurse -Filter '*.zip' | Select-Object -First 1
+          if (-not $zip) { throw '未生成便携 ZIP。' }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $archive = [IO.Compression.ZipFile]::OpenRead($zip.FullName)
+          try {
+            $names = $archive.Entries | ForEach-Object { $_.FullName }
+            foreach ($required in @('关单核验台.exe', 'app/关单核验台.dll', 'app/fonts/NotoSansSC-Variable.ttf', 'app/fonts/JetBrainsMono-Regular.ttf', 'runtime/dotnet.exe', 'tools/tesseract/tesseract.exe')) {
+              if (-not ($names -contains $required)) { throw "便携 ZIP 缺少：$required" }
+            }
+            Write-Host "便携 ZIP 文件数：$($names.Count)"
+          } finally { $archive.Dispose() }
+          Get-Content (Get-ChildItem -LiteralPath 'artifacts/releases' -Recurse -Filter 'SHA256SUMS.txt' | Select-Object -First 1).FullName
+
+      - name: Upload validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-v2-validation-evidence
+          path: |
+            artifacts/validation/**
+          if-no-files-found: warn
+
+      - name: Upload portable package
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-v2-portable-package
+          path: |
+            artifacts/releases/**
+          if-no-files-found: warn

@@ -272,30 +272,41 @@ internal sealed partial class DeclarationParser
                     .Where(t => t.Top > header.Bottom && t.Top < bottom)
                     .ToList();
                 var lines = Lines(column, Math.Max(2.5, page.Height * .0048)).ToList();
+                double? previousRowBottom = null;
                 for (var i = 0; i < lines.Count; i++)
                 {
                     var currency = NormalizeCurrencyInPriceColumn(page, lines[i], header);
                     if (currency is null) continue;
 
+                    IReadOnlyList<TextToken>? totalLine = null;
                     decimal? total = TryAmountFromLine(lines[i], out var sameLineAmount) && sameLineAmount != 0
                         ? sameLineAmount
                         : null;
+                    if (total is not null) totalLine = lines[i];
 
                     var currencyY = lines[i].Average(x => x.CenterY);
                     for (var j = i - 1; total is null && j >= 0; j--)
                     {
                         var candidateY = lines[j].Average(x => x.CenterY);
                         if (currencyY - candidateY > page.Height * .06) break;
-                        if (TryAmountFromLine(lines[j], out var value)) total = value;
+                        if (TryAmountFromLine(lines[j], out var value)) { total = value; totalLine = lines[j]; }
                     }
-                    if (total is null) continue;
-                    pageTotals.Add(new DeclarationLineTotal
+                    if (total is null || totalLine is null) continue;
+                    var searchTop = previousRowBottom ?? header.Bottom;
+                    var itemToken = FindItemNoToken(page, searchTop, currencyY);
+                    // Anchor the row at its own item number when present so wrapped
+                    // product/unit lines from the previous row cannot leak into it.
+                    var rowTop = itemToken?.Top ?? searchTop;
+                    var line = new DeclarationLineTotal
                     {
                         PageNumber = page.PageNumber,
-                        ItemNo = FindItemNo(page, header.Bottom, currencyY),
+                        ItemNo = itemToken?.Text.Trim() ?? "",
                         Currency = currency,
                         Amount = total.Value
-                    });
+                    };
+                    AttachRowDetails(page, line, left, right, rowTop, currencyY, totalLine.Average(x => x.CenterY));
+                    pageTotals.Add(line);
+                    previousRowBottom = Math.Max(lines[i].Max(x => x.Bottom), itemToken?.Bottom ?? 0);
                 }
             }
 
@@ -335,6 +346,7 @@ internal sealed partial class DeclarationParser
             .Where(t => NormalizeCurrencyInPriceColumn(page, [t], null) is not null)
             .ToList();
 
+        double? previousRowBottom = null;
         foreach (var currencyLine in Lines(currencyTokens, Math.Max(2.5, page.Height * .0048)))
         {
             var currency = NormalizeCurrencyInPriceColumn(page, currencyLine, null);
@@ -352,30 +364,124 @@ internal sealed partial class DeclarationParser
             foreach (var amountLine in amountLines)
             {
                 if (!TryAmountFromLine(amountLine, out var total) || total <= 0) continue;
-                result.Add(new DeclarationLineTotal
+                var searchTop = previousRowBottom ?? page.Height * .30;
+                var itemToken = FindItemNoToken(page, searchTop, currencyY);
+                var rowTop = itemToken?.Top ?? searchTop;
+                var line = new DeclarationLineTotal
                 {
                     PageNumber = page.PageNumber,
-                    ItemNo = FindItemNo(page, page.Height * .30, currencyY),
+                    ItemNo = itemToken?.Text.Trim() ?? "",
                     Currency = currency,
                     Amount = total
-                });
+                };
+                AttachRowDetails(page, line, left, right, rowTop, currencyY, amountLine.Average(x => x.CenterY));
+                result.Add(line);
+                previousRowBottom = Math.Max(currencyLine.Max(x => x.Bottom), itemToken?.Bottom ?? 0);
                 break;
             }
         }
         return result;
     }
 
-    private static string FindItemNo(TextPage page, double tableTop, double currencyY)
+    private static readonly HashSet<string> KnownUnits = new(StringComparer.OrdinalIgnoreCase)
     {
-        var candidate = page.Tokens
+        "KG", "KGS", "千克", "公斤", "台", "个", "件", "套", "米", "吨", "辆", "只", "张", "双", "支",
+        "箱", "包", "卷", "对", "副", "PCS", "PCE", "SET", "CTN", "M", "平方米", "立方米", "升", "克"
+    };
+
+    /// <summary>
+    /// Best-effort extraction of product name, quantity, unit and unit price for one
+    /// already-reconciled total row. Nothing is ever derived from the total amount:
+    /// a value that cannot be located in the source stays empty and renders as “—”.
+    /// </summary>
+    private static void AttachRowDetails(TextPage page, DeclarationLineTotal line,
+        double priceLeft, double priceRight, double rowTop, double currencyY, double totalLineY)
+    {
+        if (priceLeft >= priceRight) return;
+        var tolerance = Math.Max(2.5, page.Height * .0048);
+        var itemNoRight = page.Width * .085;
+        var bandBottom = currencyY + page.Height * .008;
+
+        // Unit price: the closest numeric line strictly above the total inside the row band.
+        var unitPriceTokens = page.Tokens
+            .Where(t => t.CenterX >= priceLeft - 1 && t.CenterX <= priceRight + 1)
+            .Where(t => t.CenterY >= rowTop && t.CenterY < totalLineY - Math.Max(1, page.Height * .0015))
+            .ToList();
+        foreach (var candidate in Lines(unitPriceTokens, tolerance).OrderByDescending(l => l.Average(x => x.CenterY)))
+        {
+            if (!TryAmountFromLine(candidate, out var value) || value <= 0) continue;
+            line.UnitPrice = value;
+            break;
+        }
+
+        // Quantity and unit: the right-most numeric token immediately left of the price column.
+        var leftTokens = page.Tokens
+            .Where(t => t.CenterX >= itemNoRight && t.CenterX < priceLeft - 1)
+            .Where(t => t.CenterY >= rowTop && t.CenterY <= bandBottom)
+            .ToList();
+        double? quantityLeft = null;
+        var maxFragmentGap = page.Width * .015;
+        foreach (var visualLine in Lines(leftTokens, tolerance).OrderByDescending(l => l.Max(t => t.CenterX)))
+        {
+            var ordered = visualLine.OrderBy(t => t.Left).ToList();
+            for (var k = ordered.Count - 1; k >= 0; k--)
+            {
+                var anchor = ordered[k];
+                if (!Regex.IsMatch(anchor.Text.Trim(), @"^[0-9][0-9,.]*$")) continue;
+                // The quantity sits in the column immediately left of the price column;
+                // a number further left belongs to the product name/specification.
+                if (anchor.CenterX < priceLeft - page.Width * .18) break;
+                var fragments = new List<string>();
+                var lastLeft = anchor.Left;
+                for (var m = k; m >= 0; m--)
+                {
+                    var token = ordered[m];
+                    var text = token.Text.Trim();
+                    if (!Regex.IsMatch(text, @"^[0-9][0-9,.]*$")) break;
+                    // Only merge fragments that are actually adjacent; never join two
+                    // numbers separated by a gap (e.g. a model year and a quantity).
+                    if (m < k && token.Right < lastLeft - maxFragmentGap) break;
+                    fragments.Insert(0, text);
+                    lastLeft = token.Left;
+                }
+                if (!TryAmount(string.Concat(fragments), out var quantity) || quantity <= 0) break;
+                line.Quantity = quantity;
+                quantityLeft = anchor.Left;
+                line.Unit = string.Join(" ", ordered.Skip(k + 1)
+                    .Select(t => t.Text.Trim())
+                    .Where(t => t.Length > 0 && !Regex.IsMatch(t, @"^[0-9][0-9,.]*$"))).Trim();
+                break;
+            }
+            if (line.Quantity is not null) break;
+        }
+
+        // Product name: everything else between the item number and the quantity/price column.
+        var productRight = quantityLeft ?? priceLeft;
+        var productTokens = page.Tokens
+            .Where(t => t.CenterX >= itemNoRight && t.CenterX < productRight - 1)
+            .Where(t => t.CenterY >= rowTop && t.CenterY <= bandBottom)
+            .ToList();
+        var product = string.Join(" ", Lines(productTokens, tolerance)
+            .Select(Join)
+            .Select(value => value.Trim())
+            .Where(value => value.Length > 0 && !Regex.IsMatch(value, @"^[\p{P}\p{S}\s]+$")));
+        line.ProductName = Regex.Replace(product, @"\s+", " ").Trim();
+
+        // A quantity without a recognizable unit keeps the raw unit text; if the row had no
+        // unit at all, leave it empty so the dialog and exports show “—”.
+        if (line.Quantity is null) line.Unit = "";
+        if (line.Unit.Length > 0 && KnownUnits.Contains(line.Unit)) line.Unit = line.Unit.ToUpperInvariant();
+    }
+
+    private static TextToken? FindItemNoToken(TextPage page, double tableTop, double currencyY)
+    {
+        return page.Tokens
             .Where(t => t.CenterX <= page.Width * .085 && t.CenterY > tableTop)
             .Where(t => t.CenterY <= currencyY + page.Height * .012 && currencyY - t.CenterY <= page.Height * .12)
-            .Select(t => (Token: t, Match: Regex.Match(t.Text.Trim(), @"^(\d{1,3})$")))
-            .Where(x => x.Match.Success)
-            .OrderBy(x => Math.Abs(x.Token.CenterY - currencyY))
-            .ThenByDescending(x => x.Token.CenterY)
+            .Where(t => Regex.IsMatch(t.Text.Trim(), @"^(\d{1,3})$"))
+            .OrderBy(t => Math.Abs(t.CenterY - currencyY))
+            .ThenByDescending(t => t.CenterY)
             .FirstOrDefault();
-        return candidate.Match?.Groups[1].Value ?? "";
     }
 
     internal static Dictionary<string, decimal> SumReliableLineTotals(IEnumerable<DeclarationLineTotal> lines)

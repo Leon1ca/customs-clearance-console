@@ -8,6 +8,7 @@ internal sealed class RoundedButton : Button
     public Color BorderColor { get; set; } = Theme.Border;
     public Color HoverBackColor { get; set; } = Color.White;
     public Color PressedBackColor { get; set; } = Color.White;
+    public Color DisabledFill { get; set; } = Theme.DisabledFill;
     private bool _hover;
     private bool _pressed;
 
@@ -29,7 +30,7 @@ internal sealed class RoundedButton : Button
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
         var back = _pressed ? PressedBackColor : _hover ? HoverBackColor : BackColor;
         var parentBack = Parent?.BackColor ?? Color.White;
-        if (!Enabled) back = Theme.Blend(back, parentBack, .58F);
+        if (!Enabled) back = DisabledFill;
         var fore = Enabled ? ForeColor : Theme.Blend(ForeColor, parentBack, .58F);
         var border = Enabled ? BorderColor : Theme.Blend(BorderColor, parentBack, .58F);
         using var path = Theme.RoundedPath(new RectangleF(.5F, .5F, Math.Max(1, Width - 1F), Math.Max(1, Height - 1F)), Radius);
@@ -213,6 +214,9 @@ internal sealed class SearchField : RoundedPanel
 internal sealed class ModernDropDown : RoundedPanel
 {
     public List<string> Items { get; } = [];
+    public int ItemHeight { get; set; } = 44;
+    public bool OpenUpward { get; set; }
+    public bool UseMonoValue { get; set; }
     private int _selectedIndex = -1;
     private bool _open;
     private DropDownPopupForm? _popup;
@@ -262,35 +266,45 @@ internal sealed class ModernDropDown : RoundedPanel
     {
         base.OnPaint(e);
         var text = SelectedItem ?? string.Empty;
-        var textRect = new Rectangle(24, 0, Math.Max(0, Width - 74), Height);
-        using var textFont = Theme.UiFont(14);
-        TextRenderer.DrawText(e.Graphics, text, textFont, textRect, Theme.FieldText,
+        var textRect = new Rectangle(ScaleX(10), 0, Math.Max(0, Width - ScaleX(42)), Height);
+        using var textFont = UseMonoValue ? Theme.MonoFont(13F, true) : Theme.UiFont(13F, FontStyle.Bold);
+        var textColor = Enabled ? Theme.FieldText : Theme.DisabledText;
+        TextRenderer.DrawText(e.Graphics, text, textFont, textRect, textColor,
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        using var pen = new Pen(Theme.FieldText, 1.6F) { StartCap = LineCap.Round, EndCap = LineCap.Round };
-        var x = Width - 27F; var y = Height / 2F;
+        using var pen = new Pen(Enabled ? Theme.Muted : Theme.DisabledText, 1.6F) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+        var x = Width - ScaleX(15F); var y = Height / 2F;
         if (_open) { e.Graphics.DrawLine(pen, x - 5, y + 2.5F, x, y - 2.5F); e.Graphics.DrawLine(pen, x, y - 2.5F, x + 5, y + 2.5F); }
         else { e.Graphics.DrawLine(pen, x - 5, y - 2.5F, x, y + 2.5F); e.Graphics.DrawLine(pen, x, y + 2.5F, x + 5, y - 2.5F); }
     }
 
+    private int ScaleX(int value) => (int)Math.Round(value * DeviceDpi / 96F);
+    private int ScaleX(float value) => (int)Math.Round(value * DeviceDpi / 96F);
+
     private void ShowOptions()
     {
-        if (_open || Items.Count == 0) return;
+        if (_open || Items.Count == 0 || !Enabled) return;
         Focus();
-        _open = true; BorderColor = Theme.BlueHover; BorderWidth = 2; Invalidate();
+        _open = true; BorderColor = Theme.Accent; BorderWidth = 2; Invalidate();
         EnsurePopup();
         if (_popup is null || _options is null) return;
-        _options.Size = new Size(Width, Items.Count * 48 + 16);
+        var itemHeight = ScaleX(ItemHeight);
+        _options.Size = new Size(Width, Items.Count * itemHeight + ScaleX(8));
         _options.ResetHover();
         _popup.ClientSize = _options.Size;
         var owner = FindForm();
         _popup.Opacity = owner?.Opacity ?? 1D;
-        var desired = PointToScreen(new Point(0, Height + 8));
         var working = Screen.FromControl(this).WorkingArea;
-        var x = Math.Clamp(desired.X, working.Left, Math.Max(working.Left, working.Right - _popup.Width));
-        var y = desired.Y + _popup.Height <= working.Bottom
-            ? desired.Y
-            : Math.Max(working.Top, PointToScreen(Point.Empty).Y - _popup.Height - 8);
+        var desired = PointToScreen(new Point(0, Height + ScaleX(6)));
+        var x = OpenUpward ? PointToScreen(new Point(Width - _popup.Width, 0)).X : desired.X;
+        x = Math.Clamp(x, working.Left, Math.Max(working.Left, working.Right - _popup.Width));
+        int y;
+        if (OpenUpward)
+            y = Math.Max(working.Top, PointToScreen(Point.Empty).Y - _popup.Height - ScaleX(6));
+        else
+            y = desired.Y + _popup.Height <= working.Bottom
+                ? desired.Y
+                : Math.Max(working.Top, PointToScreen(Point.Empty).Y - _popup.Height - ScaleX(6));
         _popup.Location = new Point(x, y);
         if (owner is not null) _popup.Show(owner); else _popup.Show();
         _popup.Activate();
@@ -299,8 +313,8 @@ internal sealed class ModernDropDown : RoundedPanel
     private void EnsurePopup()
     {
         if (_popup is { IsDisposed: false }) return;
-        _options = new DropDownOptionsPanel(Items, () => SelectedIndex, index => SelectedIndex = index)
-        { Size = new Size(Width, Items.Count * 48 + 16) };
+        _options = new DropDownOptionsPanel(Items, () => SelectedIndex, index => SelectedIndex = index, () => ScaleX(ItemHeight))
+        { Size = new Size(Width, Items.Count * ScaleX(ItemHeight) + ScaleX(8)) };
         _popup = new DropDownPopupForm(_options);
         _popup.Deactivate += (_, _) => HidePopup();
         _popup.VisibleChanged += (_, _) => { if (!_popup.Visible) SetClosedState(); };
@@ -381,52 +395,70 @@ internal sealed class ModernDropDown : RoundedPanel
         private readonly IReadOnlyList<string> _items;
         private readonly Func<int> _selected;
         private readonly Action<int> _choose;
+        private readonly Func<int> _itemHeight;
         private int _hover = -1;
         public event EventHandler? OptionChosen;
 
-        public DropDownOptionsPanel(IReadOnlyList<string> items, Func<int> selected, Action<int> choose)
+        public DropDownOptionsPanel(IReadOnlyList<string> items, Func<int> selected, Action<int> choose, Func<int> itemHeight)
         {
-            _items = items; _selected = selected; _choose = choose;
+            _items = items; _selected = selected; _choose = choose; _itemHeight = itemHeight;
             BackColor = Color.White; Cursor = Cursors.Hand;
             SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint, true);
         }
 
         public void ResetHover() { _hover = -1; Invalidate(); }
 
-        protected override void OnMouseMove(MouseEventArgs e) { base.OnMouseMove(e); var next = Math.Clamp((e.Y - 8) / 48, 0, _items.Count - 1); if (next != _hover) { _hover = next; Invalidate(); } }
+        private int IndexAt(int y)
+        {
+            var pad = (int)Math.Round(4 * DeviceDpi / 96F);
+            var height = Math.Max(1, _itemHeight());
+            var index = (y - pad) / height;
+            return index < 0 || index >= _items.Count ? -1 : index;
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e) { base.OnMouseMove(e); var next = IndexAt(e.Y); if (next != _hover) { _hover = next; Invalidate(); } }
         protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); _hover = -1; Invalidate(); }
         protected override void OnMouseUp(MouseEventArgs e)
         {
-            base.OnMouseUp(e); var index = (e.Y - 8) / 48;
-            if (index < 0 || index >= _items.Count) return;
+            base.OnMouseUp(e); var index = IndexAt(e.Y);
+            if (index < 0) return;
             _choose(index); OptionChosen?.Invoke(this, EventArgs.Empty);
         }
 
         protected override void OnPaint(PaintEventArgs e)
         {
+            var dpi = DeviceDpi / 96F;
+            int S(int px) => (int)Math.Round(px * dpi);
+            float Sf(float px) => (float)Math.Round(px * dpi);
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
             e.Graphics.Clear(Color.White);
+            var pad = S(4);
+            var height = Math.Max(1, _itemHeight());
             for (var i = 0; i < _items.Count; i++)
             {
-                var row = new Rectangle(8, 8 + i * 48, Width - 16, 48);
+                var row = new Rectangle(pad, pad + i * height, Width - pad * 2, height);
                 if (i == _selected() || i == _hover)
                 {
-                    using var path = Theme.RoundedPath(row, 6);
-                    using var brush = new SolidBrush(i == _selected() ? ColorTranslator.FromHtml("#D9E7FF") : ColorTranslator.FromHtml("#F3F6FA"));
+                    using var path = Theme.RoundedPath(row, Sf(5));
+                    using var brush = new SolidBrush(i == _selected() ? Theme.AccentSoft : Theme.SegmentBg);
                     e.Graphics.FillPath(brush, path);
                 }
-                using var itemFont = Theme.UiFont(18);
-                TextRenderer.DrawText(e.Graphics, _items[i], itemFont, new Rectangle(row.X + 16, row.Y, row.Width - 58, row.Height), Theme.FieldText,
-                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+                using var itemFont = Theme.UiFont(13.5F, i == _selected() ? FontStyle.Bold : FontStyle.Regular);
+                TextRenderer.DrawText(e.Graphics, _items[i], itemFont, new Rectangle(row.X + S(20), row.Y, row.Width - S(44), row.Height),
+                    i == _selected() ? Theme.Primary : Theme.FieldText,
+                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
                 if (i == _selected())
                 {
-                    using var pen = new Pen(Theme.BlueHover, 2F) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
-                    var cx = row.Right - 25; var cy = row.Top + 24;
-                    e.Graphics.DrawLines(pen, [new PointF(cx - 6, cy), new PointF(cx - 1, cy + 5), new PointF(cx + 7, cy - 5)]);
+                    var check = UiV2Icons.Load(Ui2.CheckBlue, 16, DeviceDpi);
+                    if (check is not null)
+                    {
+                        e.Graphics.DrawImage(check, row.X + S(5), row.Y + (row.Height - check.Height) / 2, check.Width, check.Height);
+                        check.Dispose();
+                    }
                 }
             }
             using var border = new Pen(Theme.Border);
-            using var borderPath = Theme.RoundedPath(new RectangleF(.5F, .5F, Width - 1, Height - 1), 10);
+            using var borderPath = Theme.RoundedPath(new RectangleF(.5F, .5F, Width - 1, Height - 1), Sf(8));
             e.Graphics.DrawPath(border, borderPath);
         }
     }

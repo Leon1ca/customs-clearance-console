@@ -26,7 +26,7 @@ internal sealed class StateStore
                 record.Status = "需关注";
                 record.Warning = string.Join("；", new[] { record.Warning, "历史重复记录的识别状态不完整，请重新识别源文件" }.Where(x => !string.IsNullOrWhiteSpace(x)));
             }
-            state.UiSchemaVersion = 5;
+            state.UiSchemaVersion = AppState.CurrentUiSchemaVersion;
             BatchScanner.MarkDuplicates(state.Records);
             return state;
         }

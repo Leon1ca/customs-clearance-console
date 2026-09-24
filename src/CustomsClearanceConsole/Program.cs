@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 
 namespace CustomsClearanceConsole;
 
@@ -14,7 +15,8 @@ internal static class Program
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
             AppLog.Write(e.ExceptionObject as Exception ?? new Exception("未知错误"));
 
-        PdfiumNative.Initialize();
+        AppFonts.Initialize();
+        TryInitializePdfium();
 
         if (args.Length >= 2 && args[0].Equals("--self-test", StringComparison.OrdinalIgnoreCase))
         {
@@ -33,9 +35,14 @@ internal static class Program
         }
         if (args.Length >= 2 && args[0].Equals("--ui-snapshot", StringComparison.OrdinalIgnoreCase))
         {
-            var width = args.Length >= 3 && int.TryParse(args[2], out var parsedWidth) ? parsedWidth : 1365;
-            var height = args.Length >= 4 && int.TryParse(args[3], out var parsedHeight) ? parsedHeight : 768;
+            var width = args.Length >= 3 && int.TryParse(args[2], out var parsedWidth) ? parsedWidth : 1440;
+            var height = args.Length >= 4 && int.TryParse(args[3], out var parsedHeight) ? parsedHeight : 900;
             SelfTest.CaptureUi(args[1], width, height);
+            return;
+        }
+        if (args.Length >= 2 && args[0].Equals("--ui-state-snapshot", StringComparison.OrdinalIgnoreCase))
+        {
+            SelfTest.CaptureAllStates(args[1]);
             return;
         }
         if (args.Length >= 3 && args[0].Equals("--ui-dialog-snapshot", StringComparison.OrdinalIgnoreCase))
@@ -48,30 +55,35 @@ internal static class Program
             SelfTest.RunUiContracts();
             return;
         }
-        if (args.Length >= 2 && args[0].Equals("--browser-smoke", StringComparison.OrdinalIgnoreCase))
+        if (args.Length >= 2 && args[0].Equals("--export-samples", StringComparison.OrdinalIgnoreCase))
         {
-            BrowserSmokeTest.RunAsync(args[1]).GetAwaiter().GetResult();
+            var report = ExportValidation.Run(args[1]);
+            Console.OutputEncoding = Encoding.UTF8;
+            Console.WriteLine(JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true }));
+            Environment.ExitCode = report.Pass ? 0 : 1;
+            return;
+        }
+        if (args.Length >= 2 && args[0].Equals("--browser-e2e", StringComparison.OrdinalIgnoreCase))
+        {
+            Environment.ExitCode = BrowserCaptureE2E.RunAsync(args[1]).GetAwaiter().GetResult();
+            return;
+        }
+        if (args.Length >= 2 && args[0].Equals("--env-report", StringComparison.OrdinalIgnoreCase))
+        {
+            SelfTest.WriteEnvironmentReport(args[1]);
             return;
         }
         Application.Run(new MainForm());
     }
-}
 
-internal static class BrowserSmokeTest
-{
-    public static async Task RunAsync(string outputFolder)
+    private static void TryInitializePdfium()
     {
-        await using var browser = new BrowserValidation();
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
-        try
+        try { PdfiumNative.Initialize(); }
+        catch (Exception ex)
         {
-            var status = await browser.StartAsync("292120260001476464", timeout.Token);
-            Console.WriteLine(status);
-            Directory.CreateDirectory(outputFolder);
-            File.WriteAllText(Path.Combine(outputFolder, "browser-connection.txt"), status);
-            Console.WriteLine("BROWSER_CONNECTION_OK · 验证码与真实结果截图需人工验收");
-            Environment.ExitCode = 0;
+            // UI, export and browser-only commands must run even without the PDF runtime;
+            // OCR commands surface the missing dependency when they actually extract.
+            AppLog.Write($"PDF 组件初始化未完成：{ex.Message}");
         }
-        catch (Exception ex) { Console.Error.WriteLine(ex); Environment.ExitCode = 1; }
     }
 }

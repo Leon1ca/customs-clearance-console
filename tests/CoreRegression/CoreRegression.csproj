@@ -7,6 +7,8 @@
     <Compile Include="../../src/CustomsClearanceConsole/BatchScanner.cs" Link="Production/BatchScanner.cs" />
     <Compile Include="../../src/CustomsClearanceConsole/ScanPlan.cs" Link="Production/ScanPlan.cs" />
     <Compile Include="../../src/CustomsClearanceConsole/MarkdownListExporter.cs" Link="Production/MarkdownListExporter.cs" />
+    <Compile Include="../../src/CustomsClearanceConsole/ExcelListExporter.cs" Link="Production/ExcelListExporter.cs" />
+    <Compile Include="../../src/CustomsClearanceConsole/ExportValidation.cs" Link="Production/ExportValidation.cs" />
     <Compile Include="../../src/CustomsClearanceConsole/StateStore.cs" Link="Production/StateStore.cs" />
     <Compile Include="../../src/CustomsClearanceConsole/AppPaths.cs" Link="Production/AppPaths.cs" />
     <Compile Include="../../src/CustomsClearanceConsole/AppLog.cs" Link="Production/AppLog.cs" />

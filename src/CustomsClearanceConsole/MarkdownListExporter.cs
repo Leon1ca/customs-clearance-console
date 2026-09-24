@@ -22,8 +22,12 @@ internal static class MarkdownListExporter
                 ["报关单号", record.DeclarationNo],
                 ["境外收货人", record.Consignee],
                 ["合同协议号", record.ContractNo],
+                ["出境关别", record.ExitCustoms],
+                ["目的国", record.DestinationCountry],
                 ["源文件", record.SourceName],
                 ["识别状态", record.Status + (record.IsDuplicate && !record.Status.Contains("重复单号") ? "；重复单号" : "")],
+                ["重复处理", record.IsDuplicate ? record.IsCanonical ? "合计代表（计入去重合计）" : "不计入（去重合计只计代表一份）" : "—"],
+                ["截图留存", record.HasScreenshot ? $"已留存（{record.ScreenshotPath}）" : "—"],
                 ["识别提示", record.AllWarnings]
             ], [14, 64]);
 
@@ -31,14 +35,19 @@ internal static class MarkdownListExporter
             if (record.LineTotals.Count == 0)
                 output.AppendLine("未保存分项价格，请重新识别源文件后导出；此处不会把关单总价当作分项价格。").AppendLine();
             else
-                Table(output, ["页码", "项号", "币种", "分项总价", "复核总价", "校对说明"],
+                Table(output, ["页码", "项号", "商品名称", "数量·单位", "单价", "币种", "分项总价", "复核总价", "校对说明"],
                     record.LineTotals.OrderBy(x => x.PageNumber).ThenBy(x => x.Sequence).Select(line => new[]
                     {
-                        line.PageNumber.ToString(CultureInfo.InvariantCulture), line.ItemNo, line.Currency,
+                        line.PageNumber.ToString(CultureInfo.InvariantCulture), line.ItemNo,
+                        string.IsNullOrWhiteSpace(line.ProductName) ? "—" : line.ProductName,
+                        line.ExactQuantityUnit,
+                        line.ExactUnitPrice,
+                        line.Currency,
                         Money(line.Amount), line.VerificationAmount.HasValue ? Money(line.VerificationAmount.Value) : "—",
                         (line.IsReliable ? "已确认" : "未确认，未计入总价") +
+                        (line.HasSecondaryDifference ? "；另一引擎内容不同：" + SecondaryDifference(line) : "") +
                         (string.IsNullOrWhiteSpace(line.Note) ? "" : "；" + line.Note)
-                    }).ToList(), [6, 8, 8, 20, 20, 36], [3, 4]);
+                    }).ToList(), [6, 8, 30, 16, 12, 8, 20, 20, 40], [6, 7]);
 
             var incomplete = record.LineTotals.Any(line => !line.IsReliable) ||
                 record.Status is "需关注" or "识别失败";
@@ -66,6 +75,20 @@ internal static class MarkdownListExporter
     }
 
     private static string Money(decimal value) => value.ToString("N2", CultureInfo.InvariantCulture);
+
+    private static string SecondaryDifference(DeclarationLineTotal line)
+    {
+        var parts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(line.VerificationProductName) && !string.Equals(line.VerificationProductName, line.ProductName, StringComparison.Ordinal))
+            parts.Add($"商品名称“{line.VerificationProductName}”");
+        if (line.VerificationQuantity is not null && line.VerificationQuantity != line.Quantity)
+            parts.Add($"数量 {NumberFormats.Exact(line.VerificationQuantity.Value)}");
+        if (!string.IsNullOrWhiteSpace(line.VerificationUnit) && !string.Equals(line.VerificationUnit, line.Unit, StringComparison.Ordinal))
+            parts.Add($"单位“{line.VerificationUnit}”");
+        if (line.VerificationUnitPrice is not null && line.VerificationUnitPrice != line.UnitPrice)
+            parts.Add($"单价 {NumberFormats.Exact(line.VerificationUnitPrice.Value)}");
+        return parts.Count == 0 ? "复核引擎提供了不同内容" : string.Join("、", parts);
+    }
 
     // Metadata gets its own wide value column. Pad Markdown source to the longest
     // cell instead of truncating; readers can wrap cells according to their viewport.

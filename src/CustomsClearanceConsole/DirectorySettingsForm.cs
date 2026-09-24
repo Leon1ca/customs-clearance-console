@@ -1,5 +1,6 @@
 namespace CustomsClearanceConsole;
 
+/// <summary>Directory settings dialog (design spec 4.2, 520x400).</summary>
 internal sealed class DirectorySettingsForm : Form
 {
     private readonly TextBox _declarationFolder;
@@ -11,118 +12,138 @@ internal sealed class DirectorySettingsForm : Form
 
     public DirectorySettingsForm(string declarationFolder, string screenshotFolder)
     {
-        Text = "目录设置";
+        Text = "设置";
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
-        ClientSize = new Size(780, 475);
+        ClientSize = new Size(520, 400);
         BackColor = Color.White;
         AutoScaleMode = AutoScaleMode.Dpi;
         AutoScaleDimensions = new SizeF(96F, 96F);
+        StartPosition = FormStartPosition.CenterParent;
 
-        var frame = new RoundedPanel
-        {
-            Dock = DockStyle.Fill,
-            Radius = 12,
-            BorderColor = ColorTranslator.FromHtml("#AEBED1"),
-            BackColor = Color.White,
-            Margin = new Padding(0)
-        };
-
-        var header = new Panel { Location = new Point(1, 1), Size = new Size(778, 109), BackColor = ColorTranslator.FromHtml("#F6F8FB") };
+        var frame = new RoundedPanel { Dock = DockStyle.Fill, Radius = 10, BorderColor = Theme.Border, BackColor = Color.White };
+        var header = new Panel { Location = new Point(1, 1), Size = new Size(518, 56), BackColor = Color.White };
         header.Paint += (_, e) =>
         {
-            using var pen = new Pen(ColorTranslator.FromHtml("#D5DEE9"));
-            e.Graphics.DrawLine(pen, 0, header.Height - 1, header.Width, header.Height - 1);
+            using var pen = new Pen(Theme.Divider);
+            e.Graphics.DrawLine(pen, 20, header.Height - 1, header.Width - 20, header.Height - 1);
         };
         header.Controls.Add(new Label
         {
-            Text = "目录设置",
-            Location = new Point(31, 25),
-            Size = new Size(300, 36),
-            Font = Theme.UiFont(26F, FontStyle.Bold),
+            Text = "设置",
+            Location = new Point(20, 0),
+            Size = new Size(200, 56),
+            Font = Theme.UiFont(16F, FontStyle.Bold),
             ForeColor = Theme.Text,
             TextAlign = ContentAlignment.MiddleLeft
         });
-        header.Controls.Add(new Label
-        {
-            Text = "分别设置关单读取目录与核验截图保存目录",
-            Location = new Point(32, 65),
-            Size = new Size(560, 24),
-            Font = Theme.UiFont(16F),
-            ForeColor = Theme.Muted,
-            TextAlign = ContentAlignment.MiddleLeft
-        });
-        var close = new CircleCloseButton { Location = new Point(702, 29) };
+        var close = new CircleCloseButton { Location = new Point(462, 8) };
         close.Click += (_, _) => { DialogResult = DialogResult.Cancel; Close(); };
         header.Controls.Add(close);
-        header.MouseDown += (_, e) => { if (e.Button == MouseButtons.Left) BeginDialogDrag(); };
 
-        var declarationLabel = FieldLabel("关单读取目录", 32, 121);
-        var declarationField = new PathDisplay(declarationFolder, "尚未选择关单读取目录", out _declarationFolder)
-        { Location = new Point(32, 150), Size = new Size(572, 56) };
-        var chooseDeclaration = DirectoryButton();
-        chooseDeclaration.Location = new Point(620, 150);
-        chooseDeclaration.Click += (_, _) => ChooseFolder(_declarationFolder, "选择关单读取目录");
+        var declarationLabel = FieldLabel("关单目录", 20, 74);
+        var declarationField = PathDisplay(declarationFolder, "选择关单读取目录", out _declarationFolder);
+        declarationField.Location = new Point(20, 100);
+        declarationField.Size = new Size(392, 36);
+        var browseDeclaration = BrowseButton();
+        browseDeclaration.Location = new Point(420, 100);
+        browseDeclaration.Click += (_, _) => ChooseFolder(_declarationFolder, "选择关单目录");
+        var declarationNote = Note("只读取当前层；更换后作为新批次载入，识别中不可修改", 20, 142);
 
-        var screenshotLabel = FieldLabel("截图保存目录", 32, 233);
-        var screenshotField = new PathDisplay(screenshotFolder, "尚未选择截图保存目录", out _screenshotFolder)
-        { Location = new Point(32, 262), Size = new Size(572, 56) };
-        var chooseScreenshot = DirectoryButton();
-        chooseScreenshot.Location = new Point(620, 262);
-        chooseScreenshot.Click += (_, _) => ChooseFolder(_screenshotFolder, "选择截图保存目录");
+        var screenshotLabel = FieldLabel("截图目录", 20, 182);
+        var screenshotField = PathDisplay(screenshotFolder, "选择核验截图保存目录", out _screenshotFolder);
+        screenshotField.Location = new Point(20, 208);
+        screenshotField.Size = new Size(392, 36);
+        var browseScreenshot = BrowseButton();
+        browseScreenshot.Location = new Point(420, 208);
+        browseScreenshot.Click += (_, _) => ChooseFolder(_screenshotFolder, "选择截图目录");
+        var screenshotNote = Note("网页长截图以 18 位报关单号命名保存到此处", 20, 250);
 
         _helper = new Label
         {
-            Text = "路径仅保存在当前设备，可随时重新设置。",
-            Location = new Point(32, 344),
-            Size = new Size(716, 22),
-            Font = Theme.UiFont(14F),
+            Text = string.Empty,
+            Location = new Point(20, 286),
+            Size = new Size(480, 20),
+            Font = Theme.UiFont(12.5F),
             ForeColor = Theme.Muted,
             TextAlign = ContentAlignment.MiddleLeft,
             AutoEllipsis = true
         };
 
-        var footer = new Panel { Location = new Point(1, 383), Size = new Size(778, 91), BackColor = Color.White };
+        var footer = new Panel { Location = new Point(1, 319), Size = new Size(518, 80), BackColor = UiTokens.Colors.DialogFooter };
         footer.Paint += (_, e) =>
         {
-            using var pen = new Pen(ColorTranslator.FromHtml("#D5DEE9"));
+            using var pen = new Pen(Theme.Divider);
             e.Graphics.DrawLine(pen, 0, 0, footer.Width, 0);
         };
         var cancel = Theme.SecondaryButton("取消");
-        cancel.Location = new Point(511, 20);
-        cancel.Size = new Size(112, 48);
-        cancel.DialogResult = DialogResult.Cancel;
-        var save = Theme.PrimaryButton("保存设置");
-        save.Location = new Point(635, 20);
-        save.Size = new Size(112, 48);
+        cancel.Location = new Point(272, 22);
+        cancel.Size = new Size(110, 36);
+        cancel.Click += (_, _) => { DialogResult = DialogResult.Cancel; Close(); };
+        var save = Theme.PrimaryButton("保存");
+        save.Location = new Point(392, 22);
+        save.Size = new Size(110, 36);
         save.Click += (_, _) => SaveAndClose();
         footer.Controls.AddRange([cancel, save]);
 
-        frame.Controls.AddRange([
-            header, declarationLabel, declarationField, chooseDeclaration,
-            screenshotLabel, screenshotField, chooseScreenshot, _helper, footer
-        ]);
+        frame.Controls.AddRange([header, declarationLabel, declarationField, browseDeclaration, declarationNote,
+            screenshotLabel, screenshotField, browseScreenshot, screenshotNote, _helper, footer]);
         Controls.Add(frame);
         AcceptButton = save;
         CancelButton = cancel;
+        header.MouseDown += (_, e) => { if (e.Button == MouseButtons.Left) BeginDialogDrag(); };
     }
 
     private static Label FieldLabel(string text, int x, int y) => new()
     {
         Text = text,
         Location = new Point(x, y),
-        Size = new Size(300, 22),
-        Font = Theme.UiFont(16F, FontStyle.Bold),
+        Size = new Size(300, 20),
+        Font = Theme.UiFont(13F, FontStyle.Bold),
         ForeColor = Theme.FieldText,
         TextAlign = ContentAlignment.MiddleLeft
     };
 
-    private static Button DirectoryButton()
+    private static Label Note(string text, int x, int y) => new()
     {
-        var button = Theme.TonalButton("选择目录");
-        button.Size = new Size(128, 56);
-        if (button is RoundedButton rounded) rounded.Radius = 10;
+        Text = text,
+        Location = new Point(x, y),
+        Size = new Size(480, 18),
+        Font = Theme.UiFont(12F),
+        ForeColor = Theme.Muted,
+        TextAlign = ContentAlignment.MiddleLeft
+    };
+
+    private static Button BrowseButton()
+    {
+        var button = Theme.QuietButton("浏览…");
+        button.Size = new Size(78, 36);
         return button;
+    }
+
+    private static RoundedPanel PathDisplay(string value, string placeholder, out TextBox textBox)
+    {
+        var panel = new RoundedPanel
+        {
+            Radius = 6,
+            BorderColor = Theme.BorderControl,
+            BackColor = Color.White,
+            Padding = new Padding(12, 7, 10, 6)
+        };
+        textBox = new TextBox
+        {
+            Text = value,
+            PlaceholderText = placeholder,
+            ReadOnly = true,
+            BorderStyle = BorderStyle.None,
+            BackColor = Color.White,
+            ForeColor = Theme.FieldText,
+            Font = Theme.MonoFont(12.5F),
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0)
+        };
+        panel.Controls.Add(textBox);
+        return panel;
     }
 
     private void ChooseFolder(TextBox target, string title)
@@ -135,7 +156,7 @@ internal sealed class DirectorySettingsForm : Form
         };
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         target.Text = dialog.SelectedPath;
-        ShowHelper("路径仅保存在当前设备，可随时重新设置。", false);
+        ShowHelper(string.Empty, false);
     }
 
     private void SaveAndClose()
@@ -173,7 +194,7 @@ internal sealed class DirectorySettingsForm : Form
     {
         base.OnResize(e);
         if (Width <= 0 || Height <= 0) return;
-        using var path = Theme.RoundedPath(new RectangleF(0, 0, Width, Height), 12);
+        using var path = Theme.RoundedPath(new RectangleF(0, 0, Width, Height), 10);
         Region = new Region(path);
     }
 
@@ -185,37 +206,6 @@ internal sealed class DirectorySettingsForm : Form
             var parameters = base.CreateParams;
             parameters.ClassStyle |= csDropShadow;
             return parameters;
-        }
-    }
-
-    private sealed class PathDisplay : RoundedPanel
-    {
-        public PathDisplay(string value, string placeholder, out TextBox textBox)
-        {
-            Radius = 7;
-            BorderColor = ColorTranslator.FromHtml("#C7D2E1");
-            BackColor = Color.White;
-            Padding = new Padding(50, 14, 16, 10);
-            textBox = new TextBox
-            {
-                Text = value,
-                PlaceholderText = placeholder,
-                ReadOnly = true,
-                BorderStyle = BorderStyle.None,
-                BackColor = Color.White,
-                ForeColor = Theme.FieldText,
-                Font = Theme.UiFont(17F),
-                Dock = DockStyle.Fill,
-                Margin = new Padding(0)
-            };
-            Controls.Add(textBox);
-        }
-
-        protected override void OnPaint(PaintEventArgs e)
-        {
-            base.OnPaint(e);
-            using var icon = UiIcons.Create(UiIcon.Folder, Theme.Placeholder, 24);
-            e.Graphics.DrawImage(icon, 16, (Height - 24) / 2, 24, 24);
         }
     }
 }

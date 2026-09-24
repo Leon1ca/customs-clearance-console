@@ -29,8 +29,12 @@ public sealed class DeclarationRecord
     [JsonIgnore]
     public bool HasScreenshot => !string.IsNullOrWhiteSpace(ScreenshotPath) && File.Exists(ScreenshotPath);
     [JsonIgnore]
+    public bool HasLineDetails => LineTotals.Count > 0;
+    [JsonIgnore]
     public string DisplayStatus => string.Join(Environment.NewLine,
         new[] { IsDuplicate ? "重复单号" : "", NeedsAttention ? Status == "识别失败" ? "识别失败" : "需关注" : "", !IsDuplicate && !NeedsAttention ? "识别完成" : "" }.Where(x => x.Length > 0));
+    [JsonIgnore]
+    public string PrimaryStatus => Status == "识别失败" ? "识别失败" : IsDuplicate ? "重复" : NeedsAttention ? "需关注" : "正常";
     [JsonIgnore]
     public string AllWarnings => string.Join("；", new[] { Warning, DuplicateWarning }.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct());
 
@@ -48,9 +52,17 @@ public sealed class DeclarationLineTotal
     public int Sequence { get; set; }
     public int PageNumber { get; set; }
     public string ItemNo { get; set; } = "";
+    public string ProductName { get; set; } = "";
+    public decimal? Quantity { get; set; }
+    public string Unit { get; set; } = "";
+    public decimal? UnitPrice { get; set; }
     public string Currency { get; set; } = "";
     public decimal Amount { get; set; }
     public decimal? VerificationAmount { get; set; }
+    public string VerificationProductName { get; set; } = "";
+    public decimal? VerificationQuantity { get; set; }
+    public string VerificationUnit { get; set; } = "";
+    public decimal? VerificationUnitPrice { get; set; }
     public bool IsReliable { get; set; } = true;
     public string Note { get; set; } = "";
 
@@ -61,11 +73,47 @@ public sealed class DeclarationLineTotal
     public string DisplayVerification => VerificationAmount is null
         ? "—"
         : $"{Currency} {VerificationAmount.Value:N2}";
+
+    [JsonIgnore]
+    public string DisplayProduct => string.IsNullOrWhiteSpace(ProductName) ? "未识别" : ProductName;
+
+    [JsonIgnore]
+    public string DisplayQuantity => Quantity is null ? "—" : Quantity.Value.ToString("#,0.###", CultureInfo.InvariantCulture);
+
+    [JsonIgnore]
+    public string ExactQuantity => Quantity is null ? "—" : NumberFormats.Exact(Quantity.Value);
+
+    [JsonIgnore]
+    public string DisplayUnit => string.IsNullOrWhiteSpace(Unit) ? "—" : Unit;
+
+    [JsonIgnore]
+    public string DisplayQuantityUnit => Quantity is null
+        ? "—"
+        : string.IsNullOrWhiteSpace(Unit) ? DisplayQuantity : $"{DisplayQuantity} {Unit}";
+
+    [JsonIgnore]
+    public string ExactQuantityUnit => Quantity is null
+        ? "—"
+        : string.IsNullOrWhiteSpace(Unit) ? ExactQuantity : $"{ExactQuantity} {Unit}";
+
+    [JsonIgnore]
+    public string DisplayUnitPrice => UnitPrice is null ? "—" : UnitPrice.Value.ToString("#,0.00####", CultureInfo.InvariantCulture);
+
+    [JsonIgnore]
+    public string ExactUnitPrice => UnitPrice is null ? "—" : NumberFormats.Exact(UnitPrice.Value);
+
+    [JsonIgnore]
+    public bool HasSecondaryDifference =>
+        !string.IsNullOrWhiteSpace(VerificationProductName) && !string.Equals(VerificationProductName, ProductName, StringComparison.Ordinal) ||
+        VerificationQuantity is not null && VerificationQuantity != Quantity ||
+        !string.IsNullOrWhiteSpace(VerificationUnit) && !string.Equals(VerificationUnit, Unit, StringComparison.Ordinal) ||
+        VerificationUnitPrice is not null && VerificationUnitPrice != UnitPrice;
 }
 
 public sealed class AppState
 {
-    public int UiSchemaVersion { get; set; } = 5;
+    public const int CurrentUiSchemaVersion = 6;
+    public int UiSchemaVersion { get; set; } = CurrentUiSchemaVersion;
     public string LastFolder { get; set; } = "";
     public string ScreenshotFolder { get; set; } = "";
     public int PageSize { get; set; } = 50;
@@ -124,4 +172,22 @@ internal static class Formatters
         ? "—"
         : string.Join(Environment.NewLine, values.OrderBy(x => x.Key).Select(x => $"{x.Key} {x.Value.ToString("N2", CultureInfo.CurrentCulture)}"));
 
+}
+
+/// <summary>
+/// Lossless decimal text with thousands separators, used by exports so a value is
+/// never rounded to a display-oriented number of decimal places.
+/// </summary>
+internal static class NumberFormats
+{
+    public static string Exact(decimal value)
+    {
+        var text = value.ToString("0.############################", CultureInfo.InvariantCulture);
+        var separator = text.IndexOf('.');
+        var integerPart = separator < 0 ? text : text[..separator];
+        var fraction = separator < 0 ? "" : text[(separator + 1)..];
+        if (decimal.TryParse(integerPart, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var integer))
+            integerPart = integer.ToString("#,0", CultureInfo.InvariantCulture);
+        return fraction.Length == 0 ? integerPart : integerPart + "." + fraction;
+    }
 }
