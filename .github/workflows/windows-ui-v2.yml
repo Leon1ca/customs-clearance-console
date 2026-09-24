@@ -13,6 +13,10 @@ on:
         description: "Mark the release as a pre-release"
         type: boolean
         default: true
+      evidence_ref:
+        description: "Also push the UI evidence images to the hidden ref refs/ci-evidence/latest (non-main dispatches only)"
+        type: boolean
+        default: false
 
 # Least privilege: validation only reads the repository and its release assets and
 # uploads build evidence as job artifacts. Only the optional publish-release job,
@@ -412,3 +416,33 @@ jobs:
           [ "$PRERELEASE" = "true" ] && flags+=(--prerelease)
           gh release create "$TAG" "out/$asset" out/SHA256SUMS.txt --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" --title "关单核验台 $TAG" --notes-file "docs/release-notes-v$version.md" "${flags[@]}"
+
+  # Development aid: the evidence artifact lives in blob storage that some reviewing
+  # environments cannot reach, so on request the same files are also pushed to a hidden,
+  # non-branch ref that can be fetched with git and deleted afterwards.
+  evidence-ref:
+    name: Push UI evidence to a hidden ref
+    needs: windows-validation
+    if: always() && github.event_name == 'workflow_dispatch' && inputs.evidence_ref && github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ui-v2-validation-evidence
+          path: evidence
+      - name: Commit and push to refs/ci-evidence/latest
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd evidence
+          find . -type f ! -name '*.png' ! -name '*.json' ! -name '*.log' ! -name '*.txt' -delete
+          git init -q
+          git checkout -q --orphan evidence
+          git add -A
+          git -c user.name=ci -c user.email=ci@users.noreply.github.com commit -qm "UI evidence run ${GITHUB_RUN_ID} (${GITHUB_SHA})"
+          git push -q -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:refs/ci-evidence/latest

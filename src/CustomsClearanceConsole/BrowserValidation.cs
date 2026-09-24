@@ -2168,6 +2168,23 @@ internal sealed class BrowserValidation : IAsyncDisposable
     public Task<int> CountWidgetHostsAsync(CancellationToken token) =>
         EvaluateIntAsync("document.querySelectorAll('#ccc-widget-host').length", token);
 
+    /// <summary>E2E: capture cards mounted in any frame other than the main frame (must stay 0).</summary>
+    public async Task<int> CountSubframeWidgetHostsAsync(CancellationToken token)
+    {
+        var total = 0;
+        foreach (var target in await AuthorizedEvalTargetsAsync(token))
+        {
+            if (target.FrameId.Equals(_mainFrameId, StringComparison.Ordinal)) continue;
+            try
+            {
+                var value = await EvaluateTargetAsync("String(document.querySelectorAll('#ccc-widget-host').length)", target, token, awaitPromise: false);
+                if (int.TryParse(value.Trim('"'), out var count)) total += count;
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or KeyNotFoundException) { }
+        }
+        return total;
+    }
+
     public Task<string> EvaluateRawAsync(string expression, CancellationToken token) =>
         EvaluateContextAsync(expression, null, token, awaitPromise: false);
 
