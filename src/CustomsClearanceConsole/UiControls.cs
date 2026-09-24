@@ -37,11 +37,19 @@ internal sealed class RoundedButton : Button
         if (!Enabled) back = DisabledFill;
         var fore = Enabled ? ForeColor : Theme.Blend(ForeColor, parentBack, .58F);
         var border = Enabled ? BorderColor : Theme.Blend(BorderColor, parentBack, .58F);
-        using var path = Theme.RoundedPath(new RectangleF(.5F, .5F, Math.Max(1, Width - 1F), Math.Max(1, Height - 1F)), ScaledRadius);
-        using (var brush = new SolidBrush(back)) e.Graphics.FillPath(brush, path);
-        using (var pen = new Pen(border, 1F)) e.Graphics.DrawPath(pen, path);
-
         var scale = DeviceDpi / 96F;
+        // The button never gets a background pass (user paint into a double buffer), so the
+        // anti-aliased rounded edge used to blend with whatever the buffer held: a dark partial
+        // line on the top edge, faint and uneven borders. Paint the parent colour first, then a
+        // whole-pixel border (1px at 100%, 2px at 150%) inset by half its width so the straight
+        // edges are crisp and every side has the same weight.
+        e.Graphics.Clear(parentBack);
+        var penWidth = Math.Max(1F, MathF.Round(scale));
+        var inset = penWidth / 2F;
+        using var path = Theme.RoundedPath(new RectangleF(inset, inset, Math.Max(1, Width - penWidth), Math.Max(1, Height - penWidth)), ScaledRadius);
+        using (var brush = new SolidBrush(back)) e.Graphics.FillPath(brush, path);
+        using (var pen = new Pen(border, penWidth)) e.Graphics.DrawPath(pen, path);
+
         var chevronArea = 0;
         if (DropDown != DropDownGlyph.None)
         {
@@ -58,7 +66,7 @@ internal sealed class RoundedButton : Button
             {
                 var lineX = (int)(cx - half) - (int)Math.Round(10 * scale);
                 var lineHalf = 9 * scale;
-                using var separator = new Pen(Enabled ? UiTokens.Colors.BorderControl : border, 1F);
+                using var separator = new Pen(Enabled ? UiTokens.Colors.BorderControl : border, penWidth);
                 e.Graphics.DrawLine(separator, lineX, cy - lineHalf, lineX, cy + lineHalf);
                 chevronArea = Width - lineX + (int)Math.Round(4 * scale);
             }
@@ -80,21 +88,15 @@ internal sealed class RoundedButton : Button
         TextRenderer.DrawText(e.Graphics, Text, Font, new Rectangle(startX, 0, Math.Max(0, Width - startX), Height), fore, flags | TextFormatFlags.Left);
         if (Focused && ShowFocusCues)
         {
-            using var focusPath = Theme.RoundedPath(new RectangleF(3F, 3F, Math.Max(1, Width - 6F), Math.Max(1, Height - 6F)), Math.Max(2, ScaledRadius - 2));
-            using var focusPen = new Pen(Theme.Blue, 2F);
+            var focusInset = 3F * scale;
+            using var focusPath = Theme.RoundedPath(new RectangleF(focusInset, focusInset, Math.Max(1, Width - focusInset * 2), Math.Max(1, Height - focusInset * 2)), Math.Max(2, ScaledRadius - 2 * scale));
+            using var focusPen = new Pen(Theme.Blue, 2F * scale);
             e.Graphics.DrawPath(focusPen, focusPath);
         }
     }
 
-    protected override void OnResize(EventArgs e)
-    {
-        base.OnResize(e);
-        if (Width <= 0 || Height <= 0) return;
-        using var path = Theme.RoundedPath(new RectangleF(0, 0, Width, Height), ScaledRadius);
-        var oldRegion = Region;
-        Region = new Region(path);
-        oldRegion?.Dispose();
-    }
+    // No window region: a region rasterises the rounded corners with jagged steps and clipped
+    // the anti-aliased border unevenly. The corners are painted in the parent colour instead.
 }
 
 internal class RoundedPanel : Panel
@@ -121,8 +123,11 @@ internal class RoundedPanel : Panel
     {
         base.OnPaint(eventArgs);
         eventArgs.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        using var borderPath = Theme.RoundedPath(new RectangleF(0.5F, 0.5F, Width - 1F, Height - 1F), ScaledRadius);
-        using var borderPen = new Pen(BorderColor, BorderWidth);
+        // Whole-pixel border inset by half its width: crisp and equally heavy on every side.
+        var penWidth = Math.Max(1F, MathF.Round(BorderWidth * DeviceDpi / 96F));
+        var inset = penWidth / 2F;
+        using var borderPath = Theme.RoundedPath(new RectangleF(inset, inset, Width - penWidth, Height - penWidth), ScaledRadius);
+        using var borderPen = new Pen(BorderColor, penWidth);
         eventArgs.Graphics.DrawPath(borderPen, borderPath);
         if (AccentHeight > 0 && AccentColor != Color.Transparent)
         {
@@ -262,7 +267,8 @@ internal sealed class ModernDropDown : RoundedPanel
     public bool UseMonoValue { get; set; }
     private int _selectedIndex = -1;
     private bool _open;
-    private DropDownPopupForm? _popup;
+    private DropDownPopup? _popup;
+    private ToolStripControlHost? _host;
     private DropDownOptionsPanel? _options;
     public event EventHandler? SelectedIndexChanged;
 
@@ -330,27 +336,29 @@ internal sealed class ModernDropDown : RoundedPanel
         Focus();
         _open = true; BorderColor = Theme.Accent; BorderWidth = 2; Invalidate();
         EnsurePopup();
-        if (_popup is null || _options is null) return;
-        var itemHeight = ScaleX(ItemHeight);
-        _options.Size = new Size(Width, Items.Count * itemHeight + ScaleX(8));
+        if (_popup is null || _options is null || _host is null) return;
+        // Exactly one row per option. The popup used to be a Form sized through ClientSize,
+        // which reads wrong while its handle is created, so three options showed five rows.
+        var size = new Size(Width, Items.Count * ScaleX(ItemHeight) + ScaleX(8));
+        _options.Size = size;
+        _host.Size = size;
+        _popup.Size = size;
         _options.ResetHover();
-        _popup.ClientSize = _options.Size;
-        var owner = FindForm();
-        _popup.Opacity = owner?.Opacity ?? 1D;
         var working = Screen.FromControl(this).WorkingArea;
         var desired = PointToScreen(new Point(0, Height + ScaleX(6)));
-        var x = OpenUpward ? PointToScreen(new Point(Width - _popup.Width, 0)).X : desired.X;
-        x = Math.Clamp(x, working.Left, Math.Max(working.Left, working.Right - _popup.Width));
+        var x = OpenUpward ? PointToScreen(new Point(Width - size.Width, 0)).X : desired.X;
+        x = Math.Clamp(x, working.Left, Math.Max(working.Left, working.Right - size.Width));
         int y;
         if (OpenUpward)
-            y = Math.Max(working.Top, PointToScreen(Point.Empty).Y - _popup.Height - ScaleX(6));
+            y = Math.Max(working.Top, PointToScreen(Point.Empty).Y - size.Height - ScaleX(6));
         else
-            y = desired.Y + _popup.Height <= working.Bottom
+            y = desired.Y + size.Height <= working.Bottom
                 ? desired.Y
-                : Math.Max(working.Top, PointToScreen(Point.Empty).Y - _popup.Height - ScaleX(6));
-        _popup.Location = new Point(x, y);
-        if (owner is not null) _popup.Show(owner); else _popup.Show();
-        _popup.Activate();
+                : Math.Max(working.Top, PointToScreen(Point.Empty).Y - size.Height - ScaleX(6));
+        // A ToolStripDropDown is a non-activating popup that closes on any outside click, like
+        // a native combo box list. The old popup Form activated itself and hid on Deactivate,
+        // which could hand activation to another application and put the whole window behind it.
+        _popup.Show(new Point(x, y));
     }
 
     private void EnsurePopup()
@@ -358,15 +366,16 @@ internal sealed class ModernDropDown : RoundedPanel
         if (_popup is { IsDisposed: false }) return;
         _options = new DropDownOptionsPanel(Items, () => SelectedIndex, index => SelectedIndex = index, () => ScaleX(ItemHeight))
         { Size = new Size(Width, Items.Count * ScaleX(ItemHeight) + ScaleX(8)) };
-        _popup = new DropDownPopupForm(_options);
-        _popup.Deactivate += (_, _) => HidePopup();
-        _popup.VisibleChanged += (_, _) => { if (!_popup.Visible) SetClosedState(); };
-        _options.OptionChosen += (_, _) => { HidePopup(); Focus(); };
+        _host = new ToolStripControlHost(_options) { AutoSize = false, Margin = Padding.Empty, Padding = Padding.Empty, Size = _options.Size };
+        _popup = new DropDownPopup();
+        _popup.Items.Add(_host);
+        _popup.Closed += (_, _) => SetClosedState();
+        _options.OptionChosen += (_, _) => { _popup.Close(ToolStripDropDownCloseReason.ItemClicked); Focus(); };
     }
 
     private void HidePopup()
     {
-        if (_popup is { IsDisposed: false, Visible: true }) _popup.Hide();
+        if (_popup is { IsDisposed: false, Visible: true }) _popup.Close();
         SetClosedState();
     }
 
@@ -385,48 +394,33 @@ internal sealed class ModernDropDown : RoundedPanel
         {
             if (_popup is { IsDisposed: false })
             {
-                if (_popup.Visible) _popup.Hide();
+                if (_popup.Visible) _popup.Close();
                 _popup.Dispose();
             }
             _popup = null;
+            _host = null;
             _options = null;
         }
         base.Dispose(disposing);
     }
 
-    private sealed class DropDownPopupForm : Form
+    /// <summary>Borderless rounded popup; the options panel draws the border and rows.</summary>
+    private sealed class DropDownPopup : ToolStripDropDown
     {
-        public DropDownPopupForm(Control content)
+        public DropDownPopup()
         {
-            FormBorderStyle = FormBorderStyle.None;
-            ShowInTaskbar = false;
-            StartPosition = FormStartPosition.Manual;
-            AutoScaleMode = AutoScaleMode.None;
-            BackColor = Color.White;
+            AutoSize = false;
+            AutoClose = true;
+            DropShadowEnabled = true;
             Padding = Padding.Empty;
-            MinimizeBox = false;
-            MaximizeBox = false;
-            ControlBox = false;
-            content.Dock = DockStyle.Fill;
-            Controls.Add(content);
-        }
-
-        protected override CreateParams CreateParams
-        {
-            get
-            {
-                const int CsDropShadow = 0x00020000;
-                var parameters = base.CreateParams;
-                parameters.ClassStyle |= CsDropShadow;
-                return parameters;
-            }
+            BackColor = Color.White;
         }
 
         protected override void OnSizeChanged(EventArgs e)
         {
             base.OnSizeChanged(e);
             if (Width <= 0 || Height <= 0) return;
-            using var path = Theme.RoundedPath(new RectangleF(0, 0, Width, Height), 10F * DeviceDpi / 96F);
+            using var path = Theme.RoundedPath(new RectangleF(0, 0, Width, Height), 8F * DeviceDpi / 96F);
             var oldRegion = Region;
             Region = new Region(path);
             oldRegion?.Dispose();

@@ -514,17 +514,27 @@ internal static class SelfTest
             ?? throw new InvalidOperationException("找不到下拉菜单打开方法。");
         var popupField = typeof(ModernDropDown).GetField("_popup", BindingFlags.Instance | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("找不到下拉菜单弹层。");
+        var openField = typeof(ModernDropDown).GetField("_open", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("找不到下拉菜单状态。");
+        host.Activate();
+        Application.DoEvents();
         for (var i = 0; i < 100; i++)
         {
             showOptions.Invoke(dropDown, null);
             Application.DoEvents();
-            if (popupField.GetValue(dropDown) is not Form popup || popup.IsDisposed || !popup.Visible)
+            if (popupField.GetValue(dropDown) is not ToolStripDropDown popup || popup.IsDisposed || !popup.Visible)
                 throw new InvalidOperationException("下拉菜单打开后被意外销毁。");
-            host.Activate();
-            search.Focus();
+            // Exactly one row per option (3 options at 30 logical px + 8 px padding).
+            var expected = 3 * UiScale.Px(dropDown, 30) + UiScale.Px(dropDown, 8);
+            if (popup.Height != expected)
+                throw new InvalidOperationException($"下拉菜单高度 {popup.Height}，应为 {expected}（3 行）。");
+            // A non-activating popup: the window that owns the list stays the active window.
+            if (Form.ActiveForm is not null && !ReferenceEquals(Form.ActiveForm, host))
+                throw new InvalidOperationException("打开下拉菜单时主窗口失去激活状态。");
+            popup.Close(ToolStripDropDownCloseReason.AppClicked);
             Application.DoEvents();
-            if (popup.Visible || popup.IsDisposed)
-                throw new InvalidOperationException("点击下拉菜单外部后，弹层未安全隐藏或被错误释放。");
+            if (popup.Visible || popup.IsDisposed || (bool)openField.GetValue(dropDown)!)
+                throw new InvalidOperationException("点击下拉菜单外部后，弹层未安全隐藏或状态未复位。");
         }
         host.Close();
     }

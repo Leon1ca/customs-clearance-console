@@ -17,6 +17,22 @@ internal static class DpiLayout
 {
     public const int LogicalDpi = 96;
 
+    private static float? _systemDpi;
+
+    /// <summary>The DPI point-sized fonts are converted with (the session's system DPI).</summary>
+    public static float SystemDpi
+    {
+        get
+        {
+            if (_systemDpi is null)
+            {
+                using var screen = Graphics.FromHwnd(IntPtr.Zero);
+                _systemDpi = screen.DpiX > 0 ? screen.DpiX : LogicalDpi;
+            }
+            return _systemDpi.Value;
+        }
+    }
+
     public static int Scale(int logical, int dpi) =>
         (int)Math.Round(logical * dpi / (double)LogicalDpi, MidpointRounding.AwayFromZero);
 
@@ -37,9 +53,7 @@ internal static class DpiLayout
     /// </summary>
     public static int MeasuredToLogical(int measured)
     {
-        using var screen = Graphics.FromHwnd(IntPtr.Zero);
-        var systemDpi = screen.DpiX > 0 ? screen.DpiX : LogicalDpi;
-        return (int)Math.Ceiling(measured * LogicalDpi / systemDpi);
+        return (int)Math.Ceiling(measured * LogicalDpi / SystemDpi);
     }
 }
 
@@ -106,5 +120,48 @@ internal class DpiDialog : Form
     /// <summary>Hook for DPI-dependent values that Control.Scale does not cover.</summary>
     protected virtual void OnLayoutDpiChanged()
     {
+    }
+}
+
+/// <summary>
+/// Lets the borderless main window be resized from its edges. The layout panels and title-bar
+/// controls cover the whole client area, so WM_NCHITTEST near the window edge went to them and
+/// the form's resize hit-test never ran. Controls that touch an edge answer HTTRANSPARENT
+/// within the grip distance, which hands the hit-test to the form underneath.
+/// </summary>
+internal sealed class EdgeHitPassThrough : NativeWindow
+{
+    private readonly Control _control;
+    private readonly Form _form;
+
+    private EdgeHitPassThrough(Control control, Form form)
+    {
+        _control = control;
+        _form = form;
+        if (control.IsHandleCreated) AssignHandle(control.Handle);
+        control.HandleCreated += (_, _) => AssignHandle(control.Handle);
+        control.HandleDestroyed += (_, _) => ReleaseHandle();
+    }
+
+    public static void Attach(Form form, params Control[] controls)
+    {
+        foreach (var control in controls) _ = new EdgeHitPassThrough(control, form);
+    }
+
+    protected override void WndProc(ref Message m)
+    {
+        const int wmNchittest = 0x84, htTransparent = -1;
+        if (m.Msg == wmNchittest && _form.WindowState == FormWindowState.Normal)
+        {
+            var value = (long)m.LParam;
+            var point = _form.PointToClient(new Point((short)value, (short)(value >> 16)));
+            var grip = DpiLayout.Scale(6, _form.DeviceDpi);
+            if (point.X <= grip || point.Y <= grip || point.X >= _form.ClientSize.Width - grip || point.Y >= _form.ClientSize.Height - grip)
+            {
+                m.Result = (IntPtr)htTransparent;
+                return;
+            }
+        }
+        base.WndProc(ref m);
     }
 }
