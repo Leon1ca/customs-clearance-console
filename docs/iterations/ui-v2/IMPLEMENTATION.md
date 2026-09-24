@@ -154,7 +154,21 @@
 | 运行 | 提交 | 结论 |
 |---|---|---|
 | [35958026991](https://github.com/Leon1ca/customs-clearance-console/actions/runs/35958026991) | `6be4e7f` | 核心/构建/UI 契约/字体/导出/快照通过；浏览器 20 场景 17 通过，`success-fullpage` 页脚标记、`same-origin-frame`（R5-1）、`cross-origin-frame` 失败 |
-| 本轮 | 见下 | R4/R5 修复后待云端验证 |
+| [35960642742](https://github.com/Leon1ca/customs-clearance-console/actions/runs/35960642742) | `91cfaa2` | CoreRegression 通过；windows-validation 的 Build main application 因 `BrowserCaptureE2E.cs` 在 `/official` fixture 使用尚未声明的 `mode` 报 `CS0841`，下游 8 个步骤全部失败。已在 M9 修复 |
+
+## 里程碑 M9 · 最终验收 P1（prepare 失败传播）与构建阻断定点修复
+
+针对独立最终验收 `FINAL-ACCEPTANCE.md`（基线 `6ef38ba`）保留的唯一阻断 P1 定点修复；不改动该报告的结论，只更新实现状态。
+
+- **P1 · prepare 局部失败假成功**：`capture-prepare.js` 不再吞掉非预期异常。滚动容器循环与外层扫描、iframe 列表/访问/增长各步把非预期异常记入 `failures`；若有失败则在返回 `prepared` 标记前 `throw new Error('prepare-failed:…')`，由 CDP `exceptionDetails` 传到 C#，走 `CaptureCoreAsync` 的错误分支，绝不保存未展开页面。只有跨源文档不可读（`SecurityError` 或 cross-origin/denied 文案）属于预期分支，仍交给 CDP frame 路径。恢复账本仍在首次修改前发布、只增不改；抛错后 C# `finally` 依账本恢复已改样式/`!important` 优先级/滚动偏移/窗口滚动与卡片可见性。
+- **生产路径失败注入 E2E**：`TestServer` 新增 `prepfail=1` 受控页（`#bad-scroller` 在 `#content .scroller` 之前，令反向遍历先成功展开 `.scroller`，再由 `#bad-scroller` 的一次性 `style.setProperty` 覆盖抛错）。新增 `prepare-failure-restore` 场景：真实 CDP 点击卡片后断言返回 `error` 且文案为“准备失败”、目录无 PNG；`.scroller` 的 `height/max-height/overflow-y` 内联样式复位、`scrollTop` 回到 300、`__cccCaptureState` 已清理、卡片未残留隐藏；随后一次性注入已解除，按钮仍可点击且重试真实保存成功。不重写、不放宽任何既有成功场景断言。
+- **构建阻断 CS0841**：`BrowserCaptureE2E.Page` 的 `mode` 解析移到 `/official` fixture 分支之前、删除原后置声明；此错误此前使 `windows-validation` 在 Build 即失败，掩盖了所有真实运行结论。
+
+### 云端运行记录（M9）
+
+| 运行 | 提交 | 结论 |
+|---|---|---|
+| 本轮 | 见下 | P1 + CS0841 修复后待云端验证 |
 
 ## 未完成 / 待云端验证
 

@@ -48,6 +48,7 @@ internal static class BrowserCaptureE2E
             checks.Add(await RunMissingNumberAsync(outputFolder, browser, server));
             checks.Add(await RunStaleAsync(outputFolder, browser, server));
             checks.Add(await RunFailureRetryAsync(outputFolder, browser, server));
+            checks.Add(await RunPrepareFailureRestoresAsync(outputFolder, browser, server));
             checks.Add(await RunCrossOriginFrameAsync(outputFolder, browser, server));
             checks.Add(await RunCrossSiteOopifFrameAsync(outputFolder, browser, server));
             checks.Add(await RunOfficialDomSuccessAsync(outputFolder, browser, server));
@@ -400,6 +401,59 @@ internal static class BrowserCaptureE2E
         if (second.State != "saved") details.Add($"解除阻塞后重试失败：{second.Message}");
         if (!Directory.EnumerateFiles(target, "*.png").Any()) details.Add("重试成功后没有生成截图。");
         return new Scenario("failure-retry", details.Count == 0, details.Count == 0 ? ["失败状态可重试并成功保存"] : details);
+    }
+
+    /// <summary>
+    /// Production-path failure injection for R5-2: the controlled page makes the SECOND
+    /// scroll container throw on its first style write while the first container was
+    /// already expanded. The prepare script must reject the capture (no file, no backfill),
+    /// the C# finally must restore the already-modified styles and scroll offset, and the
+    /// visible card must stay retryable; the one-shot injection then lets the retry save.
+    /// </summary>
+    private static async Task<Scenario> RunPrepareFailureRestoresAsync(string outputFolder, string browser, TestServer server)
+    {
+        var folder = Path.Combine(outputFolder, "prepare-failure-restore");
+        Directory.CreateDirectory(folder);
+        const string number = "310120260000000022";
+        await using var session = new BrowserValidation(number, folder,
+            server.Url($"/page?content=1200&result={number}&prepfail=1"), browser, headless: true, allowTestTarget: true);
+        var details = new List<string>();
+        var problem = await StartAndWaitAsync(session, true);
+        if (problem is not null) return new Scenario("prepare-failure-restore", false, [problem]);
+        // Give the first (successfully expanded) container a non-zero scroll offset so its
+        // restoration is observable, and confirm the injected failure is armed.
+        var armed = await session.EvaluateRawAsync(
+            "(function(){var s=document.querySelector('#content .scroller');if(!s)return 'no-scroller';s.scrollTop=300;return 'armed:'+s.scrollTop+':'+(!!document.getElementById('bad-scroller'))+':'+(!!window.__cccPrepareFailArmed);})()",
+            CancellationToken.None);
+        if (!armed.Contains("armed:300:true:true", StringComparison.Ordinal)) details.Add($"受控页面未能布置失败注入：{armed}");
+        var first = await ClickAndAwaitAsync(session, TimeSpan.FromSeconds(120));
+        if (first.State == "saved") details.Add("准备阶段写样式失败仍保存了截图。");
+        else if (first.State != "error") details.Add($"准备失败未返回错误结论：{first.State}：{first.Message}");
+        else if (!first.Message.Contains("准备失败", StringComparison.Ordinal)) details.Add($"准备失败的结论不是准备错误：{first.Message}");
+        if (Directory.EnumerateFiles(folder, "*.png").Any()) details.Add("准备失败仍生成了截图文件。");
+        // The already-expanded container must be back to its original inline styles, scroll
+        // offset and no leftover prepare ledger.
+        var restored = await session.EvaluateRawAsync(
+            "JSON.stringify((function(){var s=document.querySelector('#content .scroller');if(!s)return {missing:true};return {height:s.style.getPropertyValue('height'),maxHeight:s.style.getPropertyValue('max-height'),overflow:s.style.getPropertyValue('overflow-y'),scrollTop:s.scrollTop,ledger:!!window.__cccCaptureState,hidden:!!(document.getElementById('ccc-widget-host')&&document.getElementById('ccc-widget-host').style.getPropertyValue('display')==='none')};})())",
+            CancellationToken.None);
+        if (!restored.Contains("\"height\":\"\"", StringComparison.Ordinal) ||
+            !restored.Contains("\"maxHeight\":\"\"", StringComparison.Ordinal) ||
+            !restored.Contains("\"overflow\":\"\"", StringComparison.Ordinal))
+            details.Add($"失败后先前修改的样式未恢复：{restored}");
+        if (!restored.Contains("\"ledger\":false", StringComparison.Ordinal)) details.Add($"失败后准备账本未清理：{restored}");
+        if (!restored.Contains("\"hidden\":false", StringComparison.Ordinal)) details.Add($"失败后卡片未恢复可见：{restored}");
+        var scrollMatch = System.Text.RegularExpressions.Regex.Match(restored, "\"scrollTop\":(\\d+)");
+        if (!scrollMatch.Success || Math.Abs(int.Parse(scrollMatch.Groups[1].Value) - 300) > 1)
+            details.Add($"失败后滚动位置未恢复：{restored}");
+        if (!await session.CanCaptureAsync(CancellationToken.None)) details.Add("准备失败后卡片按钮不可重试。");
+        else
+        {
+            var second = await ClickAndAwaitAsync(session, TimeSpan.FromSeconds(120));
+            if (second.State != "saved") details.Add($"解除注入后重试失败：{second.State}：{second.Message}");
+            else if (second.FilePath is null || !File.Exists(second.FilePath)) details.Add("重试成功后没有生成截图。");
+        }
+        return new Scenario("prepare-failure-restore", details.Count == 0,
+            details.Count == 0 ? ["准备阶段局部写样式失败不保存且先前修改/滚动/卡片均恢复，可重试成功"] : details);
     }
 
     private static async Task<Scenario> RunCrossOriginFrameAsync(string outputFolder, string browser, TestServer server)
@@ -861,6 +915,14 @@ internal static class BrowserCaptureE2E
             // A clamping iframe reproduces the R5-3 case: the element is capped by
             // max-height, so writing only a height would leave content truncated.
             var clamp = parameters.TryGetValue("clamp", out var cv) && cv == "1";
+            // R5-2 failure injection: the first scroll container expands normally, then the
+            // second one throws once on its first style write, exercising the production
+            // prepare failure + finally restore + retry path.
+            var prepfail = parameters.TryGetValue("prepfail", out var pf) && pf == "1";
+            // Parsed before the /official fixture branch, which substitutes it into the
+            // official-DOM page script; keeping the declaration later made the file
+            // uncompilable (CS0841) and blocked every downstream verification step.
+            var mode = parameters.TryGetValue("mode", out var mo) ? mo : "ok";
             var mutateScript = mutate
                 ? "setInterval(function () { if (window.__cccPrepareAt && !window.__cccMutated) { window.__cccMutated = true; setTimeout(function () { var t = document.getElementById('result'); if (t) t.innerHTML = '<tr><td>报关单号 310120260000009999 申报日期 2026-09-24 放行日期 2026-09-24 海关状态 已放行</td></tr>'; }, 100); } }, 50);"
                 : "";
@@ -940,7 +1002,6 @@ internal static class BrowserCaptureE2E
             }
 
             var midDiv = mid > 0 ? $"<div id=\"mid\" style=\"position:absolute;left:0;top:{mid}px;width:100%;height:200px;background:#00AA55\"></div>" : "";
-            var mode = parameters.TryGetValue("mode", out var mo) ? mo : "ok";
             var isFrame = frame is "1" or "cross" or "official";
             var frameSrc = frame == "cross" && xhost.Length > 0
                 ? xhost
@@ -964,10 +1025,29 @@ internal static class BrowserCaptureE2E
                       """
                     : $"""
                       <div id="top"></div>
-                      <div id="content">{FormHtml(decl, result, autoQuery, error, pre, nonumber, mutateScript)}</div>
+                      <div id="content">{(prepfail ? "<div id=\"bad-scroller\" class=\"badscroller\"><div class=\"badinner\"></div></div>" : "")}{FormHtml(decl, result, autoQuery, error, pre, nonumber, mutateScript)}</div>
                       <div id="bottom"></div>
                       """;
             var contentRule = isFrame ? "height:auto;" : $"height:{content}px;";
+            // One-shot injection: the bad container throws on its very first style write and
+            // immediately removes the override, so the retry after the restored failure can
+            // run the normal prepare path and save.
+            var prepfailScript = prepfail ? """
+            <script>
+            (function () {
+              var bad = document.getElementById('bad-scroller');
+              if (!bad) return;
+              Object.defineProperty(bad.style, 'setProperty', {
+                configurable: true,
+                value: function () {
+                  delete bad.style.setProperty;
+                  throw new Error('injected-prepare-failure');
+                }
+              });
+              window.__cccPrepareFailArmed = bad.style.hasOwnProperty('setProperty');
+            })();
+            </script>
+            """ : "";
             return $$"""
             <!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>受控核验页</title>
             <style>
@@ -976,6 +1056,8 @@ internal static class BrowserCaptureE2E
               #content{ {{contentRule}}box-sizing:border-box;padding:16px}
               .scroller{height:400px;overflow-y:auto;border:1px solid #cccccc;margin-top:12px}
               .scroller .inner{position:relative;height:1800px;background:linear-gradient(#eef3f8,#dde6f0)}
+              .badscroller{height:400px;overflow-y:auto;border:1px solid #999999;margin-bottom:12px}
+              .badscroller .badinner{position:relative;height:1800px;background:linear-gradient(#f8eee0,#f0dde0)}
               #scrollband{position:absolute;left:0;right:0;top:1680px;height:120px;background:#CC00CC}
               #bottom{height:200px;background:#123456}
               table{width:100%;border-collapse:collapse}td{padding:8px;font:14px system-ui;color:#0f1b2d}
@@ -983,6 +1065,7 @@ internal static class BrowserCaptureE2E
             </style></head><body>
             {{midDiv}}
             {{body}}
+            {{prepfailScript}}
             </body></html>
             """;
         }
