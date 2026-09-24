@@ -4,9 +4,19 @@ on:
   push:
     branches: [codex/ui-v2-iteration]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Publish the validated portable ZIP as this GitHub Release tag (e.g. v1.5.0; must match the project version). Leave empty to only validate."
+        required: false
+        default: ""
+      prerelease:
+        description: "Mark the release as a pre-release"
+        type: boolean
+        default: true
 
-# Least privilege: this workflow only reads the repository and its release assets,
-# and uploads build evidence as job artifacts.
+# Least privilege: validation only reads the repository and its release assets and
+# uploads build evidence as job artifacts. Only the optional publish-release job,
+# which runs after the full validation gate succeeds, is granted contents: write.
 permissions:
   contents: read
 
@@ -333,3 +343,47 @@ jobs:
             throw "以下必需验证步骤未成功：$($failed -join '、')"
           }
           Write-Host "全部必需验证步骤成功。"
+
+  # Publishes exactly the ZIP the gate above built and smoke-tested; it never rebuilds.
+  # Runs only on a manual dispatch from main with a release tag, and only when
+  # windows-validation (including its final gate) succeeded.
+  publish-release:
+    name: Publish GitHub Release
+    needs: windows-validation
+    if: github.event_name == 'workflow_dispatch' && inputs.release_tag != '' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ui-v2-portable-package
+          path: dist
+      - name: Verify tag, version and checksum, then publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.release_tag }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          set -euo pipefail
+          version=$(grep -oPm1 '(?<=<Version>)[0-9]+\.[0-9]+\.[0-9]+(?=</Version>)' src/CustomsClearanceConsole/CustomsClearanceConsole.csproj)
+          [ "$TAG" = "v$version" ] || { echo "Tag $TAG does not match project version v$version"; exit 1; }
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then echo "Release $TAG already exists; not overwriting"; exit 1; fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then echo "Tag $TAG already exists; not moving it"; exit 1; fi
+          zip=$(find dist -name '*.zip' | head -n1); sums=$(find dist -name 'SHA256SUMS.txt' | head -n1)
+          [ -n "$zip" ] && [ -n "$sums" ] || { echo "Validated package or SHA256SUMS.txt missing"; exit 1; }
+          expected=$(awk 'NF{print $1; exit}' "$sums"); actual=$(sha256sum "$zip" | awk '{print $1}')
+          [ "$expected" = "$actual" ] || { echo "Checksum mismatch: $expected vs $actual"; exit 1; }
+          # GitHub strips non-ASCII characters from asset names, so publish under an ASCII
+          # name and list that same name in SHA256SUMS.txt.
+          mkdir -p out
+          asset="CustomsClearanceConsole-Windows-x64-v$version.zip"
+          cp "$zip" "out/$asset"
+          (cd out && sha256sum "$asset" > SHA256SUMS.txt && cat SHA256SUMS.txt)
+          flags=()
+          [ "$PRERELEASE" = "true" ] && flags+=(--prerelease)
+          gh release create "$TAG" "out/$asset" out/SHA256SUMS.txt --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" --title "关单核验台 $TAG" --notes-file "docs/release-notes-v$version.md" "${flags[@]}"
