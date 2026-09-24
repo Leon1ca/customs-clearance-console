@@ -23,6 +23,7 @@ internal static class OcrSelfTest
         Console.OutputEncoding = Encoding.UTF8;
         Directory.CreateDirectory(folder);
         var failures = new List<string>();
+        var report = new List<string>();
         using var page = RenderDeclaration();
         page.Save(Path.Combine(folder, "rendered.png"), ImageFormat.Png);
 
@@ -59,6 +60,7 @@ internal static class OcrSelfTest
                 if (!record.Totals.TryGetValue("USD", out var total) || total != 5000.00m || record.Totals.Count != 1)
                     problems.Add($"总价 {record.DisplayTotal}");
                 if (record.Status != "OCR 识别完成") problems.Add($"状态 {record.Status}：{record.Warning}");
+                report.Add($"{(problems.Count == 0 ? "PASS" : "FAIL")}: {name} · {watch.Elapsed.TotalSeconds:F1}s · {record.DeclarationNo} · {record.ExitCustoms} · {record.DestinationCountry} · {record.DisplayTotal} · {record.Status}：{record.Warning}");
                 Console.WriteLine($"{(problems.Count == 0 ? "PASS" : "FAIL")}: {name} · {watch.Elapsed.TotalSeconds:F1}s · {record.DeclarationNo} · {record.ExitCustoms} · {record.DestinationCountry} · {record.DisplayTotal} · {record.Status}");
                 if (problems.Count > 0) failures.Add($"{name}：{string.Join("；", problems)}");
             }
@@ -69,6 +71,7 @@ internal static class OcrSelfTest
             }
         }
         foreach (var failure in failures) Console.Error.WriteLine(failure);
+        File.WriteAllLines(Path.Combine(folder, "report.txt"), report.Concat(failures));
         Console.WriteLine(failures.Count == 0 ? $"OCR_SELF_TEST_OK: {files.Count} files" : $"OCR_SELF_TEST_FAILED: {failures.Count}");
         return failures.Count == 0 ? 0 : 1;
     }

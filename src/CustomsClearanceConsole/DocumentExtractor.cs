@@ -139,18 +139,26 @@ internal sealed partial class DocumentExtractor
         var candidates = new List<RapidOcrPage> { first };
         if (first.TallFraction > .5)
         {
-            candidates.Add(await RecognizeRotatedAsync(source, 90, cancellationToken));
-            candidates.Add(await RecognizeRotatedAsync(source, 270, cancellationToken));
+            // On its side: turn it upright one way; if the text then reads upside down, the
+            // other way is the right one.
+            var quarter = await RecognizeRotatedAsync(source, 90, cancellationToken);
+            candidates.Add(quarter);
+            if (quarter.FlippedFraction > .5) candidates.Add(await RecognizeRotatedAsync(source, 270, cancellationToken));
         }
         else if (first.FlippedFraction > .5)
         {
             candidates.Add(await RecognizeRotatedAsync(source, 180, cancellationToken));
         }
+        // The line-angle classifier reads upside-down lines correctly, so an upside-down page
+        // still looks like a declaration by its words; only its geometry is mirrored. Prefer
+        // the reading with the fewest upside-down lines.
         var best = candidates
-            .OrderByDescending(x => DeclarationPageScore(x.Page))
+            .OrderBy(x => x.TallFraction > .5 ? 1 : 0)
+            .ThenBy(x => x.FlippedFraction > .5 ? 1 : 0)
+            .ThenByDescending(x => DeclarationPageScore(x.Page))
             .ThenByDescending(x => x.Page.Tokens.Sum(t => t.Text.Length * t.Confidence))
             .First();
-        if (best.Rotation != 0) AppLog.Write($"OCR 页面方向已校正：旋转 {best.Rotation}°。");
+        AppLog.Write($"OCR 页面方向：{string.Join("；", candidates.Select(x => $"{x.Rotation}° 竖框 {x.TallFraction:P0} 倒置 {x.FlippedFraction:P0} 得分 {DeclarationPageScore(x.Page)}"))}；采用 {best.Rotation}°。");
         return best.Page;
     }
 
