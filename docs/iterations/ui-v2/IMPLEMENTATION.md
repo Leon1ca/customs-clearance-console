@@ -248,6 +248,7 @@
 
 - 运行证据显示 `cross-site-oopif-frame` 已能授权并保存，但截图恰为 200(top)+400(iframe)+200(bottom)=800px，OOPIF 内 `#7700AA` 底部标记缺失：`ExpandFramesAsync` 只枚举 root session 的 `Page.getFrameTree`，扁平 OOPIF 由子 target 表达、可能不在该树中，于是被静默跳过、捕获被截断。
 - 修复：在 root 树之外并入当前仍挂接的子 target frame id；从 root 树只回填非空 URL，避免空 stub 覆盖子 session 已登记的真实 OOPIF URL；保留“无法完整展开即失败”的既有拒绝语义。新增逐帧候选/内容高/前后几何/失败原因日志，并把这些日志接入证据（浏览器步骤固定 `CUSTOMS_CONSOLE_APILOG` 到 `artifacts/validation/browser/app.log`）。
+- 运行 [35966329282](https://github.com/Leon1ca/customs-clearance-console/actions/runs/35966329282)（`add0179`）复验：候选已包含 OOPIF，owner 也增长到 1454px、页面高 1854px，但 OOPIF 只绘制到自身约 990px，其后仍为纯白——`captureBeyondViewport` 不会为重排后的独立进程 frame 重新分配超过原视口的 surface。修复：仅在确实增长过子 session frame 时，先用 `Emulation.setDeviceMetricsOverride` 把真实视口临时放大到裁剪尺寸并等待，再截图，最后清除覆盖；同进程 frame 与本场景以外的路径不走该分支，授权/身份/像素断言不变。
 
 ### 新增定点回归（浏览器 28 场景）
 

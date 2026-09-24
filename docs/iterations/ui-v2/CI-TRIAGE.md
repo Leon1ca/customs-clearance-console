@@ -131,6 +131,29 @@ FormHtml由固定400ms改成最多约20秒等候monitor，再对实际查询按�
 
 最小修复建议：从root tree与已登记授权子frame/session/context构建去重的展开候选，逐个确认owner及完整可见高度，任何已授权候选无法确认都拒绝保存；root tree读取失败不得当空成功。为本场景输出候选frameId/session/parent、原owner高度、内容高度和展开后高度，下一轮同时保留首尾像素断言即可验证修复，无需扩展其他范围。
 
+## add0179 已知问题定点源码复核
+
+固定提交：`add0179e57274b66b014878e67ec65bc5ef5575c`；针对上述问题读取固定差异及上游失败处理，未本机运行产品/测试。**此次已知源码阻断路径均有对应修复，运行及#实际图仍待run35966329282产物。**
+
+- 主/子session身份：OnFrameNavigated现在只有`sessionId is null && parentId.Length == 0`可更新顶层身份/URL/代次；非空父关联才写入，子session省略parentId不再抹掉既有关系。新增E2E实际通过子session Page.navigate，比较顶层三项、子frame URL及已知父关联，随后点击截图，覆盖本次修复路径。
+- OOPIF候选遗漏：ExpandFramesAsync在root frame tree集合上合并去重所有当前附加child target，再应用原有frame授权、测量、owner查询及展开后高度/viewport检查。与上一轮只枚举root tree相比，遗漏的已授权OOPIF现在进入同一展开路径。
+- 读取树失败：异常现在返回非空失败列表；上游expandedFailures非空会返回error而非保存。已知“检查失败却空列表成功”路径关闭。
+- #表头继承：共享header和grid默认padding都归零，仅各非Index表头恢复8px；新增断言检查InheritedStyle而非局部赋值，并测量字形可用宽度。修复方向对应上一轮实际残留，但曾有源码检查通过而真实图失败，仍必须等#可辨认的实际screen图再关闭。
+
+证据表述边界：新增子session导航场景目前只断言saved与文件存在，未检查导航后PNG首尾，因此其成功文本“仍可完整截图”超出该场景自身断言。已有独立OOPIF场景仍保留首尾标记检查，未被弱化；最终应实际查看两种OOPIF产物。此处不据此再扩大产品修复范围，也不以存在PNG宣称完整性已验。
+
+## add0179 实际图复核：#关闭，两个OOPIF图底部仍空白
+
+证据目录：`/Users/leon1ca/Documents/Codex/2026-09-24/evidence-add0179`。查看真实`ui-states/complete-1200x720-screen.png`以及普通跨源、OOPIF、子session导航后的三张实际捕获PNG；未运行产品、未扩展代码审查。
+
+**#表头P2关闭：** 最小1200×720真实屏幕的序号表头已是完整可辨认的`#`，与上一轮两点痕迹不同，版本号也保持完整。
+
+**OOPIF完整性P1仍未关闭：** `browser/capture-oopif-frame.png`和`browser/child-session-navigation/310120260000000025.png`均已是1241×1854，父页蓝色尾部移至y1654，证明iframe外部高度确已展开。但两图iframe约y1191–1653区域都变成白色，原应出现的内部滚动洋红尾标、结果文本行和紫色frame底标全部缺失。普通`capture-cross-frame.png`同尺寸三者均完整。
+
+因此本轮已不是“仍400px未展开”的旧问题，而是远程frame下方内容未进入合成图。图证与屏幕外区域未绘制/提交的推断一致，但不能仅凭PNG断言具体浏览器内部机制；实现应验证滚动到可见区域后再抓取/拼接或等效可靠渲染方案，继续保留首尾/接缝与恢复断言。
+
+新增`oopif-child-session-navigation`虽然只检查saved/文件存在而Pass，实际PNG同样有上述白块；上一节的证据缺口现在已由坏图证实。给该场景加入与OOPIF场景同等的内部尾标、结果/底部内容检查，避免错误宣称“导航后完整截图”。顶层身份保持的导航断言可以独立成立，但不能替代图像完整性。
+
 ## 07851ef P2 修复实现记录（不改上节独立结论）
 
 上节为独立复核结论，保持原文；本节只记录针对该 P2 的实现响应，最终是否闭环以同一 SHA 云端运行和独立终验为准。

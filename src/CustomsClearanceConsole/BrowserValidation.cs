@@ -742,6 +742,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
         Directory.CreateDirectory(_targetFolder);
         var preparedTargets = new List<EvalTarget>();
         var expandedFrames = new List<string>();
+        var expandedOopif = new List<string>();
         try
         {
             try
@@ -757,7 +758,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
             // Cross-origin frames cannot be resized from page JS. The CDP frame owner is
             // grown to the frame document height so the complete frame content is painted;
             // a frame that cannot be expanded rejects the capture instead of truncating it.
-            var failedFrames = await ExpandFramesAsync(expandedFrames, token);
+            var failedFrames = await ExpandFramesAsync(expandedFrames, expandedOopif, token);
             if (failedFrames.Count > 0)
                 return new BrowserCaptureResult(SessionId, DeclarationNo, "error", null,
                     $"存在无法完整捕获的网页框架（{string.Join("、", failedFrames)}），未保存截图。");
@@ -772,41 +773,89 @@ internal sealed class BrowserValidation : IAsyncDisposable
             if ((long)width * height > _maxPixels || width > 16_384 || height > 65_535)
                 return new BrowserCaptureResult(SessionId, DeclarationNo, "too-long", null, "页面超过 6000 万像素，未保存截图；请使用浏览器分段保存。");
 
-            var tiles = (int)Math.Ceiling(height / (double)TileHeight);
-            await ReportProgressAsync(0, tiles, "正在截取整页");
-            using var full = new Bitmap(width, height, PixelFormat.Format24bppRgb);
-            using (var graphics = Graphics.FromImage(full))
+            // captureBeyondViewport does not re-render an out-of-process iframe larger than
+            // the real viewport: an expanded OOPIF is painted only up to the old viewport and
+            // the rest is captured blank. Enlarge the real viewport to the clip size for the
+            // capture and restore it afterwards. Same-process frames already render fully, so
+            // this only runs when an attached child-session frame was actually grown.
+            var viewportWidth = 0;
+            var viewportHeight = 0;
+            try
             {
-                graphics.Clear(Color.White);
-                for (var index = 0; index < tiles; index++)
+                using var viewportDoc = JsonDocument.Parse(await EvaluateContextAsync(
+                    "JSON.stringify({w:window.innerWidth||0,h:window.innerHeight||0})", null, token, awaitPromise: false));
+                viewportWidth = viewportDoc.RootElement.GetProperty("w").GetInt32();
+                viewportHeight = viewportDoc.RootElement.GetProperty("h").GetInt32();
+            }
+            catch (Exception ex) { AppLog.Write($"读取视口尺寸失败：{ex.Message}"); }
+            var enlargedViewport = expandedOopif.Count > 0 && viewportWidth > 0 && viewportHeight > 0
+                && (width > viewportWidth || height > viewportHeight);
+            try
+            {
+                if (enlargedViewport)
                 {
-                    token.ThrowIfCancellationRequested();
-                    if (Volatile.Read(ref _navigationGeneration) != generation || !IsTargetUrl(_currentUrl))
-                        return new BrowserCaptureResult(SessionId, DeclarationNo, "error", null, "捕获期间页面已导航，未保存截图。");
-                    var y = index * TileHeight;
-                    var tileHeight = Math.Min(TileHeight, height - y);
-                    var response = await cdp.SendAsync("Page.captureScreenshot", new
+                    await cdp.SendAsync("Emulation.setDeviceMetricsOverride", new
                     {
-                        format = "png",
-                        fromSurface = true,
-                        captureBeyondViewport = true,
-                        clip = new { x = 0, y, width, height = tileHeight, scale = 1 }
+                        width = Math.Max(viewportWidth, width),
+                        height = Math.Max(viewportHeight, height),
+                        deviceScaleFactor = 0,
+                        mobile = false
                     }, token);
-                    var data = Convert.FromBase64String(response.GetProperty("result").GetProperty("data").GetString()!);
-                    using var stream = new MemoryStream(data);
-                    using var tile = new Bitmap(stream);
-                    graphics.DrawImageUnscaled(tile, 0, y);
-                    await ReportProgressAsync(index + 1, tiles, null);
+                    await Task.Delay(200, token);
+                    // The enlarged viewport can change the content size; re-read and never
+                    // shrink below the frame content that was already grown.
+                    var expandedMetrics = await cdp.SendAsync("Page.getLayoutMetrics", null, token);
+                    var expandedContent = expandedMetrics.GetProperty("result").GetProperty("contentSize");
+                    width = Math.Max(width, (int)Math.Ceiling(expandedContent.GetProperty("width").GetDouble()));
+                    height = Math.Max(height, (int)Math.Ceiling(expandedContent.GetProperty("height").GetDouble()));
+                    if ((long)width * height > _maxPixels || width > 16_384 || height > 65_535)
+                        return new BrowserCaptureResult(SessionId, DeclarationNo, "too-long", null, "页面超过 6000 万像素，未保存截图；请使用浏览器分段保存。");
+                }
+
+                var tiles = (int)Math.Ceiling(height / (double)TileHeight);
+                await ReportProgressAsync(0, tiles, "正在截取整页");
+                using var full = new Bitmap(width, height, PixelFormat.Format24bppRgb);
+                using (var graphics = Graphics.FromImage(full))
+                {
+                    graphics.Clear(Color.White);
+                    for (var index = 0; index < tiles; index++)
+                    {
+                        token.ThrowIfCancellationRequested();
+                        if (Volatile.Read(ref _navigationGeneration) != generation || !IsTargetUrl(_currentUrl))
+                            return new BrowserCaptureResult(SessionId, DeclarationNo, "error", null, "捕获期间页面已导航，未保存截图。");
+                        var y = index * TileHeight;
+                        var tileHeight = Math.Min(TileHeight, height - y);
+                        var response = await cdp.SendAsync("Page.captureScreenshot", new
+                        {
+                            format = "png",
+                            fromSurface = true,
+                            captureBeyondViewport = true,
+                            clip = new { x = 0, y, width, height = tileHeight, scale = 1 }
+                        }, token);
+                        var data = Convert.FromBase64String(response.GetProperty("result").GetProperty("data").GetString()!);
+                        using var stream = new MemoryStream(data);
+                        using var tile = new Bitmap(stream);
+                        graphics.DrawImageUnscaled(tile, 0, y);
+                        await ReportProgressAsync(index + 1, tiles, null);
+                    }
+                }
+                // Final identity/generation re-validation before the atomic move.
+                if (Volatile.Read(ref _navigationGeneration) != generation || !IsTargetUrl(_currentUrl))
+                    return new BrowserCaptureResult(SessionId, DeclarationNo, "error", null, "捕获期间页面已导航，未保存截图。");
+                var stableAfter = await VerifyStableAsync(token);
+                if (!stableAfter.StartsWith("stable|", StringComparison.Ordinal) || stableAfter != stableBefore)
+                    return new BrowserCaptureResult(SessionId, DeclarationNo, "error", null, "捕获期间查询结果发生变化，未保存截图。");
+                var file = SaveAtomically(full);
+                return new BrowserCaptureResult(SessionId, DeclarationNo, "saved", file, "长截图已保存。");
+            }
+            finally
+            {
+                if (enlargedViewport)
+                {
+                    try { await cdp.SendAsync("Emulation.clearDeviceMetricsOverride", null, CancellationToken.None); }
+                    catch (Exception ex) { AppLog.Write($"恢复视口尺寸失败：{ex.Message}"); }
                 }
             }
-            // Final identity/generation re-validation before the atomic move.
-            if (Volatile.Read(ref _navigationGeneration) != generation || !IsTargetUrl(_currentUrl))
-                return new BrowserCaptureResult(SessionId, DeclarationNo, "error", null, "捕获期间页面已导航，未保存截图。");
-            var stableAfter = await VerifyStableAsync(token);
-            if (!stableAfter.StartsWith("stable|", StringComparison.Ordinal) || stableAfter != stableBefore)
-                return new BrowserCaptureResult(SessionId, DeclarationNo, "error", null, "捕获期间查询结果发生变化，未保存截图。");
-            var file = SaveAtomically(full);
-            return new BrowserCaptureResult(SessionId, DeclarationNo, "saved", file, "长截图已保存。");
         }
         finally
         {
@@ -1045,7 +1094,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
     /// own viewport are read back after a layout tick. A frame that cannot be fully exposed
     /// is reported so the capture fails instead of truncating (R5-3).
     /// </summary>
-    private async Task<List<string>> ExpandFramesAsync(List<string> expanded, CancellationToken token)
+    private async Task<List<string>> ExpandFramesAsync(List<string> expanded, List<string> expandedOopif, CancellationToken token)
     {
         var failed = new List<string>();
         if (_cdp is null) return failed;
@@ -1119,6 +1168,9 @@ internal sealed class BrowserValidation : IAsyncDisposable
 
                 // Register before mutation so restore runs even if the response is lost.
                 expanded.Add(frameId);
+                // A grown attached child-session frame is an OOPIF; captureBeyondViewport does
+                // not repaint those beyond the real viewport, so the caller enlarges it first.
+                if (session is not null) expandedOopif.Add(frameId);
                 await CallFunctionOnAsync(objectId, GrowFrameFunction, new { value = frameContent }, token, ownerSession);
                 await Task.Delay(120, token);
 
