@@ -1158,9 +1158,7 @@ internal static class SelfTest
         int PngWidth, int PngHeight, string WorkingArea, string ScreenBounds, int Dpi, string Responsive, bool RealScreen);
 
     private static readonly List<string> GeometryFailures = [];
-
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
-    private static extern bool PrintWindow(IntPtr hwnd, IntPtr hdc, uint flags);
+    private static bool SeamCheckProven;
 
     /// <summary>
     /// Text must fit its control at the real DPI: a label's text (height, and width unless it
@@ -1189,6 +1187,35 @@ internal static class SelfTest
             }
         }
         return problems;
+    }
+
+    /// <summary>
+    /// Every pixel of a rendered window must be fully opaque. A partly transparent pixel means
+    /// something was drawn with partial coverage over an area nobody painted first, which shows
+    /// as a grey seam on screen (the grid's anti-aliased cell fills did exactly that).
+    /// </summary>
+    internal static List<string> TranslucentPixels(Bitmap bitmap)
+    {
+        var found = new List<string>();
+        var total = 0;
+        var data = bitmap.LockBits(new Rectangle(Point.Empty, bitmap.Size), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        try
+        {
+            var row = new byte[data.Stride];
+            for (var y = 0; y < bitmap.Height; y++)
+            {
+                System.Runtime.InteropServices.Marshal.Copy(data.Scan0 + y * data.Stride, row, 0, row.Length);
+                for (var x = 0; x < bitmap.Width; x++)
+                {
+                    if (row[x * 4 + 3] == 255) continue;
+                    total++;
+                    if (found.Count < 5) found.Add($"({x},{y}) α={row[x * 4 + 3]}");
+                }
+            }
+        }
+        finally { bitmap.UnlockBits(data); }
+        if (total > found.Count) found.Add($"共 {total} 个");
+        return total == 0 ? [] : found;
     }
 
     private static void Recorded(string name, Action action)
@@ -1229,6 +1256,28 @@ internal static class SelfTest
             Phase($"  save PNG begin · {path}");
             bitmap.Save(path, ImageFormat.Png);
             Phase("  save PNG returned");
+            // The grid alone onto a transparent bitmap: nothing is painted under the cells, so a
+            // cell fill that does not fully cover its pixels shows up as translucency.
+            using var gridOnly = new Bitmap(Math.Max(1, form.GridForTest.Width), Math.Max(1, form.GridForTest.Height), PixelFormat.Format32bppArgb);
+            form.GridForTest.DrawToBitmap(gridOnly, new Rectangle(Point.Empty, form.GridForTest.Size));
+            var seams = form.GridForTest.Rows.Count > 0 ? TranslucentPixels(gridOnly) : [];
+            if (form.GridForTest.Rows.Count > 0 && !SeamCheckProven)
+            {
+                // Prove once that the check detects the bug it guards against.
+                MainForm.SkipCellSmoothingResetForTest = true;
+                try
+                {
+                    using var leaked = new Bitmap(gridOnly.Width, gridOnly.Height, PixelFormat.Format32bppArgb);
+                    form.GridForTest.DrawToBitmap(leaked, new Rectangle(Point.Empty, form.GridForTest.Size));
+                    var detected = TranslucentPixels(leaked);
+                    Phase($"  seam check self-proof · leaked smoothing detected={detected.Count > 0} {string.Join("、", detected.Take(2))}");
+                    if (detected.Count == 0) GeometryFailures.Add("接缝检查自证失败：故意保留抗锯齿时未检出半透明接缝。");
+                }
+                finally { MainForm.SkipCellSmoothingResetForTest = false; }
+                SeamCheckProven = true;
+            }
+            if (seams.Count > 0)
+                GeometryFailures.Add($"{Path.GetFileNameWithoutExtension(path)}：存在未被完全绘制的半透明像素（真实屏幕上显示为灰色接缝）：{string.Join("、", seams)}");
         }
         var working = Screen.FromControl(form).WorkingArea;
         var screen = Screen.FromControl(form).Bounds;
@@ -1252,35 +1301,6 @@ internal static class SelfTest
                 screenBitmap.Save(Path.Combine(Path.GetDirectoryName(path)!, Path.GetFileNameWithoutExtension(path) + "-screen.png"), ImageFormat.Png);
             }
             Phase("  CopyFromScreen returned");
-            // Diagnostic: the grid's effective border settings, and a second capture after a
-            // forced synchronous repaint, to tell stale screen pixels from real painting.
-            var grid = form.GridForTest;
-            Phase($"  grid border={grid.CellBorderStyle} color={grid.GridColor} advanced={grid.AdvancedCellBorderStyle.All}/{grid.AdvancedCellBorderStyle.Right} handle={grid.IsHandleCreated} layered={form.Opacity}");
-            var before = MainForm.PaintProbeCalls;
-            form.Refresh();
-            Application.DoEvents();
-            Thread.Sleep(400);
-            Application.DoEvents();
-            Phase($"  paint probe · calls {before}->{MainForm.PaintProbeCalls} last={MainForm.PaintProbeLast}");
-            var drawBefore = MainForm.PaintProbeCalls;
-            using (var probe = new Bitmap(grid.Width, grid.Height)) grid.DrawToBitmap(probe, new Rectangle(Point.Empty, grid.Size));
-            Phase($"  paint probe (DrawToBitmap) · calls {drawBefore}->{MainForm.PaintProbeCalls} last={MainForm.PaintProbeLast}");
-            using (var printed = new Bitmap(form.ClientSize.Width, form.ClientSize.Height))
-            {
-                using (var graphics = Graphics.FromImage(printed))
-                {
-                    var hdc = graphics.GetHdc();
-                    try { PrintWindow(form.Handle, hdc, 2); }
-                    finally { graphics.ReleaseHdc(hdc); }
-                }
-                printed.Save(Path.Combine(Path.GetDirectoryName(path)!, Path.GetFileNameWithoutExtension(path) + "-printwindow.png"), ImageFormat.Png);
-            }
-            using (var screenBitmap = new Bitmap(form.ClientSize.Width, form.ClientSize.Height))
-            {
-                using (var graphics = Graphics.FromImage(screenBitmap))
-                    graphics.CopyFromScreen(bounds.Left, bounds.Top, 0, 0, form.ClientSize);
-                screenBitmap.Save(Path.Combine(Path.GetDirectoryName(path)!, Path.GetFileNameWithoutExtension(path) + "-screen2.png"), ImageFormat.Png);
-            }
             form.TopMost = previousTopMost;
             form.Opacity = previousOpacity;
             realScreen = true;

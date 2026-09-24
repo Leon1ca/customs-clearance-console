@@ -798,14 +798,21 @@ internal sealed partial class MainForm : Form
 
     // ---- grid painting ----
 
-    internal static int PaintProbeCalls;
-    internal static string PaintProbeLast = "";
+    /// <summary>Self-test only: reproduces the leaked anti-aliasing to prove the seam check works.</summary>
+    internal static bool SkipCellSmoothingResetForTest { get; set; }
 
     private void PaintRecordCell(object? sender, DataGridViewCellPaintingEventArgs e)
     {
-        PaintProbeCalls++;
-        if (e.RowIndex == 0 && e.ColumnIndex == 3)
-            PaintProbeLast = $"adv={e.AdvancedBorderStyle.Left}/{e.AdvancedBorderStyle.Right}/{e.AdvancedBorderStyle.Top}/{e.AdvancedBorderStyle.Bottom} parts={e.PaintParts} bounds={e.CellBounds} clip={e.ClipBounds}";
+        // Every cell shares one Graphics. The rounded tags and buttons below switch on
+        // anti-aliasing, and that setting used to leak into the next cell's background fill:
+        // anti-aliased rectangle edges only half-cover their pixels, and the grid does not
+        // clear its double buffer under the cells, so a ~25% black seam appeared along every
+        // cell edge on real screens (DrawToBitmap hid it in the alpha channel).
+        if (e.Graphics is not null && !SkipCellSmoothingResetForTest)
+        {
+            e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.None;
+            e.Graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Default;
+        }
         if (e.RowIndex == -1 && e.ColumnIndex >= 0)
         {
             PaintColumnHeader(e);
