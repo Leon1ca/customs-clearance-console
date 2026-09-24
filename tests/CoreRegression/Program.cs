@@ -305,6 +305,52 @@ using (var archive = System.IO.Compression.ZipFile.OpenRead(xlsx))
     Check(quantityCell.Value is not null && DisplayCapacity(quantityCell.Style) >= 4, "导出数量 0.0004 的显示格式保留足够小数位");
     Check(unitPriceCell.Value is not null && DisplayCapacity(unitPriceCell.Style) >= 7, "导出单价 0.1234567 的显示格式保留足够小数位");
 }
+// 目的国: layout of a real export declaration (运抵国 阿尔及利亚 (DZA), 贸易国 中国香港 (HKG),
+// 指运港 斯基克达（阿尔及利亚）, goods 原产国 中国 (CHN) / 最终目的国 阿尔及利亚 (DZA)).
+TextPage DeclarationPage(Func<List<TextToken>, List<TextToken>>? edit = null, string consignee = "ZHONG HUAN XIN INTERNATIONAL TRADE CO.,LIMITED")
+{
+    TextToken T(string text, double left, double top, double right, double bottom) => new(text, left, top, right, bottom);
+    var tokens = new List<TextToken>
+    {
+        T("预录入编号：516620260001159033", 85, 160, 360, 178),
+        T("境内发货人", 88, 193, 170, 210), T("(91420112MA49LUFN2B)", 175, 193, 365, 210), T("出境关别", 557, 193, 630, 210), T("(5166)", 640, 193, 686, 210),
+        T("出口日期", 833, 193, 900, 210), T("申报日期", 1120, 193, 1187, 210), T("备案号", 1380, 193, 1430, 210),
+        T("大星（武汉）汽车制造有限公司", 88, 217, 355, 236), T("南沙新港", 557, 217, 640, 236), T("20260801", 833, 217, 910, 236), T("20260725", 1120, 217, 1197, 236),
+        T("境外收货人", 88, 245, 170, 262), T("运输方式", 557, 245, 630, 262), T("(2)", 636, 245, 660, 262), T("运输工具名称及航次号", 833, 245, 990, 262), T("提运单号", 1120, 245, 1187, 262),
+        T(consignee, 88, 270, 530, 288), T("水路运输", 557, 270, 640, 288), T("UN9936628/GJ628W", 833, 270, 985, 288), T("181AN26L0207040M1", 1120, 270, 1280, 288),
+        T("生产销售单位", 88, 295, 190, 312), T("监管方式", 557, 295, 630, 312), T("征免性质", 833, 295, 900, 312), T("许可证号", 1120, 295, 1187, 312),
+        T("大星（武汉）汽车制造有限公司", 88, 320, 355, 338), T("一般贸易", 557, 320, 640, 338), T("一般征税", 833, 320, 910, 338), T("26-17-801897", 1120, 320, 1235, 338),
+        T("合同协议号", 85, 345, 167, 362), T("贸易国（地区）", 557, 345, 683, 362), T("(HKG)", 687, 345, 722, 362),
+        T("运抵国（地区）", 833, 345, 960, 362), T("(DZA)", 963, 345, 1000, 362), T("指运港", 1120, 345, 1172, 362), T("(DZA036)", 1177, 345, 1255, 362),
+        T("离境口岸", 1380, 345, 1450, 362), T("(443417)", 1456, 345, 1530, 362),
+        T("CQZHX-DX-20260703-002", 85, 367, 290, 386), T("中国香港", 557, 367, 632, 386), T("阿尔及利亚", 833, 367, 930, 386),
+        T("斯基克达（阿尔及利亚）", 1120, 367, 1325, 386), T("南沙港三期码头", 1380, 367, 1515, 386),
+        T("包装种类", 88, 395, 160, 412), T("件数", 557, 395, 590, 412), T("毛重(千克)", 650, 395, 740, 412), T("净重(千克)", 833, 395, 920, 412), T("成交方式", 1005, 395, 1075, 412),
+        T("项号", 88, 592, 122, 609), T("商品编号", 148, 592, 212, 609), T("商品名称及规格型号", 376, 592, 520, 609), T("数量及单位", 738, 592, 818, 609),
+        T("单价/总价/币制", 923, 592, 1036, 609), T("原产国(地区)", 1098, 592, 1192, 609), T("最终目的国(地区)", 1238, 592, 1365, 609), T("境内货源地", 1468, 592, 1548, 609), T("征免", 1658, 592, 1690, 609),
+        T("1", 88, 622, 95, 640), T("8703225010", 128, 622, 230, 640), T("宝石星牌工具车", 236, 622, 370, 640), T("4辆", 885, 622, 912, 640), T("8034.0000", 965, 622, 1052, 640),
+        T("中国", 1180, 622, 1220, 640), T("阿尔及利亚", 1290, 622, 1385, 640), T("(42019)武汉其他", 1468, 622, 1618, 640), T("照章征税", 1640, 622, 1715, 640),
+        T("5020千克", 836, 645, 912, 663), T("32136.00", 972, 645, 1052, 663), T("(CHN)", 1175, 645, 1225, 663), T("(DZA)", 1340, 645, 1385, 663), T("(1)", 1695, 645, 1715, 663),
+        T("4辆", 885, 668, 912, 686), T("美元", 1015, 668, 1052, 686)
+    };
+    return new TextPage { Width = 1800, Height = 1270, Tokens = edit is null ? tokens : edit(tokens) };
+}
+string Destination(TextPage page) => new DeclarationParser().Parse("declaration.pdf", new DocumentText { Pages = [page] }).DestinationCountry;
+List<TextToken> Replace(List<TextToken> tokens, string from, string to) =>
+    tokens.Select(t => t.Text == from ? t with { Text = to } : t).ToList();
+List<TextToken> Without(List<TextToken> tokens, params string[] texts) => tokens.Where(t => !texts.Contains(t.Text)).ToList();
+
+Check(Destination(DeclarationPage()) == "阿尔及利亚", "目的国：运抵国 阿尔及利亚 (DZA) 正确识别（不在旧的 21 国名单中）");
+Check(Destination(DeclarationPage(consignee: "AMERICAN PARTS 美国分公司")) == "阿尔及利亚", "目的国：不再从整页任意文字（收货人里的“美国”）取国名");
+Check(Destination(DeclarationPage(t => Replace(t, "阿尔及利亚", "阿尔及利W"))) == "阿尔及利亚", "目的国：OCR 误读的值由标签代码 (DZA) 纠正");
+Check(Destination(DeclarationPage(t => Without(Replace(t, "阿尔及利亚", "阿尔及利亚 斯基克达（阿尔及利亚）"), "(DZA)", "指运港"))) == "阿尔及利亚",
+    "目的国：指运港内容混入时取值中第一个国名");
+Check(Destination(DeclarationPage(t => Replace(t, "阿尔及利亚", "").Where(x => !(x.Text == "(DZA)" && x.Top == 345)).ToList())) == "阿尔及利亚",
+    "目的国：运抵国读不出时用商品表最终目的国代码");
+Check(Destination(DeclarationPage(t => Replace(Replace(t, "(DZA)", "(IDN)"), "阿尔及利亚", "印度尼西亚"))) == "印度尼西亚", "目的国：印度尼西亚不被截成印度");
+Check(Destination(DeclarationPage(t => Replace(Replace(t, "(DZA)", "(HKG)"), "阿尔及利亚", "中国香港"))) == "中国香港", "目的国：转运时仍取运抵国（中国香港），不取最终目的国");
+Check(CountryNames.FirstNameIn("斯基克达（阿尔及利亚）") == "阿尔及利亚" && CountryNames.FromCode("dza") == "阿尔及利亚", "国别代码表与名称匹配");
+
 Console.WriteLine($"CORE_REGRESSION_OK: {passed} checks");
 
 internal sealed class InlineProgress<T>(Action<T> report) : IProgress<T> { public void Report(T value) => report(value); }

@@ -65,6 +65,7 @@ internal static class BrowserCaptureE2E
             checks.Add(await RunChildSessionNavigationAsync(outputFolder, browser, server));
             checks.Add(await RunOopifViewportReadFailureAsync(outputFolder, browser, server));
             checks.Add(await RunOfficialDomSuccessAsync(outputFolder, browser, server));
+            checks.Add(await RunOfficialHashRouteAsync(outputFolder, browser, server));
             checks.Add(await RunOfficialDomWrongNumberAsync(outputFolder, browser, server));
             checks.Add(await RunOfficialDomEmptyAsync(outputFolder, browser, server));
             checks.Add(await RunOfficialDomErrorAsync(outputFolder, browser, server));
@@ -1154,7 +1155,9 @@ internal static class BrowserCaptureE2E
         var folder = Path.Combine(outputFolder, "official-dom");
         Directory.CreateDirectory(folder);
         const string number = "310120260000000023";
-        var url = server.Url($"/page?result={number}&frame=official&mode=ok&lazy=2500");
+        // Like the official page, the target is routed by fragment (#/publicInquiryDetail),
+        // which CDP reports separately from Frame.url.
+        var url = server.Url($"/page?result={number}&frame=official&mode=ok&lazy=2500") + "#/publicInquiryDetail?id=pi4";
         await using var session = new BrowserValidation(number, folder, url, browser, headless: true, allowTestTarget: true);
         var problem = await StartAndWaitAsync(session, false);
         var details = new List<string>();
@@ -1182,6 +1185,33 @@ internal static class BrowserCaptureE2E
                 details.Add("官方 DOM 底部标记未入图（display-content 内容被截断）。");
         }
         return new Scenario("official-dom-success", details.Count == 0, details.Count == 0 ? ["仿官网 DOM 真实点击查询与卡片后 display-content/content-field 完整捕获"] : details);
+    }
+
+    /// <summary>
+    /// A single-page app that loads on another hash route and only then routes to the inquiry
+    /// page (Page.navigatedWithinDocument): the capture must be accepted once the route is the
+    /// inquiry route, exactly as on the official page.
+    /// </summary>
+    private static async Task<Scenario> RunOfficialHashRouteAsync(string outputFolder, string browser, TestServer server)
+    {
+        var folder = Path.Combine(outputFolder, "official-hash-route");
+        Directory.CreateDirectory(folder);
+        const string number = "310120260000000031";
+        var url = server.Url($"/page?result={number}&frame=official&mode=ok&lazy=1500&spa=1") + "#/home";
+        await using var session = new BrowserValidation(number, folder, url, browser, headless: true, allowTestTarget: true);
+        var problem = await StartAndWaitAsync(session, false);
+        var details = new List<string>();
+        if (problem is not null) return new Scenario("official-hash-route", false, [problem]);
+        for (var i = 0; i < 40 && !session.CurrentUrlForTest.Contains("#/publicInquiryDetail", StringComparison.Ordinal); i++) await Task.Delay(100);
+        if (!session.CurrentUrlForTest.Contains("#/publicInquiryDetail", StringComparison.Ordinal))
+            details.Add($"页面内路由切换后记录的地址仍为 {session.CurrentUrlForTest}。");
+        if (!await session.ClickElementInFrameAsync("#inner", "#queryBtn", CancellationToken.None))
+            details.Add("未能在 frame 内真实点击查询按钮。");
+        var identity = await session.WaitForIdentitySettledAsync(TimeSpan.FromSeconds(30), CancellationToken.None);
+        if (!identity.StartsWith("ready|", StringComparison.Ordinal)) details.Add($"查询未就绪：{identity}");
+        var result = await ClickAndAwaitAsync(session, TimeSpan.FromSeconds(120));
+        if (result.State != "saved") details.Add($"哈希路由页面截图失败：{result.State}：{result.Message}");
+        return new Scenario("official-hash-route", details.Count == 0, details.Count == 0 ? ["单页应用切换到 #/publicInquiryDetail 后截图被接受并保存"] : details);
     }
 
     private static async Task<Scenario> RunOfficialDomWrongNumberAsync(string outputFolder, string browser, TestServer server)
@@ -1681,6 +1711,9 @@ internal static class BrowserCaptureE2E
             // One-shot injection: the bad container throws on its very first style write and
             // immediately removes the override, so the retry after the restored failure can
             // run the normal prepare path and save.
+            var spaScript = parameters.TryGetValue("spa", out var spaValue) && spaValue == "1"
+                ? "<script>setTimeout(function () { location.hash = '#/publicInquiryDetail?id=pi4'; }, 800);</script>"
+                : "";
             var prepfailScript = prepfail ? """
             <script>
             (function () {
@@ -1715,6 +1748,7 @@ internal static class BrowserCaptureE2E
             {{midDiv}}
             {{body}}
             {{prepfailScript}}
+            {{spaScript}}
             </body></html>
             """;
         }

@@ -4,6 +4,7 @@
     <Compile Include="../../src/CustomsClearanceConsole/Models.cs" Link="Production/Models.cs" />
     <Compile Include="../../src/CustomsClearanceConsole/TargetUrlPolicy.cs" Link="Production/TargetUrlPolicy.cs" />
     <Compile Include="../../src/CustomsClearanceConsole/DeclarationParser.cs" Link="Production/DeclarationParser.cs" />
+    <Compile Include="../../src/CustomsClearanceConsole/CountryNames.cs" Link="Production/CountryNames.cs" />
     <Compile Include="../../src/CustomsClearanceConsole/DeclarationReconciler.cs" Link="Production/DeclarationReconciler.cs" />
     <Compile Include="../../src/CustomsClearanceConsole/BatchScanner.cs" Link="Production/BatchScanner.cs" />
     <Compile Include="../../src/CustomsClearanceConsole/ScanPlan.cs" Link="Production/ScanPlan.cs" />
