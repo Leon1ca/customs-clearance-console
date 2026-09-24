@@ -20,7 +20,7 @@ internal sealed record BrowserCaptureResult(string SessionId, string Declaration
 /// </summary>
 internal sealed class BrowserValidation : IAsyncDisposable
 {
-    public const string PrimaryUrl = "https://www.singlewindow.cn/#/publicInquiryDetail?id=pi4";
+    public const string PrimaryUrl = TargetUrlPolicy.PrimaryUrl;
     private const long DefaultMaxPixels = 60_000_000L;
     private const int TileHeight = 12_000;
 
@@ -36,19 +36,25 @@ internal sealed class BrowserValidation : IAsyncDisposable
     private readonly string? _browserPathOverride;
     private readonly long _maxPixels;
     private readonly bool _headless;
+    private readonly bool _allowTestTarget;
+    private readonly Uri? _testOrigin;
     private readonly CancellationTokenSource _lifetime = new();
+    private readonly SemaphoreSlim _reconnectGate = new(1, 1);
     private readonly Dictionary<string, string> _frameUrls = new(StringComparer.Ordinal);
     private readonly Dictionary<int, string> _defaultContexts = [];
     private CdpClient? _cdp;
     private Process? _process;
     private int _debugPort;
     private int _captureGate;
+    private int _navigationGeneration;
+    private string? _shellScriptIdentifier;
     private string _mainFrameId = "";
     private string _currentUrl = "";
     private bool _disposed;
 
     public BrowserValidation(string declarationNo, string targetFolder, string? urlOverride = null,
-        string? browserPathOverride = null, long maxPixels = DefaultMaxPixels, bool headless = false)
+        string? browserPathOverride = null, long maxPixels = DefaultMaxPixels, bool headless = false,
+        bool allowTestTarget = false)
     {
         DeclarationNo = declarationNo;
         _targetFolder = targetFolder;
@@ -56,6 +62,15 @@ internal sealed class BrowserValidation : IAsyncDisposable
         _browserPathOverride = browserPathOverride;
         _maxPixels = maxPixels > 0 ? maxPixels : DefaultMaxPixels;
         _headless = headless;
+        _allowTestTarget = allowTestTarget;
+        if (!string.IsNullOrWhiteSpace(urlOverride))
+        {
+            if (!allowTestTarget)
+                throw new ArgumentException("非生产目标地址只能在显式测试选项中授权。", nameof(urlOverride));
+            if (!Uri.TryCreate(urlOverride, UriKind.Absolute, out var testUri) || testUri.Host.Length == 0)
+                throw new ArgumentException("测试目标地址必须是绝对 URL。", nameof(urlOverride));
+            _testOrigin = new Uri($"{testUri.Scheme}://{testUri.Host}:{testUri.Port}");
+        }
     }
 
     internal sealed record BrowserChoice(string Path, string DisplayName, bool UsedFallback);
@@ -120,12 +135,54 @@ internal sealed class BrowserValidation : IAsyncDisposable
         }
     }
 
-    private string TargetFragment => string.IsNullOrWhiteSpace(_urlOverride)
-        ? "singlewindow"
-        : new Uri(_urlOverride).Authority;
+    private string TargetFragment => _allowTestTarget ? _testOrigin?.ToString() ?? "测试目标" : "singlewindow.cn";
 
-    private bool IsTargetUrl(string? url) =>
-        !string.IsNullOrWhiteSpace(url) && url.Contains(TargetFragment, StringComparison.OrdinalIgnoreCase);
+    /// <summary>Parses a URL and matches its exact scheme/host/port against the authorized target.</summary>
+    private bool MatchesTargetOrigin(string? url, out Uri? uri)
+    {
+        uri = null;
+        if (string.IsNullOrWhiteSpace(url)) return false;
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var parsed)) return false;
+        uri = parsed;
+        if (_allowTestTarget)
+            return _testOrigin is not null &&
+                   parsed.Scheme.Equals(_testOrigin.Scheme, StringComparison.OrdinalIgnoreCase) &&
+                   parsed.Host.Equals(_testOrigin.Host, StringComparison.OrdinalIgnoreCase) &&
+                   parsed.Port == _testOrigin.Port;
+        if (!parsed.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase)) return false;
+        return parsed.Host.Equals("www.singlewindow.cn", StringComparison.OrdinalIgnoreCase) ||
+               parsed.Host.Equals("singlewindow.cn", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// The main page must be the exact single-window inquiry route; a URL merely containing
+    /// "singlewindow" (for example https://example.com/?singlewindow) is not accepted.
+    /// </summary>
+    private bool IsTargetUrl(string? url)
+    {
+        if (!MatchesTargetOrigin(url, out _)) return false;
+        return _allowTestTarget || TargetUrlPolicy.IsSingleWindowInquiry(url);
+    }
+
+    /// <summary>Sub-frames only have to belong to the authorized origin; the card lives in the main frame.</summary>
+    private bool IsTargetFrameUrl(string? url, string frameId) =>
+        frameId.Equals(_mainFrameId, StringComparison.Ordinal) ? IsTargetUrl(url) : MatchesTargetOrigin(url, out _);
+
+    /// <summary>
+    /// A web request is only honored when its execution context belongs to an allowed frame
+    /// of the target origin, not merely when some known context exists.
+    /// </summary>
+    private bool IsAuthorizedContext(int contextId)
+    {
+        string? frameId = null;
+        lock (_defaultContexts) _defaultContexts.TryGetValue(contextId, out frameId);
+        if (string.IsNullOrEmpty(frameId)) return IsTargetUrl(_currentUrl);
+        string? frameUrl = null;
+        lock (_frameUrls) _frameUrls.TryGetValue(frameId, out frameUrl);
+        if (string.IsNullOrWhiteSpace(frameUrl))
+            frameUrl = frameId.Equals(_mainFrameId, StringComparison.Ordinal) ? _currentUrl : null;
+        return !string.IsNullOrWhiteSpace(frameUrl) && IsTargetFrameUrl(frameUrl, frameId);
+    }
 
     public async Task<string> StartAsync(CancellationToken cancellationToken)
     {
@@ -178,13 +235,18 @@ internal sealed class BrowserValidation : IAsyncDisposable
         if (_cdp is not null) await _cdp.DisposeAsync();
         lock (_frameUrls) { _frameUrls.Clear(); _currentUrl = ""; _mainFrameId = ""; }
         lock (_defaultContexts) { _defaultContexts.Clear(); }
+        Interlocked.Exchange(ref _navigationGeneration, 0);
+        _shellScriptIdentifier = null;
         _cdp = await CdpClient.ConnectAsync(websocket, token);
         _cdp.Closed += OnConnectionClosed;
         _cdp.On("Runtime.executionContextCreated", OnContextCreated);
+        _cdp.On("Runtime.executionContextDestroyed", OnContextDestroyed);
+        _cdp.On("Runtime.executionContextsCleared", OnContextsCleared);
         _cdp.On("Runtime.bindingCalled", OnBindingCalled);
         _cdp.On("Page.frameNavigated", OnFrameNavigated);
         await _cdp.SendAsync("Page.enable", null, token);
         await _cdp.SendAsync("Runtime.enable", null, token);
+        await _cdp.SendAsync("DOM.enable", null, token);
         // Seed the current URL/frame so binding validation works before the first
         // navigation event arrives.
         try
@@ -195,7 +257,26 @@ internal sealed class BrowserValidation : IAsyncDisposable
             _currentUrl = root.TryGetProperty("url", out var current) ? current.GetString() ?? "" : "";
         }
         catch (Exception ex) { AppLog.Write($"读取初始页面地址失败：{ex.Message}"); }
-        await _cdp.SendAsync("Page.addScriptToEvaluateOnNewDocument", new { source = ShellScript() }, token);
+        await RegisterShellScriptAsync(token);
+    }
+
+    private async Task RegisterShellScriptAsync(CancellationToken token)
+    {
+        if (_cdp is null) return;
+        // Never accumulate duplicate per-document scripts across reconnects.
+        if (_shellScriptIdentifier is not null)
+        {
+            try { await _cdp.SendAsync("Page.removeScriptToEvaluateOnNewDocument", new { identifier = _shellScriptIdentifier }, token); }
+            catch (Exception ex) { AppLog.Write($"移除旧网页脚本失败：{ex.Message}"); }
+            _shellScriptIdentifier = null;
+        }
+        try
+        {
+            var response = await _cdp.SendAsync("Page.addScriptToEvaluateOnNewDocument",
+                new { source = ShellScript() }, token);
+            _shellScriptIdentifier = response.GetProperty("result").TryGetProperty("identifier", out var id) ? id.GetString() : null;
+        }
+        catch (Exception ex) { AppLog.Write($"注册网页脚本失败：{ex.Message}"); }
     }
 
     private void OnConnectionClosed(string reason)
@@ -234,6 +315,22 @@ internal sealed class BrowserValidation : IAsyncDisposable
         catch (Exception ex) { AppLog.Write($"读取执行上下文失败：{ex.Message}"); }
     }
 
+    /// <summary>A navigated-away frame must not leave a stale context id in the active set.</summary>
+    private void OnContextDestroyed(JsonElement message)
+    {
+        try
+        {
+            var id = message.GetProperty("params").GetProperty("executionContextId").GetInt32();
+            lock (_defaultContexts) _defaultContexts.Remove(id);
+        }
+        catch (Exception ex) { AppLog.Write($"清理执行上下文失败：{ex.Message}"); }
+    }
+
+    private void OnContextsCleared(JsonElement message)
+    {
+        lock (_defaultContexts) _defaultContexts.Clear();
+    }
+
     private void OnFrameNavigated(JsonElement message)
     {
         try
@@ -247,17 +344,27 @@ internal sealed class BrowserValidation : IAsyncDisposable
                 if (frameId.Length > 0) _frameUrls[frameId] = url;
                 if (isMain) { _mainFrameId = frameId; _currentUrl = url; }
             }
-            if (isMain && !IsTargetUrl(url) && url.Length > 0)
-                _ = SetWidgetStateAsync("error", "已离开核验目标页面，截图请求将被忽略。");
+            if (isMain)
+            {
+                Interlocked.Increment(ref _navigationGeneration);
+                if (!IsTargetUrl(url) && url.Length > 0)
+                    _ = SetWidgetStateAsync("error", "已离开核验目标页面，截图请求将被忽略。");
+            }
         }
         catch (Exception ex) { AppLog.Write($"读取页面导航失败：{ex.Message}"); }
     }
 
     private async Task ReconnectAsync(CancellationToken token)
     {
-        var websocket = await WaitForPageAsync(_debugPort, token);
-        await ConnectAsync(websocket, token);
-        await InjectShellAsync(token);
+        // Serialize concurrent recovery attempts (socket close handler and E2E helper).
+        await _reconnectGate.WaitAsync(token);
+        try
+        {
+            var websocket = await WaitForPageAsync(_debugPort, token);
+            await ConnectAsync(websocket, token);
+            await InjectShellAsync(token);
+        }
+        finally { _reconnectGate.Release(); }
     }
 
     private async Task InjectShellAsync(CancellationToken token)
@@ -265,13 +372,20 @@ internal sealed class BrowserValidation : IAsyncDisposable
         if (_cdp is null) return;
         await _cdp.SendAsync("Runtime.addBinding", new { name = "cccRequestCapture" }, token);
         await _cdp.SendAsync("Runtime.addBinding", new { name = "cccOpenFolder" }, token);
+        // Frames that finished loading before this connect never ran the new-document
+        // script, so the monitor is installed into every existing allowed frame. The
+        // card itself belongs to the main frame only.
+        try { await EvaluateAllContextsAsync(MonitorScript(), token, childrenFirst: false, bestEffort: true); }
+        catch (Exception ex) when (!IsConnectionFailure(ex)) { AppLog.Write($"向子框架安装监视器失败：{ex.Message}"); }
         try { await EvaluateContextAsync(ShellScript(), null, token, awaitPromise: true); }
         catch (Exception ex) when (IsConnectionFailure(ex)) { }
     }
 
+    private string MonitorScript() => BrowserScript("monitor", DeclarationNo);
+
     private string ShellScript()
     {
-        var monitor = BrowserScript("monitor", DeclarationNo);
+        var monitor = MonitorScript();
         var widget = BrowserScript("widget", DeclarationNo).Replace("__SAVE_DIR__", JsonSerializer.Serialize(_targetFolder));
         return monitor + ";\n" + widget + ";";
     }
@@ -303,10 +417,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
             var parameters = message.GetProperty("params");
             var name = parameters.GetProperty("name").GetString();
             var contextId = parameters.TryGetProperty("executionContextId", out var context) ? context.GetInt32() : -1;
-            var knownContext = false;
-            lock (_defaultContexts) { knownContext = _defaultContexts.ContainsKey(contextId); }
-            var targetUrl = IsTargetUrl(_currentUrl);
-            if (!knownContext || !targetUrl)
+            if (!IsAuthorizedContext(contextId))
             {
                 AppLog.Write($"已忽略来源页面的网页请求：{name} · context={contextId} · url={_currentUrl}");
                 _ = SetWidgetStateAsync("error", "当前页面不是核验目标页，已忽略网页请求。");
@@ -382,6 +493,8 @@ internal sealed class BrowserValidation : IAsyncDisposable
         if (!IsTargetUrl(_currentUrl))
             return new BrowserCaptureResult(SessionId, DeclarationNo, "error", null, "当前页面不是核验目标页，未保存截图。");
 
+        var generation = Volatile.Read(ref _navigationGeneration);
+
         var identity = await ProbeIdentityAsync(token);
         if (identity.StartsWith("mismatch|", StringComparison.Ordinal))
             return new BrowserCaptureResult(SessionId, DeclarationNo, "mismatch", null, "网页结果单号与本次核验不一致，未保存截图。");
@@ -394,20 +507,36 @@ internal sealed class BrowserValidation : IAsyncDisposable
         if (!identity.StartsWith("ready|", StringComparison.Ordinal))
             return new BrowserCaptureResult(SessionId, DeclarationNo, "error", null, "查询结果尚未确认，未保存截图。请先在网页完成查询。");
 
-        // Require the result fingerprint to stay stable, so an in-flight render is
-        // never captured mid-update.
+        // A layout-independent fingerprint of the result region: it is re-checked before
+        // the atomic save so a query change, a result re-render or a navigation during
+        // the capture aborts the save instead of backfilling a stale image.
+        var stableBefore = await VerifyStableAsync(token);
+        if (stableBefore.StartsWith("mismatch|", StringComparison.Ordinal))
+            return new BrowserCaptureResult(SessionId, DeclarationNo, "mismatch", null, "网页结果单号与本次核验不一致，未保存截图。");
+        if (stableBefore.StartsWith("error|", StringComparison.Ordinal))
+            return new BrowserCaptureResult(SessionId, DeclarationNo, "error", null, "网页提示验证码或查询条件有误，未保存截图。");
+        if (!stableBefore.StartsWith("stable|", StringComparison.Ordinal))
+            return new BrowserCaptureResult(SessionId, DeclarationNo, "error", null, "查询结果尚未确认，未保存截图。请先在网页完成查询。");
         await Task.Delay(350, token);
-        var second = await ProbeIdentityAsync(token);
-        if (!second.StartsWith("ready|", StringComparison.Ordinal) || second != identity)
+        var stableSecond = await VerifyStableAsync(token);
+        if (stableSecond != stableBefore)
             return new BrowserCaptureResult(SessionId, DeclarationNo, "error", null, "查询结果仍在变化，未保存截图。请稍后重试。");
 
         Directory.CreateDirectory(_targetFolder);
-        var prepared = false;
+        var preparedContexts = new List<int?>();
+        var expandedFrames = new List<string>();
         try
         {
-            await EvaluateAllContextsAsync(BrowserScript("capture-prepare"), token, childrenFirst: true, bestEffort: false);
-            prepared = true;
-            await Task.Delay(350, token);
+            await PrepareContextsAsync(BrowserScript("capture-prepare"), preparedContexts, token);
+            await Task.Delay(300, token);
+
+            // Cross-origin frames cannot be resized from page JS. The CDP frame owner is
+            // grown to the frame document height so the complete frame content is painted;
+            // a frame that cannot be expanded rejects the capture instead of truncating it.
+            var failedFrames = await ExpandFramesAsync(expandedFrames, token);
+            if (failedFrames.Count > 0)
+                return new BrowserCaptureResult(SessionId, DeclarationNo, "error", null,
+                    $"存在无法完整捕获的网页框架（{string.Join("、", failedFrames)}），未保存截图。");
 
             var metrics = await cdp.SendAsync("Page.getLayoutMetrics", null, token);
             var content = metrics.GetProperty("result").GetProperty("contentSize");
@@ -428,6 +557,8 @@ internal sealed class BrowserValidation : IAsyncDisposable
                 for (var index = 0; index < tiles; index++)
                 {
                     token.ThrowIfCancellationRequested();
+                    if (Volatile.Read(ref _navigationGeneration) != generation || !IsTargetUrl(_currentUrl))
+                        return new BrowserCaptureResult(SessionId, DeclarationNo, "error", null, "捕获期间页面已导航，未保存截图。");
                     var y = index * TileHeight;
                     var tileHeight = Math.Min(TileHeight, height - y);
                     var response = await cdp.SendAsync("Page.captureScreenshot", new
@@ -444,17 +575,205 @@ internal sealed class BrowserValidation : IAsyncDisposable
                     await ReportProgressAsync(index + 1, tiles, null);
                 }
             }
+            // Final identity/generation re-validation before the atomic move.
+            if (Volatile.Read(ref _navigationGeneration) != generation || !IsTargetUrl(_currentUrl))
+                return new BrowserCaptureResult(SessionId, DeclarationNo, "error", null, "捕获期间页面已导航，未保存截图。");
+            var stableAfter = await VerifyStableAsync(token);
+            if (!stableAfter.StartsWith("stable|", StringComparison.Ordinal) || stableAfter != stableBefore)
+                return new BrowserCaptureResult(SessionId, DeclarationNo, "error", null, "捕获期间查询结果发生变化，未保存截图。");
             var file = SaveAtomically(full);
             return new BrowserCaptureResult(SessionId, DeclarationNo, "saved", file, "长截图已保存。");
         }
         finally
         {
-            if (prepared)
+            // Restoration must run even when the capture token was cancelled. Frame heights
+            // are restored through CDP first (cross-origin included), then the page-level
+            // script puts back scroll offsets, overflow and widget visibility.
+            using var restore = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+            await RestoreFramesAsync(expandedFrames, restore.Token);
+            await RestoreContextsAsync(BrowserScript("capture-restore"), preparedContexts, restore.Token);
+        }
+    }
+
+    /// <summary>Layout-independent result fingerprint used to detect in-flight changes.</summary>
+    private Task<string> VerifyStableAsync(CancellationToken token) =>
+        EvaluateAllContextsAsync(BrowserScript("verify", DeclarationNo), token, false,
+            "stable|", "mismatch|", "error|", "loading|", "waiting|", "stale|");
+
+    private static bool IsPreparedMarker(string value) =>
+        value.Contains("prepared:", StringComparison.OrdinalIgnoreCase) ||
+        value.Contains("already-prepared", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Runs the prepare expression context by context and records exactly which contexts
+    /// were modified, so a mid-way failure still restores every already-prepared frame.
+    /// </summary>
+    private async Task PrepareContextsAsync(string expression, List<int?> prepared, CancellationToken token)
+    {
+        if (_cdp is null) return;
+        List<KeyValuePair<int, string>> contexts;
+        lock (_defaultContexts) contexts = _defaultContexts.ToList();
+        foreach (var context in contexts.OrderBy(x => x.Value.Equals(_mainFrameId, StringComparison.Ordinal) ? 1 : 0))
+        {
+            token.ThrowIfCancellationRequested();
+            try
             {
-                // Restoration must run even when the capture token was cancelled.
-                using var restore = new CancellationTokenSource(TimeSpan.FromSeconds(6));
-                await EvaluateAllContextsAsync(BrowserScript("capture-restore"), restore.Token, childrenFirst: true, bestEffort: true);
+                var value = await EvaluateContextAsync(expression, context.Key, token, awaitPromise: true);
+                if (IsPreparedMarker(value)) prepared.Add(context.Key);
             }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) when (!IsConnectionFailure(ex)) { AppLog.Write($"子框架状态准备失败：{ex.Message}"); }
+        }
+        if (token.IsCancellationRequested) return;
+        try
+        {
+            var main = await EvaluateContextAsync(expression, null, token, awaitPromise: true);
+            if (IsPreparedMarker(main)) prepared.Add(null);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) when (!IsConnectionFailure(ex)) { AppLog.Write($"主框架状态准备失败：{ex.Message}"); }
+    }
+
+    private async Task RestoreContextsAsync(string expression, IReadOnlyList<int?> prepared, CancellationToken token)
+    {
+        if (_cdp is null) return;
+        foreach (var contextId in prepared)
+        {
+            if (token.IsCancellationRequested) break;
+            try { await EvaluateContextAsync(expression, contextId, token, awaitPromise: true); }
+            catch (Exception ex) { AppLog.Write($"网页状态恢复失败：{ex.Message}"); }
+        }
+    }
+
+    private static void CollectFrames(JsonElement tree, List<(string FrameId, string Url)> frames)
+    {
+        if (!tree.TryGetProperty("frame", out var frame)) return;
+        var id = frame.TryGetProperty("id", out var idValue) ? idValue.GetString() ?? "" : "";
+        var url = frame.TryGetProperty("url", out var urlValue) ? urlValue.GetString() ?? "" : "";
+        if (id.Length > 0) frames.Add((id, url));
+        if (tree.TryGetProperty("childFrames", out var children) && children.ValueKind == JsonValueKind.Array)
+            foreach (var child in children.EnumerateArray()) CollectFrames(child, frames);
+    }
+
+    private async Task<string?> GetFrameOwnerObjectIdAsync(string frameId, CancellationToken token)
+    {
+        if (_cdp is null) return null;
+        var owner = await _cdp.SendAsync("DOM.getFrameOwner", new { frameId }, token);
+        if (!owner.GetProperty("result").TryGetProperty("backendNodeId", out var backend) || backend.GetInt32() <= 0) return null;
+        var resolved = await _cdp.SendAsync("DOM.resolveNode", new { backendNodeId = backend.GetInt32() }, token);
+        if (!resolved.GetProperty("result").TryGetProperty("object", out var remote)) return null;
+        return remote.TryGetProperty("objectId", out var objectId) ? objectId.GetString() : null;
+    }
+
+    private async Task<string> CallFunctionOnAsync(string objectId, string function, object? argument, CancellationToken token)
+    {
+        var cdp = _cdp ?? throw new InvalidOperationException("浏览器控制连接已断开。");
+        object parameters = argument is null
+            ? (object)new { objectId, functionDeclaration = function, returnByValue = true, awaitPromise = false }
+            : new { objectId, functionDeclaration = function, arguments = new[] { argument }, returnByValue = true, awaitPromise = false };
+        var response = await cdp.SendAsync("Runtime.callFunctionOn", parameters, token);
+        try
+        {
+            var result = response.GetProperty("result").GetProperty("result");
+            return result.TryGetProperty("value", out var value) ? value.ToString() : "";
+        }
+        catch { return ""; }
+    }
+
+    /// <summary>
+    /// Grows every authorized sub-frame's owner element to the frame document height using
+    /// CDP (so cross-origin frames are included). Returns the frames that could not be
+    /// expanded while their content is taller than the element.
+    /// </summary>
+    private async Task<List<string>> ExpandFramesAsync(List<string> expanded, CancellationToken token)
+    {
+        var failed = new List<string>();
+        if (_cdp is null) return failed;
+        JsonElement tree;
+        try { tree = await _cdp.SendAsync("Page.getFrameTree", null, token); }
+        catch (Exception ex) { AppLog.Write($"读取框架树失败：{ex.Message}"); return failed; }
+        var frames = new List<(string FrameId, string Url)>();
+        CollectFrames(tree.GetProperty("result").GetProperty("frameTree"), frames);
+        foreach (var (frameId, url) in frames)
+        {
+            if (frameId.Equals(_mainFrameId, StringComparison.Ordinal)) continue;
+            token.ThrowIfCancellationRequested();
+            try
+            {
+                int? contextId = null;
+                lock (_defaultContexts)
+                {
+                    var match = _defaultContexts.FirstOrDefault(x => x.Value.Equals(frameId, StringComparison.Ordinal));
+                    if (match.Value is not null) contextId = match.Key;
+                }
+                if (contextId is null && _cdp is not null)
+                {
+                    // Out-of-process / already-loaded frames may not report a default
+                    // context; an isolated world still exposes the frame DOM through CDP.
+                    try
+                    {
+                        var world = await _cdp.SendAsync("Page.createIsolatedWorld", new
+                        {
+                            frameId,
+                            worldName = "customs-console-frame-expand",
+                            grantUniveralAccess = true
+                        }, token);
+                        contextId = world.GetProperty("result").GetProperty("executionContextId").GetInt32();
+                    }
+                    catch (Exception ex) { AppLog.Write($"无法建立框架执行环境 {frameId}：{ex.Message}"); }
+                }
+                if (contextId is null)
+                {
+                    failed.Add(frameId);
+                    continue;
+                }
+                var heightText = await EvaluateContextAsync(
+                    "String(Math.max(document.documentElement ? document.documentElement.scrollHeight : 0, document.body ? document.body.scrollHeight : 0))",
+                    contextId, token, awaitPromise: false);
+                if (!int.TryParse(heightText.Trim(), out var frameHeight) || frameHeight <= 0) continue;
+                var objectId = await GetFrameOwnerObjectIdAsync(frameId, token);
+                if (string.IsNullOrEmpty(objectId))
+                {
+                    failed.Add(frameId);
+                    continue;
+                }
+                var currentText = await CallFunctionOnAsync(objectId, "function(){ return String(this && this.tagName==='IFRAME' ? (this.clientHeight||0) : 0); }", null, token);
+                if (!int.TryParse(currentText.Trim(), out var currentHeight)) currentHeight = 0;
+                if (frameHeight <= currentHeight + 2) continue;
+                var applied = await CallFunctionOnAsync(objectId,
+                    "function(h){ if(!this || this.tagName!=='IFRAME') return '0'; if(this.__cccPrevHeight===undefined){ this.__cccPrevHeight = this.style.getPropertyValue('height') || ''; } var target=Math.max(this.clientHeight||0, h); this.style.setProperty('height', target+'px','important'); return String(target); }",
+                    new { value = frameHeight }, token);
+                if (!int.TryParse(applied.Trim(), out var target) || target < frameHeight)
+                {
+                    failed.Add(frameId);
+                    continue;
+                }
+                expanded.Add(frameId);
+            }
+            catch (Exception ex) when (!IsConnectionFailure(ex))
+            {
+                AppLog.Write($"扩展框架 {frameId} 失败：{ex.Message}");
+                failed.Add(frameId);
+            }
+        }
+        return failed;
+    }
+
+    private async Task RestoreFramesAsync(IReadOnlyList<string> frameIds, CancellationToken token)
+    {
+        if (_cdp is null) return;
+        foreach (var frameId in frameIds)
+        {
+            if (token.IsCancellationRequested) break;
+            try
+            {
+                var objectId = await GetFrameOwnerObjectIdAsync(frameId, token);
+                if (string.IsNullOrEmpty(objectId)) continue;
+                await CallFunctionOnAsync(objectId,
+                    "function(){ if(this && this.tagName==='IFRAME' && this.__cccPrevHeight!==undefined){ if(this.__cccPrevHeight) this.style.setProperty('height', this.__cccPrevHeight, ''); else this.style.removeProperty('height'); delete this.__cccPrevHeight; } return 'ok'; }",
+                    null, token);
+            }
+            catch (Exception ex) { AppLog.Write($"恢复框架高度失败：{ex.Message}"); }
         }
     }
 
@@ -556,11 +875,53 @@ internal sealed class BrowserValidation : IAsyncDisposable
         return last;
     }
 
-    /// <summary>Drives the web card button exactly as a user click would (E2E helper).</summary>
-    public async Task ClickCaptureButtonAsync(CancellationToken token)
+    /// <summary>Hit-test result of the last real card-button click (E2E evidence).</summary>
+    public string LastClickHitTarget { get; private set; } = "";
+
+    /// <summary>
+    /// Clicks the visible web card button with real CDP mouse input (not the internal
+    /// requestCapture API), so the E2E exercises the same hit-tested path a user does.
+    /// Returns false when the button rectangle cannot be located.
+    /// </summary>
+    public async Task<bool> ClickCaptureButtonAsync(CancellationToken token)
     {
-        await EvaluateContextAsync("window.__cccWidget && window.__cccWidget.requestCapture()", null, token, awaitPromise: false);
+        var cdp = _cdp ?? throw new InvalidOperationException("浏览器控制连接已断开。");
+        var rectJson = await EvaluateContextAsync(
+            "JSON.stringify((window.__cccWidget && window.__cccWidget.captureButtonRect && window.__cccWidget.captureButtonRect()) || null)",
+            null, token, awaitPromise: false);
+        if (string.IsNullOrWhiteSpace(rectJson) || rectJson.TrimStart().StartsWith("null", StringComparison.OrdinalIgnoreCase)) return false;
+        double x, y;
+        try
+        {
+            using var document = JsonDocument.Parse(rectJson);
+            var root = document.RootElement;
+            x = root.GetProperty("x").GetDouble() + root.GetProperty("width").GetDouble() / 2;
+            y = root.GetProperty("y").GetDouble() + root.GetProperty("height").GetDouble() / 2;
+        }
+        catch (Exception ex) { AppLog.Write($"读取卡片按钮位置失败：{ex.Message}"); return false; }
+        // Confirm the point hits the card host before the trusted click.
+        var point = string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{x},{y}");
+        LastClickHitTarget = await EvaluateContextAsync(
+            $"(() => {{ const el = document.elementFromPoint({point}); return el && (el.id === 'ccc-widget-host' || (el.closest && el.closest('#ccc-widget-host'))) ? 'host' : (el ? el.tagName : 'none'); }})()",
+            null, token, awaitPromise: false);
+        await cdp.SendAsync("Input.dispatchMouseEvent", new { type = "mouseMoved", x, y, button = "none", clickCount = 0 }, token);
+        await cdp.SendAsync("Input.dispatchMouseEvent", new { type = "mousePressed", x, y, button = "left", clickCount = 1 }, token);
+        await cdp.SendAsync("Input.dispatchMouseEvent", new { type = "mouseReleased", x, y, button = "left", clickCount = 1 }, token);
+        return true;
     }
+
+    /// <summary>Navigates the page (E2E helper for leave/return and reload flows).</summary>
+    public async Task NavigateAsync(string url, CancellationToken token)
+    {
+        var cdp = _cdp ?? throw new InvalidOperationException("浏览器控制连接已断开。");
+        await cdp.SendAsync("Page.navigate", new { url }, token);
+    }
+
+    /// <summary>Aborts the control socket so the reconnect production path can be exercised.</summary>
+    public void SimulateConnectionDropForTest() => _cdp?.AbortForTest();
+
+    public Task<string> CurrentUrlAsync(CancellationToken token) =>
+        EvaluateContextAsync("location.href", null, token, awaitPromise: false);
 
     public Task<bool> CanCaptureAsync(CancellationToken token) =>
         EvaluateBooleanAsync("!!(window.__cccWidget && window.__cccWidget.canCapture())", token);
@@ -778,6 +1139,9 @@ internal sealed class CdpClient : IAsyncDisposable
 
     public event Action<string>? Closed;
     public bool IsClosed => _closed;
+
+    /// <summary>Test hook: aborts the socket so the reconnect path can be exercised.</summary>
+    internal void AbortForTest() => _socket.Abort();
 
     public static async Task<CdpClient> ConnectAsync(string url, CancellationToken token)
     {

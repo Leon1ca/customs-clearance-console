@@ -390,6 +390,41 @@ internal sealed partial class DeclarationParser
     };
 
     /// <summary>
+    /// Unit evidence for the quantity column. Multi-character units may arrive attached
+    /// to punctuation; single-character units such as "M" require an exact match so an
+    /// unrelated word is never mistaken for a unit.
+    /// </summary>
+    private static bool IsKnownUnitToken(string text)
+    {
+        var candidate = text.Trim().Trim('(', ')', '（', '）', '/', '：', ':');
+        if (candidate.Length == 0) return false;
+        foreach (var unit in KnownUnits)
+        {
+            if (candidate.Equals(unit, StringComparison.OrdinalIgnoreCase)) return true;
+            if (unit.Length >= 2 && candidate.Contains(unit, StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Horizontal band of the "数量" column, taken from its table header. When the header
+    /// also covers the unit ("数量及单位"), only its leading part is treated as the
+    /// quantity column so the unit sub-column cannot admit a number.
+    /// </summary>
+    private static (double Left, double Right)? FindQuantityColumn(TextPage page, double rowTop)
+    {
+        var header = page.Tokens
+            .Where(t => t.Text.Contains("数量", StringComparison.Ordinal))
+            .Where(t => t.Bottom <= rowTop + Math.Max(4, page.Height * .012))
+            .OrderByDescending(t => t.Bottom)
+            .FirstOrDefault();
+        if (header is null) return null;
+        var quantityFraction = header.Text.Contains("单位", StringComparison.Ordinal) ? .6 : 1.0;
+        return (header.Left - page.Width * .005,
+                header.Left + (header.Right - header.Left) * quantityFraction + page.Width * .01);
+    }
+
+    /// <summary>
     /// Best-effort extraction of product name, quantity, unit and unit price for one
     /// already-reconciled total row. Nothing is ever derived from the total amount:
     /// a value that cannot be located in the source stays empty and renders as “—”.
@@ -414,11 +449,16 @@ internal sealed partial class DeclarationParser
             break;
         }
 
-        // Quantity and unit: the right-most numeric token immediately left of the price column.
+        // Quantity and unit: a number is only promoted to a quantity when there is
+        // explicit column evidence — it sits inside the "数量" header band, or a unit
+        // token follows it on the same visual line. Otherwise a right-aligned model
+        // number inside the product name (e.g. "2026") would be misattributed as the
+        // quantity, so the field deliberately stays empty.
         var leftTokens = page.Tokens
             .Where(t => t.CenterX >= itemNoRight && t.CenterX < priceLeft - 1)
             .Where(t => t.CenterY >= rowTop && t.CenterY <= bandBottom)
             .ToList();
+        var quantityColumn = FindQuantityColumn(page, rowTop);
         double? quantityLeft = null;
         var maxFragmentGap = page.Width * .015;
         foreach (var visualLine in Lines(leftTokens, tolerance).OrderByDescending(l => l.Max(t => t.CenterX)))
@@ -445,11 +485,16 @@ internal sealed partial class DeclarationParser
                     lastLeft = token.Left;
                 }
                 if (!TryAmount(string.Concat(fragments), out var quantity) || quantity <= 0) break;
+                var suffix = ordered.Skip(k + 1)
+                    .Select(t => t.Text.Trim())
+                    .Where(t => t.Length > 0 && !Regex.IsMatch(t, @"^[0-9][0-9,.]*$"))
+                    .ToList();
+                var inQuantityColumn = quantityColumn is { } column &&
+                    anchor.CenterX >= column.Left && anchor.Right <= column.Right;
+                if (!inQuantityColumn && !suffix.Any(IsKnownUnitToken)) break;
                 line.Quantity = quantity;
                 quantityLeft = anchor.Left;
-                line.Unit = string.Join(" ", ordered.Skip(k + 1)
-                    .Select(t => t.Text.Trim())
-                    .Where(t => t.Length > 0 && !Regex.IsMatch(t, @"^[0-9][0-9,.]*$"))).Trim();
+                line.Unit = string.Join(" ", suffix).Trim();
                 break;
             }
             if (line.Quantity is not null) break;

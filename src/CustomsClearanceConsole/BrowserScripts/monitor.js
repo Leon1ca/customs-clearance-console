@@ -4,7 +4,9 @@
           const visible = e => !!e && !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
           const text = () => (document.body?.innerText || '').replace(/\s+/g, ' ').trim();
           const hash = value => { let h = 2166136261; for (let i = 0; i < value.length; i++) h = Math.imul(h ^ value.charCodeAt(i), 16777619); return (h >>> 0).toString(16); };
-          const signature = () => { const value = text(); return { length:value.length, height:document.documentElement.scrollHeight, hash:hash(value.slice(-3000)) }; };
+          // documentElement/body may not exist yet when this runs at document start;
+          // never throw, so the rest of the shell (the card) still installs.
+          const signature = () => { const root = document.documentElement; const value = text(); return { length:value.length, height:root ? root.scrollHeight : 0, hash:hash(value.slice(-3000)) }; };
           const state = window.__customsConsoleMonitor = { declarationNo:no, queryAt:0, baseline:signature() };
           const isQueryControl = target => {
             const control = target?.closest?.('button,input[type=button],input[type=submit],a,[role=button]');

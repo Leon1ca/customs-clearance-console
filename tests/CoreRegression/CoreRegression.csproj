@@ -2,6 +2,7 @@
   <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup>
   <ItemGroup>
     <Compile Include="../../src/CustomsClearanceConsole/Models.cs" Link="Production/Models.cs" />
+    <Compile Include="../../src/CustomsClearanceConsole/TargetUrlPolicy.cs" Link="Production/TargetUrlPolicy.cs" />
     <Compile Include="../../src/CustomsClearanceConsole/DeclarationParser.cs" Link="Production/DeclarationParser.cs" />
     <Compile Include="../../src/CustomsClearanceConsole/DeclarationReconciler.cs" Link="Production/DeclarationReconciler.cs" />
     <Compile Include="../../src/CustomsClearanceConsole/BatchScanner.cs" Link="Production/BatchScanner.cs" />

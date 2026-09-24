@@ -66,6 +66,7 @@ internal static class SelfTest
         RunDetailConsistencyRegression();
         RunDetailMultiCurrencyRegression();
         RunMultiCurrencySummaryRegression();
+        RunMoneySummaryScrollRegression();
         RunCopySelectionRegression();
         RunDesignMenuInteractionRegression();
         RunLineDetailParseRegression();
@@ -179,6 +180,46 @@ internal static class SelfTest
             throw new InvalidOperationException("状态复制文本为空。");
     }
 
+    /// <summary>
+    /// R4-4: the money summary must really scroll the GDI-drawn currency text. The
+    /// regression scrolls to the bottom and asserts the last row's text is painted inside
+    /// its scrolled rectangle; the old GDI+ TranslateTransform left that text clipped.
+    /// </summary>
+    private static void RunMoneySummaryScrollRegression()
+    {
+        using var form = new Form { ClientSize = new Size(360, 150), StartPosition = FormStartPosition.Manual, Location = new Point(-32000, -32000), ShowInTaskbar = false, Opacity = 0 };
+        var panel = new MoneySummaryPanel { Dock = DockStyle.Fill };
+        var rows = Enumerable.Range(1, 16).Select(i => new MoneySummaryRow($"C{i:D2}", i, i + 1, 1000m + i, 900m + i)).ToList();
+        panel.Set(new MoneySummarySnapshot(rows, []));
+        form.Controls.Add(panel);
+        form.Show();
+        Application.DoEvents();
+        if (panel.AutoScrollMinSize.Height <= panel.ClientSize.Height)
+            throw new InvalidOperationException("金额汇总未建立可滚动内容。");
+        panel.AutoScrollPosition = new Point(0, panel.AutoScrollMinSize.Height);
+        Application.DoEvents();
+        if (panel.VerticalScroll.Value <= 0)
+            throw new InvalidOperationException("金额汇总滚动条未真正滚动。");
+        var bodyTop = panel.BodyTopForTest;
+        var lastRect = panel.RowRectForTest(rows.Count - 1);
+        if (lastRect.Top < bodyTop || lastRect.Bottom > panel.ClientSize.Height)
+            throw new InvalidOperationException($"滚动后末币种行不在可见区域：{lastRect} · bodyTop {bodyTop} · client {panel.ClientSize}。");
+        if (panel.RowRectForTest(0).Bottom > bodyTop)
+            throw new InvalidOperationException("首币种行未随滚动移出固定表头。");
+        using var bitmap = new Bitmap(panel.Width, panel.Height);
+        panel.DrawToBitmap(bitmap, new Rectangle(0, 0, panel.Width, panel.Height));
+        var dark = 0;
+        for (var y = Math.Max(0, lastRect.Top); y < Math.Min(bitmap.Height, lastRect.Bottom); y++)
+            for (var x = Math.Max(0, lastRect.Left); x < Math.Min(bitmap.Width, lastRect.Right); x++)
+            {
+                var pixel = bitmap.GetPixel(x, y);
+                if (pixel.R + pixel.G + pixel.B < 420) dark++;
+            }
+        form.Close();
+        if (dark < 8)
+            throw new InvalidOperationException("滚动后末币种文字未绘制在滚动后的矩形内（GDI 文本未跟随滚动）。");
+    }
+
     /// <summary>R3-2: real grid selection copies No/Amount/Status with full text, not blanks.</summary>
     private static void RunCopySelectionRegression()
     {
@@ -286,7 +327,9 @@ internal static class SelfTest
         if (bareLine.Quantity is not null || bareLine.Unit.Length != 0 || bareLine.UnitPrice is not null)
             throw new InvalidOperationException("无法定位的数量/单位/单价必须保持为空，不得推算。");
 
-        // A product model number separated by a large gap must never merge with the quantity.
+        // A product model number with no quantity column, unit or "数量" header must not
+        // be promoted to a quantity; the row stays conservatively empty and the product
+        // name keeps the model number.
         var spaced = new TextPage
         {
             PageNumber = 1,
@@ -302,8 +345,33 @@ internal static class SelfTest
             ]
         };
         var spacedLine = new DeclarationParser().Parse("spaced.png", new DocumentText { Pages = [spaced] }).LineTotals.Single();
-        if (spacedLine.Quantity != 10m)
-            throw new InvalidOperationException($"间隔数字被错误拼接为数量：{spacedLine.Quantity}");
+        if (spacedLine.Quantity is not null)
+            throw new InvalidOperationException($"缺少数量列/单位证据时不得推断数量：{spacedLine.Quantity}");
+        if (!spacedLine.ProductName.Contains("2026", StringComparison.Ordinal))
+            throw new InvalidOperationException($"数量空缺时商品名称中的型号被截断：{spacedLine.ProductName}");
+
+        // A "数量及单位" header is explicit column evidence: a number under it is a
+        // quantity even when the unit token is missing.
+        var headed = new TextPage
+        {
+            PageNumber = 1,
+            Width = 2800,
+            Height = 1932,
+            Tokens =
+            [
+                new TextToken("单价/总价/币制", 1432, 700, 1617, 734),
+                new TextToken("数量及单位", 940, 830, 1230, 866),
+                new TextToken("1", 150, 940, 175, 975),
+                new TextToken("冷藏鱿鱼", 400, 940, 700, 975),
+                new TextToken("1,000", 1000, 940, 1120, 975),
+                new TextToken("2.15", 1500, 943, 1560, 975),
+                new TextToken("2150.00", 1520, 978, 1660, 1010),
+                new TextToken("美元", 1600, 1015, 1660, 1050)
+            ]
+        };
+        var headedLine = new DeclarationParser().Parse("headed.png", new DocumentText { Pages = [headed] }).LineTotals.Single();
+        if (headedLine.Quantity != 1000m)
+            throw new InvalidOperationException($"数量列表头下的数量未识别：{headedLine.Quantity}");
 
         // A row without descriptive values must not inherit them from the row above.
         var twoRows = new TextPage

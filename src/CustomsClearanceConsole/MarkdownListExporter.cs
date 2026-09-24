@@ -45,7 +45,7 @@ internal static class MarkdownListExporter
                         line.Currency,
                         Money(line.Amount), line.VerificationAmount.HasValue ? Money(line.VerificationAmount.Value) : "—",
                         (line.IsReliable ? "已确认" : "未确认，未计入总价") +
-                        (line.HasSecondaryDifference ? "；另一引擎内容不同：" + SecondaryDifference(line) : "") +
+                        (line.HasValueDifference ? "；另一引擎内容不同：" + SecondaryDifference(line) : "") +
                         (string.IsNullOrWhiteSpace(line.Note) ? "" : "；" + line.Note)
                     }).ToList(), [6, 8, 30, 16, 12, 8, 20, 20, 40], [6, 7]);
 
@@ -79,6 +79,8 @@ internal static class MarkdownListExporter
     private static string SecondaryDifference(DeclarationLineTotal line)
     {
         var parts = new List<string>();
+        if (line.HasAmountDifference)
+            parts.Add($"总价 {Money(line.VerificationAmount!.Value)}");
         if (!string.IsNullOrWhiteSpace(line.VerificationProductName) && !string.Equals(line.VerificationProductName, line.ProductName, StringComparison.Ordinal))
             parts.Add($"商品名称“{line.VerificationProductName}”");
         if (line.VerificationQuantity is not null && line.VerificationQuantity != line.Quantity)

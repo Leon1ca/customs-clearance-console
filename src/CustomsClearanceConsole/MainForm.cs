@@ -913,7 +913,7 @@ internal sealed partial class MainForm : Form
         }
         switch (result.State)
         {
-            case "saved" when result.FilePath is not null:
+            case "saved" when result.FilePath is not null && BrowserCapturePolicy.CanBackfill(session.DeclarationNo, result.State, result.DeclarationNo):
                 foreach (var matching in _state.Records.Where(x => x.DeclarationNo == result.DeclarationNo))
                     matching.ScreenshotPath = result.FilePath;
                 SaveState();

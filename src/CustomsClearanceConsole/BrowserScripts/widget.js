@@ -110,6 +110,11 @@
       host,
       isCapturing: false,
       canCapture() { return !captureButton.disabled && captureButton.getClientRects().length > 0; },
+      // Rect of the visible button for a real CDP mouse click in the E2E path.
+      captureButtonRect() {
+        const rect = captureButton.getBoundingClientRect();
+        return { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
+      },
       requestCapture() { if (!captureButton.disabled) captureButton.click(); },
       setState(state, payload) {
         widget.dataset.state = state;

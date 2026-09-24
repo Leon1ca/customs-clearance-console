@@ -78,6 +78,30 @@
 - **R3-8 长字段**：明细行悬停 Tooltip 展示完整商品名、数量/单位、单价、总价、另一引擎值与说明；页脚 Tooltip 展示完整结论；金额与单号单元格 Tooltip 为完整多币种/含源文件文本。
 - **浏览器 E2E**：在既有场景上新增"不点不保存"、"结果缺号拒绝"、"旧结果未变化拒绝"、"失败后重试成功"、"跨源 frame"、"并发会话隔离"；成功场景增加控件排除像素断言与内部滚动末端断言；>12000px 场景增加首/中/尾标记断言。
 
+## 里程碑 M7 · 独立预验收（`ACCEPTANCE-preflight.md`）数据/UI 与 B1–B5 定点修复
+
+针对独立预验收列出的四个数据/UI 问题与 B1–B5 浏览器阻断项逐条修复，并把该报告"本轮证据不足"清单转成生产路径 E2E。全部结论以本轮云端运行为准。
+
+### 数据 / UI
+
+- **4-1 数量误认型号**：`DeclarationParser.AttachRowDetails` 只有在存在明确列证据时才写 `Quantity`——数字落在“数量”列表头带内（`FindQuantityColumn`，表头同时含“单位”时只取其前 60% 作数量列）或同一视觉行右侧紧邻已知单位（`IsKnownUnitToken`，单字符单位要求精确匹配）。否则保持 `null`，不再把价格列左侧 18% 内最靠右的数字当数量；商品名称因此保留型号。新增生产 token 样本：型号 `2026` 且数量空缺 → `Quantity == null` 且商品名含 `2026`；有单位证据（`12.5 KG`）与有“数量”表头两种情况仍正确解析。
+- **4-2 Excel 整项一致**：`DeclarationLineTotal` 新增 `HasAmountDifference` / `HasValueDifference` / `IsFullyVerified` / `ItemConsistency`（存在差异 / 一致 / 未完整复核）/ `AmountVerification`（金额不一致 / 金额未复核 / 金额一致）。明细表“整项一致”“金额确认”改用三态结论；金额差异计入整体差异，单引擎旧历史不再显示“一致”。`Validate` 逐行核对三态与金额、数量/单价精度；合成批次新增金额冲突、完整一致、部分复核三个显式样本。
+- **4-3 明细精度**：`DisplayQuantity` / `DisplayUnitPrice` 改用 `NumberFormats.Exact`，全文 Tooltip 使用 `ExactQuantityUnit` / `ExactUnitPrice` 并补另一引擎数量/单位/单价；`0.0004` 与 `0.1234567` 不再显示为 `0`。Excel 数量/单价数字格式改为 `#,##0.############`。
+- **4-4 金额汇总 GDI 滚动**：不再依赖会被 GDI `TextRenderer` 忽略的 `TranslateTransform`，改为把 `AutoScrollPosition.Y` 折进每个矩形，文字/底色/图标一起滚动。新增原生回归 `RunMoneySummaryScrollRegression`：真实滚动到底后断言末币种行矩形可见、首行移出固定表头，并在 `DrawToBitmap` 的滚动后矩形内检出文字像素（旧实现该处为空白）。
+
+### 浏览器 B1–B5
+
+- **B1 跨源 iframe 完整捕获**：`ExpandFramesAsync` 通过 CDP `Page.getFrameTree` + `DOM.getFrameOwner` + `DOM.resolveNode` + `Runtime.callFunctionOn` 把每个子框架的 owner 元素增高到框架文档高度（跨源同样适用；无默认上下文时用 `Page.createIsolatedWorld` 读取）。无法扩展且内容高于元素的框架会使整次捕获明确失败而不截断保存；`finally` 中 `RestoreFramesAsync` 恢复原高度。跨源 E2E 断言紫色底部标记完整入图，不再只看顶部首屏。
+- **B2 上下文销毁与逐上下文恢复**：订阅 `Runtime.executionContextDestroyed` / `executionContextsCleared` 维护活跃上下文集；`PrepareContextsAsync` 记录真正准备成功的上下文（含主上下文），`finally` 只恢复这些上下文，准备中途失败也会恢复已改框架。刷新 E2E 改为刷新后重新查询并真实点击截图。
+- **B3 目标 Uri 精确授权**：新增 `TargetUrlPolicy`（协议 https、精确主机 `www.singlewindow.cn`/`singlewindow.cn`、`/publicInquiryDetail` 路由），`https://example.com/?singlewindow` 被拒绝；测试地址必须显式传 `allowTestTarget`，否则构造即抛错；`Runtime.bindingCalled` 改为校验触发 context 所属 frame 的 URL（`IsAuthorizedContext`），不再只判断“已知 context + 顶层字符串”。
+- **B4 捕获期间重验**：主框架导航递增 `_navigationGeneration`，分片循环内检查代次与目标 URL；新增布局无关的 `verify.js` 结果指纹（只含结果区域与 `queryAt`，不含被准备脚本改变的文档高度），在准备前、保存前对比，并在原子落盘前再次校验代次/URL，任何变化返回 error、不落盘、不触发成功回填。新增 `BrowserCapturePolicy` 与核心回归断言：失败/串号结果不得回填。
+- **B5 已有框架与刷新注入**：`InjectShellAsync` 先向所有已有允许框架安装 monitor（`EvaluateAllContextsAsync`），再只在主框架安装卡片；`monitor.js` 不再无保护读取 `document.documentElement.scrollHeight`（根元素未建立时返回 0），因此 document-start 注入不会中断整段 shell；重连时先移除旧 `addScriptToEvaluateOnNewDocument` 标识避免重复。
+
+### 证据加强
+
+- 成功场景改为**真实 CDP 鼠标点击**可见卡片按钮（`captureButtonRect` + `Input.dispatchMouseEvent` + `elementFromPoint` 命中记录），不再调用 `requestCapture()`；断言截图全图不含卡片主色、`__cccLastCapture` 记录控件准备时隐藏/恢复后可见、原样式与原滚动位置均恢复。
+- 缺号场景改为真实点击后由生产路径拒绝（断言命中 host 且状态为生产 error，不用测试侧超时冒充）；新增导航离开/返回、捕获中结果变化、断连恢复、刷新后点击截图场景；跨源场景在真实扩展后断言底部标记。
+
 ### 云端运行记录
 
 | 运行 | 提交 | 结论 |
@@ -85,15 +109,17 @@
 | [35954437659](https://github.com/Leon1ca/customs-clearance-console/actions/runs/35954437659) | `3a7dfa5` | 核心回归通过；主程序 14 处 `DetailForm` 编译错误 |
 | [35954697691](https://github.com/Leon1ca/customs-clearance-console/actions/runs/35954697691) | `0d7b8cf` | 编译通过；自检 `缺少标题行/顶栏按钮` |
 | [35955293382](https://github.com/Leon1ca/customs-clearance-console/actions/runs/35955293382) | `4d54daf` | 字体 SHA256/实例化/构建通过；自检"记录区与统计区发生重叠"坐标空间误报 |
-| 本轮 | `793e026` | 见下 |
+| [35955897503](https://github.com/Leon1ca/customs-clearance-console/actions/runs/35955897503) | `72212a3` | 核心/构建/UI 契约/字体/导出/快照通过；浏览器 E2E 失败：`monitor.js` 在 document-start 无保护读取根元素致整段 shell 中断（"控件未注入"），本轮 B5 已修 |
+| 本轮 | 见下 | M7 修复后待云端验证 |
+
 
 ## 未完成 / 待云端验证
 
-- [ ] 本轮 `793e026` 云端运行的最终步骤结论（自检 / 环境与字体 / 导出 / 快照 / 浏览器 E2E / 打包 / 干净解压 smoke）；在结论出来前不把未运行步骤写成通过。
-- [ ] 真实单一窗口人工验证码流程与真机 DPI 缩放（125/150/200%）仍需人工验收；云端 runner 实际 DeviceDpi 如实记录，未伪造。
+- [ ] M7 本轮云端运行的最终步骤结论（核心回归 / 自检 / 环境与字体 / 导出 / 快照 / 浏览器 E2E / 打包 / 干净解压 smoke）；在结论出来前不把未运行步骤写成通过。
+- [ ] 真实单一窗口人工验证码流程与真机 DPI 缩放（125/150/200%）仍需人工验收；云端 runner 实际 DeviceDpi 如实记录，未伪造。真实网站路由校验以 `https://www.singlewindow.cn/#/publicInquiryDetail?id=pi4` 为唯一生产目标，仍需实机确认。
 - [ ] 独立验收子路由结论与缺陷闭环。
 - [x] Noto Sans SC 静态字体改由云端 `fontTools` 从官方固定提交实例化（见 `fonts/FONTS.md`），不再依赖可变字体，也不再作为偏差留待用户确认。
-- [ ] 跨源 frame 场景仅验证可见内容被合成进截图；受同源策略限制，跨源 frame 内部滚动容器的展开能力仍以云端 E2E 结论为准。
+- [x] 跨源 frame 改为通过 CDP `DOM.getFrameOwner`/`Runtime.callFunctionOn` 扩展外层并把框架文档高度纳入截图；无法完整扩展时明确拒绝保存，云端 E2E 以紫色底部标记断言完整性。
 
 ## 决策记录
 

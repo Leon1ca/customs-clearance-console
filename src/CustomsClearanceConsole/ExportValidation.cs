@@ -62,6 +62,34 @@ internal static class ExportValidation
                 record.LineTotals = [];
                 record.Totals = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase) { ["CNY"] = 2250.00m };
             }
+            if (i is 11 or 12 or 13)
+            {
+                // Explicit consistency samples: an amount-only conflict, a fully verified
+                // match, and a partially verified row must export different verdicts.
+                var line = record.LineTotals[0];
+                line.ProductName = "一致性样本";
+                line.Quantity = 10m;
+                line.Unit = "KG";
+                line.UnitPrice = 10m;
+                line.Amount = 100m;
+                line.VerificationAmount = i == 11 ? 99m : 100m;
+                line.VerificationProductName = "一致性样本";
+                line.VerificationQuantity = 10m;
+                line.VerificationUnit = "KG";
+                line.VerificationUnitPrice = 10m;
+                if (i == 13)
+                {
+                    line.VerificationProductName = "";
+                    line.VerificationQuantity = null;
+                    line.VerificationUnit = "";
+                    line.VerificationUnitPrice = null;
+                }
+                line.IsReliable = i != 11;
+                line.Note = i == 11 ? "金额不一致样本" : i == 12 ? "完整复核一致样本" : "部分复核样本";
+                record.Totals = i == 11
+                    ? new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase)
+                    : new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase) { [currency] = line.Amount };
+            }
             records.Add(record);
         }
 

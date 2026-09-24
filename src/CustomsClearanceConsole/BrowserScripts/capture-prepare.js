@@ -44,10 +44,14 @@
     widget,
     widgetDisplay: widget ? widget.style.getPropertyValue('display') : '',
     widgetDisplayPriority: widget ? widget.style.getPropertyPriority('display') : '',
+    widgetHiddenAtPrepare: !!widget,
     scrollX: window.scrollX,
     scrollY: window.scrollY
   };
   if (widget) widget.style.setProperty('display', 'none', 'important');
   window.scrollTo(0, 0);
+  // Test-visible marker that the real prepare path ran, used by the controlled
+  // result-change scenario to mutate the result mid-capture.
+  window.__cccPrepareAt = Date.now();
   return 'prepared:' + prev.length + ':' + frames.length;
 })()

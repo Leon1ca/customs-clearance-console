@@ -233,11 +233,21 @@ internal sealed class DetailForm : Form
             text.Append("项号 ").Append(string.IsNullOrWhiteSpace(line.ItemNo) ? "—" : line.ItemNo)
                 .Append("（第 ").Append(line.PageNumber).Append(" 页）\n");
             text.Append("商品名称：").Append(line.DisplayProduct).Append('\n');
-            text.Append("数量 / 单位：").Append(line.DisplayQuantityUnit).Append('\n');
-            text.Append("单价：").Append(line.DisplayUnitPrice).Append('\n');
+            // The full tooltip always carries the lossless source value so a small
+            // quantity or a long unit price can never read as an unmarked zero.
+            text.Append("数量 / 单位：").Append(line.ExactQuantityUnit).Append('\n');
+            text.Append("单价：").Append(line.ExactUnitPrice).Append('\n');
             text.Append("总价：").Append(string.IsNullOrWhiteSpace(line.Currency) ? "—" : line.Currency).Append(' ').Append(line.Amount.ToString("N2"));
             if (line.VerificationAmount is not null)
                 text.Append("\n另一引擎总价：").Append(line.Currency).Append(' ').Append(line.VerificationAmount.Value.ToString("N2"));
+            if (line.VerificationQuantity is not null || !string.IsNullOrWhiteSpace(line.VerificationUnit))
+            {
+                var quantity = line.VerificationQuantity is null ? "—" : NumberFormats.Exact(line.VerificationQuantity.Value);
+                var unit = string.IsNullOrWhiteSpace(line.VerificationUnit) ? "" : " " + line.VerificationUnit;
+                text.Append("\n另一引擎数量 / 单位：").Append(quantity).Append(unit);
+            }
+            if (line.VerificationUnitPrice is not null)
+                text.Append("\n另一引擎单价：").Append(NumberFormats.Exact(line.VerificationUnitPrice.Value));
             if (!line.IsReliable) text.Append("\n该行两引擎金额不一致，未计入确认合计。");
             if (!string.IsNullOrWhiteSpace(line.Note)) text.Append("\n说明：").Append(line.Note);
             return text.ToString();

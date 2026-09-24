@@ -77,8 +77,10 @@ public sealed class DeclarationLineTotal
     [JsonIgnore]
     public string DisplayProduct => string.IsNullOrWhiteSpace(ProductName) ? "未识别" : ProductName;
 
+    // Display and tooltip text must never round a source value: a non-zero quantity
+    // such as 0.0004 has to stay readable, never collapse to a bare "0".
     [JsonIgnore]
-    public string DisplayQuantity => Quantity is null ? "—" : Quantity.Value.ToString("#,0.###", CultureInfo.InvariantCulture);
+    public string DisplayQuantity => Quantity is null ? "—" : NumberFormats.Exact(Quantity.Value);
 
     [JsonIgnore]
     public string ExactQuantity => Quantity is null ? "—" : NumberFormats.Exact(Quantity.Value);
@@ -96,8 +98,9 @@ public sealed class DeclarationLineTotal
         ? "—"
         : string.IsNullOrWhiteSpace(Unit) ? ExactQuantity : $"{ExactQuantity} {Unit}";
 
+    // No rounding here either: 0.1234567 must not display as 0.123457.
     [JsonIgnore]
-    public string DisplayUnitPrice => UnitPrice is null ? "—" : UnitPrice.Value.ToString("#,0.00####", CultureInfo.InvariantCulture);
+    public string DisplayUnitPrice => UnitPrice is null ? "—" : NumberFormats.Exact(UnitPrice.Value);
 
     [JsonIgnore]
     public string ExactUnitPrice => UnitPrice is null ? "—" : NumberFormats.Exact(UnitPrice.Value);
@@ -108,6 +111,37 @@ public sealed class DeclarationLineTotal
         VerificationQuantity is not null && VerificationQuantity != Quantity ||
         !string.IsNullOrWhiteSpace(VerificationUnit) && !string.Equals(VerificationUnit, Unit, StringComparison.Ordinal) ||
         VerificationUnitPrice is not null && VerificationUnitPrice != UnitPrice;
+
+    /// <summary>The verification engine produced an amount and it differs from the primary one.</summary>
+    [JsonIgnore]
+    public bool HasAmountDifference => VerificationAmount is not null && VerificationAmount.Value != Amount;
+
+    /// <summary>Any primary/secondary disagreement, amount included. Feeds the overall verdict.</summary>
+    [JsonIgnore]
+    public bool HasValueDifference => HasAmountDifference || HasSecondaryDifference;
+
+    /// <summary>
+    /// A line is only "fully verified" when the second engine supplied every comparable
+    /// field. A single-engine legacy row is never reported as consistent.
+    /// </summary>
+    [JsonIgnore]
+    public bool IsFullyVerified =>
+        VerificationAmount is not null &&
+        VerificationQuantity is not null &&
+        VerificationUnitPrice is not null &&
+        !string.IsNullOrWhiteSpace(VerificationProductName) &&
+        !string.IsNullOrWhiteSpace(VerificationUnit);
+
+    /// <summary>
+    /// Three-state verdict shared by the detail dialog, Excel and Markdown so an amount
+    /// conflict can never be exported as "一致" and an unverified row is never "一致".
+    /// </summary>
+    [JsonIgnore]
+    public string ItemConsistency => HasValueDifference ? "存在差异" : IsFullyVerified ? "一致" : "未完整复核";
+
+    /// <summary>Per-amount verdict; distinguishes a real amount conflict from "not verified".</summary>
+    [JsonIgnore]
+    public string AmountVerification => HasAmountDifference ? "金额不一致" : VerificationAmount is null ? "金额未复核" : "金额一致";
 }
 
 public sealed class AppState
@@ -190,4 +224,19 @@ internal static class NumberFormats
             integerPart = integer.ToString("#,0", CultureInfo.InvariantCulture);
         return fraction.Length == 0 ? integerPart : integerPart + "." + fraction;
     }
+}
+
+/// <summary>
+/// Decides whether a completed capture may be written back. A queued completion from an
+/// invalidated session (batch switch / list clear / exit) is filtered by the session
+/// registry, while this guards the value identity: only a saved capture whose declaration
+/// number matches the session may update the current batch. A previously saved session
+/// keeps its original screenshot on any later failure.
+/// </summary>
+internal static class BrowserCapturePolicy
+{
+    public static bool CanBackfill(string sessionDeclarationNo, string resultState, string resultDeclarationNo) =>
+        resultState == "saved" &&
+        !string.IsNullOrWhiteSpace(sessionDeclarationNo) &&
+        string.Equals(sessionDeclarationNo, resultDeclarationNo, StringComparison.Ordinal);
 }

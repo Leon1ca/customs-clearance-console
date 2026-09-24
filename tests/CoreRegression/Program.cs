@@ -49,6 +49,91 @@ var sameQuantity = Lines(100); sameQuantity[0].Quantity = 10; sameQuantity[0].Un
 var paired = Reconcile(mixedPrimary, sameQuantity);
 Check(paired[0].Quantity == 10 && paired[0].Unit == "KG", "数量一致时才用复核单位补全");
 
+// R4-1: a model number sitting just left of the price column with no quantity header,
+// quantity cell or unit evidence must stay out of Quantity; the source product text
+// keeps the model.
+var modelPage = new TextPage
+{
+    PageNumber = 1,
+    Width = 1000,
+    Height = 1400,
+    Tokens =
+    [
+        new TextToken("单价/总价/币制", 500, 700, 640, 730),
+        new TextToken("1", 50, 760, 70, 790),
+        new TextToken("冷冻鳕鱼片 型号", 140, 760, 400, 790),
+        new TextToken("2026", 410, 760, 460, 790),
+        new TextToken("100.00", 520, 795, 640, 825),
+        new TextToken("美元", 560, 835, 620, 865)
+    ]
+};
+var modelLine = new DeclarationParser().Parse("model-token.png", new DocumentText { Pages = [modelPage] }).LineTotals.Single();
+Check(modelLine.Quantity is null, "靠右数字型号在无数量列/单位证据时保持空值");
+Check(modelLine.ProductName.Contains("2026"), "数量空缺时商品名称中的型号未被截断");
+
+// A row with explicit quantity column or unit evidence is still parsed.
+var unitPage = new TextPage
+{
+    PageNumber = 1,
+    Width = 1000,
+    Height = 1400,
+    Tokens =
+    [
+        new TextToken("单价/总价/币制", 500, 700, 640, 730),
+        new TextToken("1", 50, 760, 70, 790),
+        new TextToken("冷冻鳕鱼片", 140, 760, 340, 790),
+        new TextToken("12.5", 360, 760, 420, 790),
+        new TextToken("KG", 430, 760, 470, 790),
+        new TextToken("100.00", 520, 795, 640, 825),
+        new TextToken("美元", 560, 835, 620, 865)
+    ]
+};
+var unitLine = new DeclarationParser().Parse("unit-token.png", new DocumentText { Pages = [unitPage] }).LineTotals.Single();
+Check(unitLine.Quantity == 12.5m && unitLine.Unit.Equals("KG", StringComparison.OrdinalIgnoreCase), "有单位证据时数量/单位仍正确解析");
+
+// R4-3: display and tooltip text must not round small quantities or long unit prices.
+var precise = new DeclarationLineTotal { Quantity = 0.0004m, Unit = "KG", UnitPrice = 0.1234567m };
+Check(precise.DisplayQuantity == "0.0004" && precise.DisplayQuantityUnit == "0.0004 KG", "明细显示的小数量不得呈现为零");
+Check(precise.DisplayUnitPrice == "0.1234567", "明细显示的单价不得四舍五入");
+
+// R4-2: the overall verdict distinguishes difference / fully verified / not verified and
+// an amount conflict can never be exported as consistent.
+var amountConflict = new DeclarationLineTotal
+{
+    Currency = "USD", ProductName = "X", Quantity = 1m, Unit = "KG", UnitPrice = 1m, Amount = 100m,
+    VerificationProductName = "X", VerificationQuantity = 1m, VerificationUnit = "KG", VerificationUnitPrice = 1m,
+    VerificationAmount = 99m, IsReliable = false
+};
+Check(amountConflict.HasAmountDifference && amountConflict.ItemConsistency == "存在差异" && amountConflict.AmountVerification == "金额不一致",
+    "金额差异计入整项一致并单独标注金额不一致");
+var fullyVerified = new DeclarationLineTotal
+{
+    Currency = "USD", ProductName = "X", Quantity = 1m, Unit = "KG", UnitPrice = 1m, Amount = 100m,
+    VerificationProductName = "X", VerificationQuantity = 1m, VerificationUnit = "KG", VerificationUnitPrice = 1m, VerificationAmount = 100m
+};
+Check(fullyVerified.IsFullyVerified && fullyVerified.ItemConsistency == "一致" && fullyVerified.AmountVerification == "金额一致",
+    "完整复核一致时才判定一致");
+var partial = new DeclarationLineTotal { Currency = "USD", Amount = 100m, VerificationAmount = 100m };
+Check(!partial.IsFullyVerified && partial.ItemConsistency == "未完整复核", "缺少复核字段时不得判定一致");
+var legacySingle = new DeclarationLineTotal { Currency = "USD", Amount = 100m };
+Check(legacySingle.ItemConsistency == "未完整复核" && legacySingle.AmountVerification == "金额未复核", "单引擎旧历史不得判定整项一致");
+Check(BrowserCapturePolicy.CanBackfill("310120260000000001", "saved", "310120260000000001"), "活动会话单号一致时允许回填");
+Check(!BrowserCapturePolicy.CanBackfill("310120260000000001", "saved", "310120260000000002"), "结果单号不同不得回填");
+Check(!BrowserCapturePolicy.CanBackfill("310120260000000001", "error", "310120260000000001"), "失败结果不得回填");
+Check(!BrowserCapturePolicy.CanBackfill("310120260000000001", "mismatch", "310120260000000001"), "单号不一致结果不得回填");
+Check(TargetUrlPolicy.IsSingleWindowInquiry("https://www.singlewindow.cn/#/publicInquiryDetail?id=pi4"), "精确单一窗口查询路由被接受");
+Check(!TargetUrlPolicy.IsSingleWindowInquiry("https://example.com/?singlewindow"), "含 singlewindow 子串的无关网页被拒绝");
+Check(!TargetUrlPolicy.IsSingleWindowInquiry("http://www.singlewindow.cn/#/publicInquiryDetail"), "非 https 目标被拒绝");
+Check(!TargetUrlPolicy.IsSingleWindowInquiry("https://www.singlewindow.cn/#/other"), "非查询路由被拒绝");
+Check(!TargetUrlPolicy.IsSingleWindowInquiry("https://www.singlewindow.cn.evil.example/#/publicInquiryDetail"), "伪装主机后缀被拒绝");
+var conflictRecord = new DeclarationRecord
+{
+    DeclarationNo = "310120260000000001", SourcePath = "conflict.pdf", Status = "识别完成",
+    LineTotals = [amountConflict], Totals = new() { ["USD"] = 100m }
+};
+var conflictMarkdown = MarkdownListExporter.Render([conflictRecord], new DateTime(2026, 9, 9));
+Check(conflictMarkdown.Contains("另一引擎内容不同：总价 99.00"), "Markdown 标注金额差异的另一引擎总价");
+
 var no = "310120260000000001";
 var first = new DeclarationRecord { DeclarationNo = no, SourcePath = "a.pdf", Status = "需关注", Warning = "金额冲突", Confidence = 80, Totals = new() { ["USD"] = 100 } };
 var second = new DeclarationRecord { DeclarationNo = no, SourcePath = "b.pdf", Status = "识别完成", Confidence = 90, Totals = new() { ["USD"] = 200 } };

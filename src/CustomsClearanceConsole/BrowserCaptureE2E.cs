@@ -8,10 +8,10 @@ namespace CustomsClearanceConsole;
 
 /// <summary>
 /// Controlled end-to-end harness for the in-page manual long screenshot. It serves
-/// a synthetic single-window-like page over loopback, drives the injected card
-/// button through the CDP binding, and asserts success, mismatch, too-long,
-/// double-click, re-injection, tiling, missing query, captcha error, rejected write,
-/// repeat capture and same-origin frame behaviour. It never touches the real website.
+/// a synthetic single-window-like page over loopback, drives the visible card button
+/// through real CDP mouse input, and asserts success, mismatch, too-long, double-click,
+/// re-injection, tiling, frames, navigation, reconnect and mid-capture result changes.
+/// It never touches the real website.
 /// </summary>
 internal static class BrowserCaptureE2E
 {
@@ -50,6 +50,9 @@ internal static class BrowserCaptureE2E
             checks.Add(await RunFailureRetryAsync(outputFolder, browser, server));
             checks.Add(await RunCrossOriginFrameAsync(outputFolder, browser, server));
             checks.Add(await RunConcurrentSessionsAsync(outputFolder, browser, server));
+            checks.Add(await RunNavigationReturnAsync(outputFolder, browser, server));
+            checks.Add(await RunResultChangeAsync(outputFolder, browser, server));
+            checks.Add(await RunReconnectAsync(outputFolder, browser, server));
         }
         catch (Exception ex)
         {
@@ -65,12 +68,50 @@ internal static class BrowserCaptureE2E
         return issues.Count == 0 ? 0 : 1;
     }
 
+    private static BrowserCaptureResult Harness(BrowserValidation session, string message) =>
+        new(session.SessionId, session.DeclarationNo, "harness", null, message);
+
+    /// <summary>Starts the session, waits for the card and optionally the query result.</summary>
+    private static async Task<string?> StartAndWaitAsync(BrowserValidation session, bool waitForSettled)
+    {
+        await session.StartAsync(CancellationToken.None);
+        if (!await session.WaitForWidgetAsync(TimeSpan.FromSeconds(30), CancellationToken.None)) return "控件未注入。";
+        if (waitForSettled)
+        {
+            var identity = await session.WaitForIdentitySettledAsync(TimeSpan.FromSeconds(30), CancellationToken.None);
+            if (identity.StartsWith("waiting|", StringComparison.Ordinal) || identity.Length == 0) return $"查询结果未就绪：{identity}";
+        }
+        return null;
+    }
+
+    /// <summary>Performs a real mouse click on the visible card button and waits for the production verdict.</summary>
+    private static async Task<BrowserCaptureResult> ClickAndAwaitAsync(BrowserValidation session, TimeSpan timeout)
+    {
+        var completion = new TaskCompletionSource<BrowserCaptureResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        session.CaptureCompleted += (_, value) => completion.TrySetResult(value);
+        if (!await session.ClickCaptureButtonAsync(CancellationToken.None))
+            return Harness(session, "未找到可见的卡片按钮，未执行真实点击。");
+        try { return await completion.Task.WaitAsync(timeout); }
+        catch (TimeoutException) { return Harness(session, "测试侧等待超时，未取得生产结论。"); }
+    }
+
+    private static async Task<BrowserCaptureResult> DriveAsync(BrowserValidation session, string? evidencePath, bool waitForSettled)
+    {
+        var problem = await StartAndWaitAsync(session, waitForSettled);
+        if (problem is not null) return Harness(session, problem);
+        if (!waitForSettled) await Task.Delay(1200);
+        var result = await ClickAndAwaitAsync(session, TimeSpan.FromSeconds(120));
+        if (evidencePath is not null && result.State == "saved" && result.FilePath is not null && File.Exists(result.FilePath))
+            File.Copy(result.FilePath, evidencePath, overwrite: true);
+        return result;
+    }
+
     private static async Task<Scenario> RunSuccessAsync(string outputFolder, string browser, TestServer server)
     {
         var folder = Path.Combine(outputFolder, "success");
         Directory.CreateDirectory(folder);
         await using var session = new BrowserValidation("310120260000000001", folder,
-            server.Url("/page?content=2400&result=310120260000000001"), browser, headless: true);
+            server.Url("/page?content=2400&result=310120260000000001"), browser, headless: true, allowTestTarget: true);
         var result = await DriveAsync(session, Path.Combine(outputFolder, "capture-success.png"), waitForSettled: true);
         var details = new List<string>();
         if (result.State != "saved") details.Add($"状态 {result.State}：{result.Message}");
@@ -82,15 +123,29 @@ internal static class BrowserCaptureE2E
             AssertPixel(image, 40, image.Height - 4, Color.FromArgb(0x12, 0x34, 0x56), "页脚标记", details);
             AssertPixel(image, 40, 40, Color.FromArgb(0x65, 0x43, 0x21), "页首标记", details);
             if (!ColumnContainsColor(image, Color.FromArgb(0xCC, 0x00, 0xCC))) details.Add("内部滚动容器末端未出现在截图中。");
-            if (RegionContainsColor(image, new Rectangle(image.Width - 360, image.Height - 320, 360, 320), Color.FromArgb(0x13, 0x35, 0x5E)))
-                details.Add("截图右下出现卡片按钮颜色，控件未被排除。");
+            if (AnywhereContainsColor(image, Color.FromArgb(0x13, 0x35, 0x5E))) details.Add("截图中出现卡片主色，控件未被排除。");
             var restore = await session.EvaluateRawAsync("JSON.stringify(window.__cccLastCapture||null)", CancellationToken.None);
-            if (!restore.Contains("widgetWasHidden\":true", StringComparison.OrdinalIgnoreCase)) details.Add($"页面未记录控件隐藏/恢复：{restore}");
+            AssertRestoreEvidence(restore, details);
             var hosts = await session.CountWidgetHostsAsync(CancellationToken.None);
             if (hosts != 1) details.Add($"控件实例数 {hosts}，应为 1。");
             if (!await session.CanCaptureAsync(CancellationToken.None)) details.Add("保存后卡片按钮不可再次点击。");
         }
-        return new Scenario("success-fullpage", details.Count == 0, details.Count == 0 ? ["整页首尾标记、控件隐藏与恢复均通过"] : details);
+        if (!session.LastClickHitTarget.Contains("host", StringComparison.OrdinalIgnoreCase))
+            details.Add($"真实鼠标点击命中 {session.LastClickHitTarget}，未命中卡片按钮。");
+        return new Scenario("success-fullpage", details.Count == 0, details.Count == 0 ? ["真实鼠标点击后整页首尾标记、控件排除与页面恢复均通过"] : details);
+    }
+
+    private static void AssertRestoreEvidence(string restore, List<string> details)
+    {
+        if (!restore.Contains("\"widgetWasHidden\":true", StringComparison.Ordinal) ||
+            !restore.Contains("\"widgetHiddenAtPrepare\":true", StringComparison.Ordinal))
+            details.Add($"页面未记录控件在准备时隐藏、恢复后可见：{restore}");
+        if (!restore.Contains("\"stylesRestored\":true", StringComparison.Ordinal))
+            details.Add($"原样式未完整恢复：{restore}");
+        if (!restore.Contains("\"scrollRestored\":true", StringComparison.Ordinal))
+            details.Add($"原滚动位置未完整恢复：{restore}");
+        if (!restore.Contains("\"widgetVisibleAfterRestore\":true", StringComparison.Ordinal))
+            details.Add($"恢复后控件未重新可见：{restore}");
     }
 
     private static async Task<Scenario> RunTilingAsync(string outputFolder, string browser, TestServer server)
@@ -98,7 +153,7 @@ internal static class BrowserCaptureE2E
         var folder = Path.Combine(outputFolder, "tiling");
         Directory.CreateDirectory(folder);
         await using var session = new BrowserValidation("310120260000000011", folder,
-            server.Url("/page?content=14000&result=310120260000000011&mid=11900"), browser, headless: true);
+            server.Url("/page?content=14000&result=310120260000000011&mid=11900"), browser, headless: true, allowTestTarget: true);
         var result = await DriveAsync(session, Path.Combine(outputFolder, "capture-tiling.png"), waitForSettled: true);
         var details = new List<string>();
         if (result.State != "saved") details.Add($"状态 {result.State}：{result.Message}");
@@ -120,7 +175,7 @@ internal static class BrowserCaptureE2E
         var folder = Path.Combine(outputFolder, "mismatch");
         Directory.CreateDirectory(folder);
         await using var session = new BrowserValidation("310120260000000002", folder,
-            server.Url("/page?content=1200&result=310120260000000099"), browser, headless: true);
+            server.Url("/page?content=1200&result=310120260000000099"), browser, headless: true, allowTestTarget: true);
         var result = await DriveAsync(session, null, waitForSettled: true);
         var details = new List<string>();
         if (result.State != "mismatch") details.Add($"错误单号应拒绝保存，实际状态 {result.State}：{result.Message}");
@@ -133,7 +188,7 @@ internal static class BrowserCaptureE2E
         var folder = Path.Combine(outputFolder, "too-long");
         Directory.CreateDirectory(folder);
         await using var session = new BrowserValidation("310120260000000003", folder,
-            server.Url("/page?content=30000&result=310120260000000003"), browser, maxPixels: 300_000, headless: true);
+            server.Url("/page?content=30000&result=310120260000000003"), browser, maxPixels: 300_000, headless: true, allowTestTarget: true);
         var result = await DriveAsync(session, null, waitForSettled: true);
         var details = new List<string>();
         if (result.State != "too-long") details.Add($"超长页面应拒绝，实际状态 {result.State}：{result.Message}");
@@ -146,17 +201,15 @@ internal static class BrowserCaptureE2E
         var folder = Path.Combine(outputFolder, "double");
         Directory.CreateDirectory(folder);
         await using var session = new BrowserValidation("310120260000000004", folder,
-            server.Url("/page?content=1500&result=310120260000000004"), browser, headless: true);
+            server.Url("/page?content=1500&result=310120260000000004"), browser, headless: true, allowTestTarget: true);
         var completion = new TaskCompletionSource<BrowserCaptureResult>(TaskCreationOptions.RunContinuationsAsynchronously);
         session.CaptureCompleted += (_, value) => completion.TrySetResult(value);
-        await session.StartAsync(CancellationToken.None);
-        if (!await session.WaitForWidgetAsync(TimeSpan.FromSeconds(30), CancellationToken.None))
-            return new Scenario("double-click-single-file", false, ["控件未注入。"]);
-        var identity = await session.WaitForIdentitySettledAsync(TimeSpan.FromSeconds(30), CancellationToken.None);
-        if (!identity.StartsWith("ready|", StringComparison.Ordinal))
-            return new Scenario("double-click-single-file", false, [$"查询结果未就绪：{identity}"]);
+        var problem = await StartAndWaitAsync(session, true);
+        if (problem is not null) return new Scenario("double-click-single-file", false, [problem]);
         await Task.WhenAll(session.ClickCaptureButtonAsync(CancellationToken.None), session.ClickCaptureButtonAsync(CancellationToken.None));
-        var result = await completion.Task.WaitAsync(TimeSpan.FromSeconds(90));
+        BrowserCaptureResult result;
+        try { result = await completion.Task.WaitAsync(TimeSpan.FromSeconds(120)); }
+        catch (TimeoutException) { return new Scenario("double-click-single-file", false, ["测试侧等待超时，未取得生产结论。"]); }
         var files = Directory.EnumerateFiles(folder, "*.png").ToList();
         var details = new List<string>();
         if (result.State != "saved") details.Add($"状态 {result.State}：{result.Message}");
@@ -169,7 +222,7 @@ internal static class BrowserCaptureE2E
         var folder = Path.Combine(outputFolder, "reload");
         Directory.CreateDirectory(folder);
         await using var session = new BrowserValidation("310120260000000005", folder,
-            server.Url("/page?content=900&result=310120260000000005"), browser, headless: true);
+            server.Url("/page?content=900&result=310120260000000005"), browser, headless: true, allowTestTarget: true);
         await session.StartAsync(CancellationToken.None);
         var details = new List<string>();
         if (!await session.WaitForWidgetAsync(TimeSpan.FromSeconds(30), CancellationToken.None)) details.Add("初次注入失败。");
@@ -177,9 +230,21 @@ internal static class BrowserCaptureE2E
         catch (Exception ex) { AppLog.Write($"E2E 刷新页面时连接重置：{ex.Message}"); }
         await Task.Delay(1500);
         if (!await session.WaitForWidgetAsync(TimeSpan.FromSeconds(30), CancellationToken.None)) details.Add("刷新后未重新注入控件。");
+        else
+        {
+            var identity = await session.WaitForIdentitySettledAsync(TimeSpan.FromSeconds(30), CancellationToken.None);
+            if (identity.StartsWith("waiting|", StringComparison.Ordinal) || identity.Length == 0)
+                details.Add($"刷新后结果未就绪：{identity}");
+            else
+            {
+                var result = await ClickAndAwaitAsync(session, TimeSpan.FromSeconds(120));
+                if (result.State != "saved") details.Add($"刷新后真实点击截图失败：{result.State}：{result.Message}");
+                else if (result.FilePath is null || !File.Exists(result.FilePath)) details.Add("刷新后未生成截图文件。");
+            }
+        }
         var hosts = await session.CountWidgetHostsAsync(CancellationToken.None);
         if (hosts != 1) details.Add($"刷新后控件实例数 {hosts}，应为 1。");
-        return new Scenario("reload-reinject-single", details.Count == 0, details.Count == 0 ? ["刷新后单实例重新注入"] : details);
+        return new Scenario("reload-click-capture", details.Count == 0, details.Count == 0 ? ["刷新清理旧上下文后真实点击截图成功"] : details);
     }
 
     private static async Task<Scenario> RunNoQueryAsync(string outputFolder, string browser, TestServer server)
@@ -187,12 +252,14 @@ internal static class BrowserCaptureE2E
         var folder = Path.Combine(outputFolder, "no-query");
         Directory.CreateDirectory(folder);
         await using var session = new BrowserValidation("310120260000000006", folder,
-            server.Url("/page?content=900&result=310120260000000006&query=0"), browser, headless: true);
-        var result = await DriveAsync(session, null, waitForSettled: false);
+            server.Url("/page?content=900&result=310120260000000006&query=0"), browser, headless: true, allowTestTarget: true);
+        var problem = await StartAndWaitAsync(session, false);
+        if (problem is not null) return new Scenario("no-query-rejected", false, [problem]);
+        var result = await ClickAndAwaitAsync(session, TimeSpan.FromSeconds(120));
         var details = new List<string>();
         if (result.State != "error") details.Add($"未查询应拒绝保存，实际状态 {result.State}：{result.Message}");
         if (Directory.EnumerateFiles(folder, "*.png").Any()) details.Add("未查询仍然生成了截图。");
-        return new Scenario("no-query-rejected", details.Count == 0, details.Count == 0 ? ["未查询时未保存假成功"] : details);
+        return new Scenario("no-query-rejected", details.Count == 0, details.Count == 0 ? ["真实点击后未查询时未保存假成功"] : details);
     }
 
     private static async Task<Scenario> RunCaptchaErrorAsync(string outputFolder, string browser, TestServer server)
@@ -200,8 +267,10 @@ internal static class BrowserCaptureE2E
         var folder = Path.Combine(outputFolder, "captcha-error");
         Directory.CreateDirectory(folder);
         await using var session = new BrowserValidation("310120260000000007", folder,
-            server.Url("/page?content=900&result=310120260000000007&error=%E9%AA%8C%E8%AF%81%E7%A0%81%E9%94%99%E8%AF%AF"), browser, headless: true);
-        var result = await DriveAsync(session, null, waitForSettled: true);
+            server.Url("/page?content=900&result=310120260000000007&error=%E9%AA%8C%E8%AF%81%E7%A0%81%E9%94%99%E8%AF%AF"), browser, headless: true, allowTestTarget: true);
+        var problem = await StartAndWaitAsync(session, false);
+        if (problem is not null) return new Scenario("captcha-error-rejected", false, [problem]);
+        var result = await ClickAndAwaitAsync(session, TimeSpan.FromSeconds(120));
         var details = new List<string>();
         if (result.State != "error") details.Add($"验证码错误应拒绝保存，实际状态 {result.State}：{result.Message}");
         if (Directory.EnumerateFiles(folder, "*.png").Any()) details.Add("验证码错误仍然生成了截图。");
@@ -214,7 +283,7 @@ internal static class BrowserCaptureE2E
         Directory.CreateDirectory(Path.GetDirectoryName(target)!);
         File.WriteAllText(target, "blocking file");
         await using var session = new BrowserValidation("310120260000000008", target,
-            server.Url("/page?content=900&result=310120260000000008"), browser, headless: true);
+            server.Url("/page?content=900&result=310120260000000008"), browser, headless: true, allowTestTarget: true);
         var result = await DriveAsync(session, null, waitForSettled: true);
         var details = new List<string>();
         if (result.State != "error") details.Add($"不可写目录应报错，实际状态 {result.State}：{result.Message}");
@@ -227,19 +296,16 @@ internal static class BrowserCaptureE2E
         var folder = Path.Combine(outputFolder, "repeat");
         Directory.CreateDirectory(folder);
         await using var session = new BrowserValidation("310120260000000009", folder,
-            server.Url("/page?content=1200&result=310120260000000009"), browser, headless: true);
+            server.Url("/page?content=1200&result=310120260000000009"), browser, headless: true, allowTestTarget: true);
         var details = new List<string>();
         var first = await DriveAsync(session, null, waitForSettled: true);
         if (first.State != "saved") details.Add($"首次截图失败：{first.Message}");
         if (!await session.CanCaptureAsync(CancellationToken.None)) details.Add("首次截图后按钮不可用，无法重新截图。");
-        var completion = new TaskCompletionSource<BrowserCaptureResult>(TaskCreationOptions.RunContinuationsAsynchronously);
-        session.CaptureCompleted += (_, value) => completion.TrySetResult(value);
-        await session.ClickCaptureButtonAsync(CancellationToken.None);
-        var second = await completion.Task.WaitAsync(TimeSpan.FromSeconds(90));
+        var second = await ClickAndAwaitAsync(session, TimeSpan.FromSeconds(120));
         if (second.State != "saved") details.Add($"重新截图失败：{second.Message}");
         var files = Directory.EnumerateFiles(folder, "*.png").ToList();
         if (files.Count != 2) details.Add($"重新截图应生成 2 个唯一文件，实际 {files.Count}。");
-        return new Scenario("repeat-capture-visible-retry", details.Count == 0, details.Count == 0 ? ["可见按钮可再次截图且文件名唯一"] : details);
+        return new Scenario("repeat-capture-visible-retry", details.Count == 0, details.Count == 0 ? ["可见按钮真实点击可再次截图且文件名唯一"] : details);
     }
 
     private static async Task<Scenario> RunIframeAsync(string outputFolder, string browser, TestServer server)
@@ -247,7 +313,7 @@ internal static class BrowserCaptureE2E
         var folder = Path.Combine(outputFolder, "iframe");
         Directory.CreateDirectory(folder);
         await using var session = new BrowserValidation("310120260000000010", folder,
-            server.Url("/page?content=300&result=310120260000000010&frame=1"), browser, headless: true);
+            server.Url("/page?content=300&result=310120260000000010&frame=1"), browser, headless: true, allowTestTarget: true);
         var result = await DriveAsync(session, Path.Combine(outputFolder, "capture-iframe.png"), waitForSettled: true);
         var details = new List<string>();
         if (result.State != "saved") details.Add($"同源 frame 截图失败：{result.Message}");
@@ -266,13 +332,10 @@ internal static class BrowserCaptureE2E
         var folder = Path.Combine(outputFolder, "no-click");
         Directory.CreateDirectory(folder);
         await using var session = new BrowserValidation("310120260000000012", folder,
-            server.Url("/page?content=1200&result=310120260000000012"), browser, headless: true);
-        await session.StartAsync(CancellationToken.None);
+            server.Url("/page?content=1200&result=310120260000000012"), browser, headless: true, allowTestTarget: true);
         var details = new List<string>();
-        if (!await session.WaitForWidgetAsync(TimeSpan.FromSeconds(30), CancellationToken.None)) details.Add("控件未注入。");
-        var identity = await session.WaitForIdentitySettledAsync(TimeSpan.FromSeconds(30), CancellationToken.None);
-        if (identity.StartsWith("waiting|", StringComparison.Ordinal) || identity.Length == 0)
-            details.Add($"结果未就绪：{identity}");
+        var problem = await StartAndWaitAsync(session, true);
+        if (problem is not null) details.Add(problem);
         await Task.Delay(1500);
         if (Directory.EnumerateFiles(folder, "*.png").Any()) details.Add("未点击网页按钮却生成了截图。");
         if (!await session.CanCaptureAsync(CancellationToken.None)) details.Add("未点击时卡片按钮不可用。");
@@ -284,12 +347,16 @@ internal static class BrowserCaptureE2E
         var folder = Path.Combine(outputFolder, "missing-number");
         Directory.CreateDirectory(folder);
         await using var session = new BrowserValidation("310120260000000013", folder,
-            server.Url("/page?content=1200&result=310120260000000013&nonumber=1"), browser, headless: true);
-        var result = await DriveAsync(session, null, waitForSettled: true);
+            server.Url("/page?content=1200&result=310120260000000013&nonumber=1"), browser, headless: true, allowTestTarget: true);
+        var problem = await StartAndWaitAsync(session, false);
+        if (problem is not null) return new Scenario("missing-number-rejected", false, [problem]);
+        var result = await ClickAndAwaitAsync(session, TimeSpan.FromSeconds(120));
         var details = new List<string>();
-        if (result.State == "saved") details.Add("结果区域没有单号时仍保存了截图。");
+        if (!session.LastClickHitTarget.Contains("host", StringComparison.OrdinalIgnoreCase))
+            details.Add($"缺号场景真实鼠标点击命中 {session.LastClickHitTarget}，未命中卡片按钮。");
+        if (result.State != "error") details.Add($"结果区域缺少单号时应由生产路径拒绝，实际状态 {result.State}：{result.Message}");
         if (Directory.EnumerateFiles(folder, "*.png").Any()) details.Add("结果区域没有单号时仍生成了文件。");
-        return new Scenario("missing-number-rejected", details.Count == 0, details.Count == 0 ? ["结果区域缺少单号时不保存"] : details);
+        return new Scenario("missing-number-rejected", details.Count == 0, details.Count == 0 ? ["真实点击后缺少单号的生产路径拒绝保存"] : details);
     }
 
     private static async Task<Scenario> RunStaleAsync(string outputFolder, string browser, TestServer server)
@@ -299,12 +366,14 @@ internal static class BrowserCaptureE2E
         // pre=1 renders the matching result before the query, so the query changes nothing
         // and identity must report stale|unchanged instead of a false success.
         await using var session = new BrowserValidation("310120260000000014", folder,
-            server.Url("/page?content=1200&result=310120260000000014&pre=1"), browser, headless: true);
-        var result = await DriveAsync(session, null, waitForSettled: true);
+            server.Url("/page?content=1200&result=310120260000000014&pre=1"), browser, headless: true, allowTestTarget: true);
+        var problem = await StartAndWaitAsync(session, false);
+        if (problem is not null) return new Scenario("stale-result-rejected", false, [problem]);
+        var result = await ClickAndAwaitAsync(session, TimeSpan.FromSeconds(120));
         var details = new List<string>();
-        if (result.State == "saved") details.Add("旧结果未变化时仍保存了截图。");
+        if (result.State != "error") details.Add($"旧结果未变化时应由生产路径拒绝，实际状态 {result.State}：{result.Message}");
         if (Directory.EnumerateFiles(folder, "*.png").Any()) details.Add("旧结果未变化时仍生成了文件。");
-        return new Scenario("stale-result-rejected", details.Count == 0, details.Count == 0 ? ["旧结果未变化时拒绝保存"] : details);
+        return new Scenario("stale-result-rejected", details.Count == 0, details.Count == 0 ? ["真实点击后旧结果未变化拒绝保存"] : details);
     }
 
     private static async Task<Scenario> RunFailureRetryAsync(string outputFolder, string browser, TestServer server)
@@ -314,17 +383,14 @@ internal static class BrowserCaptureE2E
         var target = Path.Combine(parent, "blocked");
         File.WriteAllText(target, "blocking file");
         await using var session = new BrowserValidation("310120260000000015", target,
-            server.Url("/page?content=1200&result=310120260000000015"), browser, headless: true);
+            server.Url("/page?content=1200&result=310120260000000015"), browser, headless: true, allowTestTarget: true);
         var details = new List<string>();
         var first = await DriveAsync(session, null, waitForSettled: true);
         if (first.State == "saved") details.Add("目录不可写时首次截图意外成功。");
         File.Delete(target);
         Directory.CreateDirectory(target);
         if (!await session.CanCaptureAsync(CancellationToken.None)) details.Add("失败后卡片按钮不可重试。");
-        var completion = new TaskCompletionSource<BrowserCaptureResult>(TaskCreationOptions.RunContinuationsAsynchronously);
-        session.CaptureCompleted += (_, value) => completion.TrySetResult(value);
-        await session.ClickCaptureButtonAsync(CancellationToken.None);
-        var second = await completion.Task.WaitAsync(TimeSpan.FromSeconds(90));
+        var second = await ClickAndAwaitAsync(session, TimeSpan.FromSeconds(120));
         if (second.State != "saved") details.Add($"解除阻塞后重试失败：{second.Message}");
         if (!Directory.EnumerateFiles(target, "*.png").Any()) details.Add("重试成功后没有生成截图。");
         return new Scenario("failure-retry", details.Count == 0, details.Count == 0 ? ["失败状态可重试并成功保存"] : details);
@@ -339,7 +405,7 @@ internal static class BrowserCaptureE2E
         const string number = "310120260000000016";
         var frameUrl = other.Url($"/frame?content=800&result={number}&query=1");
         var url = server.Url($"/page?content=300&result={number}&frame=cross&xhost={Uri.EscapeDataString(frameUrl)}");
-        await using var session = new BrowserValidation(number, folder, url, browser, headless: true);
+        await using var session = new BrowserValidation(number, folder, url, browser, headless: true, allowTestTarget: true);
         var result = await DriveAsync(session, Path.Combine(outputFolder, "capture-cross-frame.png"), waitForSettled: true);
         var details = new List<string>();
         if (result.State != "saved") details.Add($"跨源 frame 截图失败：{result.Message}");
@@ -347,10 +413,13 @@ internal static class BrowserCaptureE2E
         else
         {
             using var image = new Bitmap(result.FilePath);
+            if (image.Height < 700) details.Add($"跨源 frame 高度不足，可能被截断：{image.Height}。");
             if (!RegionContainsColor(image, new Rectangle(0, 0, image.Width, Math.Min(500, image.Height)), Color.FromArgb(0x00, 0x88, 0xCC)))
-                details.Add("跨源 frame 可见内容未出现在截图中。");
+                details.Add("跨源 frame 可见顶部标记未出现在截图中。");
+            if (!ColumnContainsColor(image, Color.FromArgb(0x77, 0x00, 0xAA)))
+                details.Add("跨源 frame 底部标记未出现在截图中（内容被截断）。");
         }
-        return new Scenario("cross-origin-frame", details.Count == 0, details.Count == 0 ? ["跨源 frame 内容被合成进截图"] : details);
+        return new Scenario("cross-origin-frame", details.Count == 0, details.Count == 0 ? ["跨源 frame 经 CDP 扩展后底部标记完整入图"] : details);
     }
 
     private static async Task<Scenario> RunConcurrentSessionsAsync(string outputFolder, string browser, TestServer server)
@@ -361,9 +430,9 @@ internal static class BrowserCaptureE2E
         Directory.CreateDirectory(folderA);
         Directory.CreateDirectory(folderB);
         await using var a = new BrowserValidation("310120260000000017", folderA,
-            server.Url("/page?content=900&result=310120260000000017"), browser, headless: true);
+            server.Url("/page?content=900&result=310120260000000017"), browser, headless: true, allowTestTarget: true);
         await using var b = new BrowserValidation("310120260000000018", folderB,
-            server.Url("/page?content=900&result=310120260000000018"), browser, headless: true);
+            server.Url("/page?content=900&result=310120260000000018"), browser, headless: true, allowTestTarget: true);
         var results = await Task.WhenAll(
             DriveAsync(a, null, waitForSettled: true),
             DriveAsync(b, null, waitForSettled: true));
@@ -381,28 +450,78 @@ internal static class BrowserCaptureE2E
         return new Scenario("concurrent-session-isolation", details.Count == 0, details.Count == 0 ? ["不同会话并发截图彼此隔离"] : details);
     }
 
-    private static async Task<BrowserCaptureResult> DriveAsync(BrowserValidation session, string? evidencePath, bool waitForSettled)
+    private static async Task<Scenario> RunNavigationReturnAsync(string outputFolder, string browser, TestServer server)
     {
-        var completion = new TaskCompletionSource<BrowserCaptureResult>(TaskCreationOptions.RunContinuationsAsynchronously);
-        session.CaptureCompleted += (_, value) => completion.TrySetResult(value);
-        await session.StartAsync(CancellationToken.None);
-        if (!await session.WaitForWidgetAsync(TimeSpan.FromSeconds(30), CancellationToken.None))
-            return new BrowserCaptureResult(session.SessionId, session.DeclarationNo, "error", null, "控件未注入。");
-        if (waitForSettled)
+        var folder = Path.Combine(outputFolder, "navigation");
+        Directory.CreateDirectory(folder);
+        const string number = "310120260000000019";
+        var target = server.Url($"/page?content=900&result={number}");
+        await using var session = new BrowserValidation(number, folder, target, browser, headless: true, allowTestTarget: true);
+        var details = new List<string>();
+        var problem = await StartAndWaitAsync(session, true);
+        if (problem is not null) details.Add(problem);
+        await session.NavigateAsync("about:blank", CancellationToken.None);
+        await Task.Delay(1200);
+        await session.NavigateAsync(target, CancellationToken.None);
+        if (!await session.WaitForWidgetAsync(TimeSpan.FromSeconds(30), CancellationToken.None)) details.Add("返回目标页后未重新注入控件。");
+        else
         {
             var identity = await session.WaitForIdentitySettledAsync(TimeSpan.FromSeconds(30), CancellationToken.None);
             if (identity.StartsWith("waiting|", StringComparison.Ordinal) || identity.Length == 0)
-                return new BrowserCaptureResult(session.SessionId, session.DeclarationNo, "error", null, "查询结果未就绪。");
+                details.Add($"返回目标页后结果未就绪：{identity}");
+            else
+            {
+                var result = await ClickAndAwaitAsync(session, TimeSpan.FromSeconds(120));
+                if (result.State != "saved") details.Add($"导航返回后截图失败：{result.State}：{result.Message}");
+                else if (result.FilePath is null || !File.Exists(result.FilePath)) details.Add("导航返回后未生成截图。");
+            }
         }
+        return new Scenario("navigate-away-return", details.Count == 0, details.Count == 0 ? ["离开目标页再返回后重新注入并可截图"] : details);
+    }
+
+    private static async Task<Scenario> RunResultChangeAsync(string outputFolder, string browser, TestServer server)
+    {
+        var folder = Path.Combine(outputFolder, "result-change");
+        Directory.CreateDirectory(folder);
+        // The page rewrites the result shortly after the real prepare path runs, inside
+        // the capture window; the save-time re-validation must abort it.
+        await using var session = new BrowserValidation("310120260000000020", folder,
+            server.Url("/page?content=20000&result=310120260000000020&mutate=1"), browser, headless: true, allowTestTarget: true);
+        var problem = await StartAndWaitAsync(session, true);
+        if (problem is not null) return new Scenario("result-change-aborts-save", false, [problem]);
+        var result = await ClickAndAwaitAsync(session, TimeSpan.FromSeconds(120));
+        var details = new List<string>();
+        if (result.State == "saved") details.Add("捕获中查询结果变化仍保存了截图。");
+        if (result.State == "harness") details.Add($"测试侧未取得生产结论：{result.Message}");
+        if (Directory.EnumerateFiles(folder, "*.png").Any()) details.Add("捕获中结果变化仍生成了文件。");
+        return new Scenario("result-change-aborts-save", details.Count == 0, details.Count == 0 ? ["捕获中结果变化被撤销且无错误回填"] : details);
+    }
+
+    private static async Task<Scenario> RunReconnectAsync(string outputFolder, string browser, TestServer server)
+    {
+        var folder = Path.Combine(outputFolder, "reconnect");
+        Directory.CreateDirectory(folder);
+        await using var session = new BrowserValidation("310120260000000021", folder,
+            server.Url("/page?content=900&result=310120260000000021"), browser, headless: true, allowTestTarget: true);
+        var details = new List<string>();
+        var problem = await StartAndWaitAsync(session, true);
+        if (problem is not null) details.Add(problem);
+        session.SimulateConnectionDropForTest();
+        await Task.Delay(500);
+        if (!await session.WaitForWidgetAsync(TimeSpan.FromSeconds(45), CancellationToken.None)) details.Add("断连后未恢复控件。");
         else
         {
-            await Task.Delay(1200);
+            var identity = await session.WaitForIdentitySettledAsync(TimeSpan.FromSeconds(30), CancellationToken.None);
+            if (identity.StartsWith("waiting|", StringComparison.Ordinal) || identity.Length == 0)
+                details.Add($"断连恢复后结果未就绪：{identity}");
+            else
+            {
+                var result = await ClickAndAwaitAsync(session, TimeSpan.FromSeconds(120));
+                if (result.State != "saved") details.Add($"断连恢复后截图失败：{result.State}：{result.Message}");
+                else if (result.FilePath is null || !File.Exists(result.FilePath)) details.Add("断连恢复后未生成截图。");
+            }
         }
-        await session.ClickCaptureButtonAsync(CancellationToken.None);
-        var result = await completion.Task.WaitAsync(TimeSpan.FromSeconds(90));
-        if (evidencePath is not null && result.FilePath is not null && File.Exists(result.FilePath))
-            File.Copy(result.FilePath, evidencePath, overwrite: true);
-        return result;
+        return new Scenario("reconnect-recovery", details.Count == 0, details.Count == 0 ? ["连接中断后恢复并可完成截图"] : details);
     }
 
     private static void AssertPixel(Bitmap image, int x, int y, Color expected, string label, List<string> details)
@@ -421,6 +540,17 @@ internal static class BrowserCaptureE2E
             var pixel = image.GetPixel(x, y);
             if (Math.Abs(pixel.R - expected.R) <= 6 && Math.Abs(pixel.G - expected.G) <= 6 && Math.Abs(pixel.B - expected.B) <= 6) return true;
         }
+        return false;
+    }
+
+    private static bool AnywhereContainsColor(Bitmap image, Color expected)
+    {
+        for (var y = 0; y < image.Height; y += 3)
+            for (var x = 0; x < image.Width; x += 3)
+            {
+                var pixel = image.GetPixel(x, y);
+                if (Math.Abs(pixel.R - expected.R) <= 6 && Math.Abs(pixel.G - expected.G) <= 6 && Math.Abs(pixel.B - expected.B) <= 6) return true;
+            }
         return false;
     }
 
@@ -517,7 +647,7 @@ internal static class BrowserCaptureE2E
                 .ToDictionary(x => x[0], x => Uri.UnescapeDataString(x[1]), StringComparer.OrdinalIgnoreCase);
         }
 
-        private static string FormHtml(string decl, string result, bool autoQuery, string error, bool pre, bool nonumber)
+        private static string FormHtml(string decl, string result, bool autoQuery, string error, bool pre, bool nonumber, string extraScript)
         {
             var rowText = nonumber
                 ? "查询结果已返回 海关状态 已放行 申报日期 2026-09-24 放行日期 2026-09-24"
@@ -538,12 +668,15 @@ internal static class BrowserCaptureE2E
                 document.querySelector('input').value = {{JsonSerializer.Serialize(decl)}};
                 {{errorScript}}
                 {{errorTextScript}}
+                {{extraScript}}
               </script>
             """;
         }
 
         private static string Page(string path)
         {
+            if (path.StartsWith("/blank", StringComparison.OrdinalIgnoreCase))
+                return "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><title>blank</title></head><body>blank</body></html>";
             var parameters = Parameters(path);
             var content = parameters.TryGetValue("content", out var c) && int.TryParse(c, out var height) ? height : 1200;
             var result = parameters.TryGetValue("result", out var r) ? r : "310120260000000001";
@@ -555,6 +688,10 @@ internal static class BrowserCaptureE2E
             var xhost = parameters.TryGetValue("xhost", out var xh) ? xh : "";
             var pre = parameters.TryGetValue("pre", out var pv) && pv == "1";
             var nonumber = parameters.TryGetValue("nonumber", out var nv) && nv == "1";
+            var mutate = parameters.TryGetValue("mutate", out var mv) && mv == "1";
+            var mutateScript = mutate
+                ? "setInterval(function () { if (window.__cccPrepareAt && !window.__cccMutated) { window.__cccMutated = true; setTimeout(function () { var t = document.getElementById('result'); if (t) t.innerHTML = '<tr><td>报关单号 310120260000009999 申报日期 2026-09-24 放行日期 2026-09-24 海关状态 已放行</td></tr>'; }, 100); } }, 50);"
+                : "";
 
             if (path.StartsWith("/frame", StringComparison.OrdinalIgnoreCase))
             {
@@ -565,7 +702,7 @@ internal static class BrowserCaptureE2E
                 .inner{height:1200px;background:linear-gradient(#eef3f8,#dde6f0)}table{width:100%;border-collapse:collapse}
                 td{padding:6px;font:13px system-ui;color:#0f1b2d}#fband{height:120px;background:#7700AA}</style></head><body>
                 <div id="ftop"></div>
-                {{FormHtml(decl, result, autoQuery, error, pre, nonumber)}}
+                {{FormHtml(decl, result, autoQuery, error, pre, nonumber, "")}}
                 <div id="fband"></div>
                 </body></html>
                 """;
@@ -576,17 +713,26 @@ internal static class BrowserCaptureE2E
             var frameSrc = frame == "cross" && xhost.Length > 0
                 ? xhost
                 : $"/frame?content=800&result={result}&query={(autoQuery ? "1" : "0")}";
-            var body = isFrame
+            // A cross-origin frame scenario keeps the queried result in the main frame (as
+            // the real page does) and only uses the frame for tall auxiliary content.
+            var body = frame == "cross"
                 ? $"""
                   <div id="top"></div>
+                  <div id="content">{FormHtml(decl, result, autoQuery, error, pre, nonumber, mutateScript)}</div>
                   <iframe id="inner" src="{frameSrc}" style="width:100%;height:400px;border:0"></iframe>
                   <div id="bottom"></div>
                   """
-                : $"""
-                  <div id="top"></div>
-                  <div id="content">{FormHtml(decl, result, autoQuery, error, pre, nonumber)}</div>
-                  <div id="bottom"></div>
-                  """;
+                : isFrame
+                    ? $"""
+                      <div id="top"></div>
+                      <iframe id="inner" src="{frameSrc}" style="width:100%;height:400px;border:0"></iframe>
+                      <div id="bottom"></div>
+                      """
+                    : $"""
+                      <div id="top"></div>
+                      <div id="content">{FormHtml(decl, result, autoQuery, error, pre, nonumber, mutateScript)}</div>
+                      <div id="bottom"></div>
+                      """;
             var contentRule = isFrame ? "height:auto;" : $"height:{content}px;";
             return $$"""
             <!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>受控核验页</title>

@@ -119,6 +119,28 @@ internal sealed class MoneySummaryPanel : RoundedPanel
 
     private int S(int px) => (int)Math.Round(px * DeviceDpi / 96F);
 
+    /// <summary>Single source of truth for the panel metrics, shared with the scroll test hook.</summary>
+    private (int HeaderHeight, int ColumnHeaderHeight, int RowHeight, int PadX, int BodyTop) Metrics()
+    {
+        var compact = Height < S(120);
+        var headerHeight = compact ? S(36) : S(40);
+        var columnHeaderHeight = compact ? S(28) : S(30);
+        var rowHeight = compact ? S(28) : S(32);
+        return (headerHeight, columnHeaderHeight, rowHeight, S(16), headerHeight + columnHeaderHeight);
+    }
+
+    internal int BodyTopForTest => Metrics().BodyTop;
+
+    /// <summary>
+    /// Row rectangle exactly as OnPaint positions it at the current scroll offset. Used by
+    /// the native regression to prove GDI text actually followed the scrollbar.
+    /// </summary>
+    internal Rectangle RowRectForTest(int index)
+    {
+        var (_, _, rowHeight, padX, bodyTop) = Metrics();
+        return new Rectangle(padX, bodyTop + AutoScrollPosition.Y + index * rowHeight, S(80), rowHeight);
+    }
+
     protected override void OnResize(EventArgs e)
     {
         base.OnResize(e);
@@ -132,10 +154,7 @@ internal sealed class MoneySummaryPanel : RoundedPanel
         _updatingScroll = true;
         try
         {
-            var compact = Height < S(120);
-            var headerHeight = compact ? S(36) : S(40);
-            var columnHeaderHeight = compact ? S(28) : S(30);
-            var rowHeight = compact ? S(28) : S(32);
+            var (headerHeight, columnHeaderHeight, rowHeight, _, _) = Metrics();
             var rows = Math.Max(1, _snapshot.Rows.Count);
             var unconfirmed = _snapshot.Unconfirmed.Count > 0 ? S(26) + _snapshot.Unconfirmed.Count * S(26) : 0;
             AutoScrollMinSize = new Size(0, headerHeight + columnHeaderHeight + rows * rowHeight + unconfirmed + S(8));
@@ -148,12 +167,7 @@ internal sealed class MoneySummaryPanel : RoundedPanel
         base.OnPaint(e);
         var graphics = e.Graphics;
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        var compact = Height < S(120);
-        var headerHeight = compact ? S(36) : S(40);
-        var columnHeaderHeight = compact ? S(28) : S(30);
-        var rowHeight = compact ? S(28) : S(32);
-        var padX = S(16);
-        var bodyTop = headerHeight + columnHeaderHeight;
+        var (headerHeight, columnHeaderHeight, rowHeight, padX, bodyTop) = Metrics();
 
         // Scrollable body: currency rows plus the per-currency unconfirmed block.
         // Overflow becomes a real scrollbar instead of silently dropping currencies.
@@ -161,8 +175,11 @@ internal sealed class MoneySummaryPanel : RoundedPanel
         {
             var state = graphics.Save();
             graphics.SetClip(new Rectangle(0, bodyTop, Width, Math.Max(0, Height - bodyTop)));
-            graphics.TranslateTransform(0, AutoScrollPosition.Y);
-            var y = bodyTop;
+            // TextRenderer paints through GDI and ignores a GDI+ TranslateTransform, so
+            // the scroll offset is folded into every rectangle instead of the graphics
+            // transform. Text, background strips and icons therefore scroll together all
+            // the way down to the last currency.
+            var y = bodyTop + AutoScrollPosition.Y;
             using (var rowFont = Theme.MonoFont(13.5F, true))
             {
                 foreach (var row in _snapshot.Rows)

@@ -152,10 +152,30 @@ internal static class ExcelListExporter
                             issues.Add("缺失数量被写成数值，未保持为空。");
                         if (line.UnitPrice is null && row.TryGetValue(9, out var unitPrice) && unitPrice.Value is not null)
                             issues.Add("缺失单价被写成数值，未保持为空。");
+                        if (line.Quantity is not null && row.TryGetValue(7, out var quantityCell) &&
+                            (!decimal.TryParse(quantityCell.Value, NumberStyles.Any, CultureInfo.InvariantCulture, out var quantityValue) || quantityValue != line.Quantity.Value))
+                            issues.Add($"数量精度丢失：期望 {line.Quantity.Value}，实际 {quantityCell.Value}。");
+                        if (line.UnitPrice is not null && row.TryGetValue(9, out var unitPriceCell) &&
+                            (!decimal.TryParse(unitPriceCell.Value, NumberStyles.Any, CultureInfo.InvariantCulture, out var unitPriceValue) || unitPriceValue != line.UnitPrice.Value))
+                            issues.Add($"单价精度丢失：期望 {line.UnitPrice.Value}，实际 {unitPriceCell.Value}。");
                         if (!string.IsNullOrWhiteSpace(line.VerificationUnit) && CellText(row.GetValueOrDefault(16)) != line.VerificationUnit)
                             issues.Add($"复核单位未导出：期望 {line.VerificationUnit}。");
-                        if (line.HasSecondaryDifference && CellText(row.GetValueOrDefault(17)) != "存在差异")
-                            issues.Add("存在复核差异的分项未被标记。");
+                        // The overall verdict must never call a row consistent when the
+                        // amount differs or when the second engine did not verify it.
+                        var consistency = CellText(row.GetValueOrDefault(17));
+                        if (line.HasValueDifference && consistency != "存在差异")
+                            issues.Add($"存在复核差异的分项未被标记：{consistency}。");
+                        if (!line.HasValueDifference && !line.IsFullyVerified && consistency != "未完整复核")
+                            issues.Add($"未完整复核的分项被写成“{consistency}”，应为“未完整复核”。");
+                        if (!line.HasValueDifference && line.IsFullyVerified && consistency != "一致")
+                            issues.Add($"完整复核且一致的分项被写成“{consistency}”。");
+                        var amountCheck = CellText(row.GetValueOrDefault(18));
+                        if (line.HasAmountDifference && amountCheck != "金额不一致")
+                            issues.Add($"金额不一致的分项金额确认写成“{amountCheck}”。");
+                        if (!line.HasAmountDifference && line.VerificationAmount is null && amountCheck != "金额未复核")
+                            issues.Add($"未复核金额被写成“{amountCheck}”，应为“金额未复核”。");
+                        if (!line.HasAmountDifference && line.VerificationAmount is not null && amountCheck != "金额一致")
+                            issues.Add($"复核金额一致的分项金额确认写成“{amountCheck}”。");
                     }
                 }
             }
@@ -316,8 +336,8 @@ internal static class ExcelListExporter
                 new XElement(Main + "numFmts",
                     NumFmt(164, "#,##0"),
                     NumFmt(165, "#,##0.00"),
-                    NumFmt(166, "#,##0.###"),
-                    NumFmt(167, "#,##0.00####")),
+                    NumFmt(166, "#,##0.############"),
+                    NumFmt(167, "#,##0.############")),
                 new XElement(Main + "fonts",
                     Font(11, false),
                     Font(11, true),
@@ -419,8 +439,8 @@ internal static class ExcelListExporter
                     line.VerificationUnitPrice is null ? Cell.Empty : Cell.OfNumber(line.VerificationUnitPrice.Value, StyleUnitPrice),
                     Cell.OfText(line.VerificationProductName),
                     Cell.OfText(line.VerificationUnit),
-                    Cell.OfText(line.HasSecondaryDifference ? "存在差异" : "一致"),
-                    Cell.OfText(line.IsReliable ? "金额一致" : "金额未确认"),
+                    Cell.OfText(line.ItemConsistency),
+                    Cell.OfText(line.AmountVerification),
                     Cell.OfText(line.Note)
                 ]);
             }
