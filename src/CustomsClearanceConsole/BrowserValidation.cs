@@ -356,7 +356,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
             lock (_frameUrls)
             {
                 foreach (var (id, url) in frames)
-                    if (id.Length > 0 && url.Length > 0) _frameUrls.TryAdd(id, url);
+                    if (id.Length > 0 && IsKnownUrl(url)) _frameUrls.TryAdd(id, url);
                 if (_mainFrameId.Length == 0) _mainFrameId = rootId;
                 if (_currentUrl.Length == 0 && rootId.Equals(_mainFrameId, StringComparison.Ordinal)) _currentUrl = rootUrl;
             }
@@ -500,7 +500,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
             // before that session enabled Page, which previously left the frame URL unknown
             // and the frame permanently unauthorized (identity stayed waiting|not-started).
             var attachUrl = targetInfo.TryGetProperty("url", out var attachUrlProperty) ? attachUrlProperty.GetString() ?? "" : "";
-            if (attachUrl.Length > 0 && !attachUrl.StartsWith("about:", StringComparison.OrdinalIgnoreCase))
+            if (IsKnownUrl(attachUrl) && !attachUrl.StartsWith("about:", StringComparison.OrdinalIgnoreCase))
                 lock (_frameUrls) _frameUrls[targetId] = attachUrl;
             _ = Task.Run(async () =>
             {
@@ -518,7 +518,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
                     var rootFrame = tree.GetProperty("result").GetProperty("frameTree").GetProperty("frame");
                     var rootFrameId = rootFrame.GetProperty("id").GetString() ?? "";
                     var rootUrl = rootFrame.TryGetProperty("url", out var rootUrlProperty) ? rootUrlProperty.GetString() ?? "" : "";
-                    if (rootFrameId.Length > 0 && rootUrl.Length > 0)
+                    if (rootFrameId.Length > 0 && IsKnownUrl(rootUrl))
                         lock (_frameUrls) _frameUrls[rootFrameId] = rootUrl;
                 }
                 catch { }
@@ -573,7 +573,13 @@ internal sealed class BrowserValidation : IAsyncDisposable
             var isMain = sessionId is null && parentId.Length == 0;
             lock (_frameUrls)
             {
-                if (frameId.Length > 0) _frameUrls[frameId] = url;
+                // A placeholder address is not a navigation target; forget the old one instead of
+                // recording it, so the frame is resolved again rather than judged by a stale URL.
+                if (frameId.Length > 0)
+                {
+                    if (IsKnownUrl(url)) _frameUrls[frameId] = url;
+                    else _frameUrls.Remove(frameId);
+                }
                 if (isMain) { _mainFrameId = frameId; _currentUrl = url; }
             }
             // A child-session frame without parentId must keep its already known parent link
@@ -643,6 +649,15 @@ internal sealed class BrowserValidation : IAsyncDisposable
         catch (Exception ex) when (!IsConnectionFailure(ex)) { AppLog.Write($"向主框架安装监视器失败：{ex.Message}"); }
     }
 
+    /// <summary>
+    /// Only a parseable absolute URL is a real frame address. For a frame that moved to another
+    /// process the root session reports the placeholder ":" — which is neither empty nor about:,
+    /// so it used to be taken as a known (and unauthorized) URL: the frame got no click monitor
+    /// and the unknown-URL refresh skipped it, leaving the query unobserved.
+    /// </summary>
+    private static bool IsKnownUrl(string? url) =>
+        !string.IsNullOrWhiteSpace(url) && Uri.TryCreate(url, UriKind.Absolute, out _);
+
     private bool IsUnknownFrameUrl(string frameId)
     {
         string? url;
@@ -650,10 +665,10 @@ internal sealed class BrowserValidation : IAsyncDisposable
         {
             if (!_frameUrls.TryGetValue(frameId, out url) && frameId.Equals(_mainFrameId, StringComparison.Ordinal)) url = _currentUrl;
         }
-        if (string.IsNullOrWhiteSpace(url)) return true;
+        if (!IsKnownUrl(url)) return true;
         // An in-process about:blank frame is a real, settled state (its navigations arrive on
         // the root session). A child target still at about:blank has not reported its commit.
-        return url.StartsWith("about:", StringComparison.OrdinalIgnoreCase) && SessionForFrame(frameId) is not null;
+        return url!.StartsWith("about:", StringComparison.OrdinalIgnoreCase) && SessionForFrame(frameId) is not null;
     }
 
     /// <summary>
@@ -678,13 +693,13 @@ internal sealed class BrowserValidation : IAsyncDisposable
         void Fill(string frameId, string url)
         {
             // A still-blank document is not an answer; leave it unknown so a later call retries.
-            if (frameId.Length == 0 || url.Length == 0 || url.StartsWith("about:", StringComparison.OrdinalIgnoreCase)) return;
+            if (frameId.Length == 0 || !IsKnownUrl(url) || url.StartsWith("about:", StringComparison.OrdinalIgnoreCase)) return;
             // Only a child target may replace a recorded about:blank (its commit event can be
             // lost); an in-process or main frame at about:blank is a settled newer state.
             var childTarget = SessionForFrame(frameId) is not null;
             lock (_frameUrls)
             {
-                if (_frameUrls.TryGetValue(frameId, out var existing) && existing.Length > 0 &&
+                if (_frameUrls.TryGetValue(frameId, out var existing) && IsKnownUrl(existing) &&
                     !(childTarget && existing.StartsWith("about:", StringComparison.OrdinalIgnoreCase))) return;
                 _frameUrls[frameId] = url;
                 if (frameId.Equals(_mainFrameId, StringComparison.Ordinal) && _currentUrl.Length == 0) _currentUrl = url;
@@ -718,7 +733,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
     {
         string? url;
         lock (_frameUrls) _frameUrls.TryGetValue(frameId, out url);
-        if (!string.IsNullOrWhiteSpace(url) && !url.StartsWith("about:", StringComparison.OrdinalIgnoreCase)) return false;
+        if (IsKnownUrl(url) && !url!.StartsWith("about:", StringComparison.OrdinalIgnoreCase)) return false;
         string? parent;
         lock (_frameParents) _frameParents.TryGetValue(frameId, out parent);
         return string.IsNullOrEmpty(parent) || parent.Equals(_mainFrameId, StringComparison.Ordinal);
@@ -1559,10 +1574,10 @@ internal sealed class BrowserValidation : IAsyncDisposable
         }
         var frames = new List<(string FrameId, string Url)>();
         CollectFrames(tree.GetProperty("result").GetProperty("frameTree"), frames);
-        // Refresh real URLs from the root tree, but never let an empty stub URL clobber the
-        // child-session URL that attach/child-getFrameTree registered for an OOPIF.
+        // Refresh real URLs from the root tree, but never let the root's placeholder for an OOPIF
+        // (empty or ":") clobber the child-session URL that attach/child-getFrameTree registered.
         foreach (var (id, url) in frames)
-            if (id.Length > 0 && url.Length > 0)
+            if (id.Length > 0 && IsKnownUrl(url))
                 lock (_frameUrls) _frameUrls[id] = url;
         // A flattened OOPIF is reached through its own child target and can be missing from
         // the root session's Page.getFrameTree. Enumerate the live attached child targets too
