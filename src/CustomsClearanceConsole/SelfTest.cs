@@ -1190,32 +1190,44 @@ internal static class SelfTest
     }
 
     /// <summary>
-    /// Every pixel of a rendered window must be fully opaque. A partly transparent pixel means
-    /// something was drawn with partial coverage over an area nobody painted first, which shows
-    /// as a grey seam on screen (the grid's anti-aliased cell fills did exactly that).
+    /// On the real screen, the pixel on the boundary between the status and number columns of
+    /// the first row must match the row background on both sides. A grey seam there is the
+    /// leaked anti-aliasing of the cell fills (only visible on screen: the grid is opaque and
+    /// does not clear its double buffer under the cells, while DrawToBitmap erases it first).
+    /// The first run proves the check by repainting with the leak switched on.
     /// </summary>
-    internal static List<string> TranslucentPixels(Bitmap bitmap)
+    private static void CheckScreenSeams(MainForm form, Rectangle bounds, string name)
     {
-        var found = new List<string>();
-        var total = 0;
-        var data = bitmap.LockBits(new Rectangle(Point.Empty, bitmap.Size), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
-        try
+        var grid = form.GridForTest;
+        if (grid.Rows.Count == 0 || !grid.Columns["Status"].Visible) return;
+        var origin = form.PointToClient(grid.PointToScreen(Point.Empty));
+        var x = origin.X + grid.Columns["Index"].Width + grid.Columns["Status"].Width;
+        var y = origin.Y + grid.ColumnHeadersHeight + grid.Rows[0].Height / 2;
+        string Seam()
         {
-            var row = new byte[data.Stride];
-            for (var y = 0; y < bitmap.Height; y++)
-            {
-                System.Runtime.InteropServices.Marshal.Copy(data.Scan0 + y * data.Stride, row, 0, row.Length);
-                for (var x = 0; x < bitmap.Width; x++)
-                {
-                    if (row[x * 4 + 3] == 255) continue;
-                    total++;
-                    if (found.Count < 5) found.Add($"({x},{y}) α={row[x * 4 + 3]}");
-                }
-            }
+            form.Refresh();
+            Application.DoEvents();
+            using var shot = new Bitmap(form.ClientSize.Width, form.ClientSize.Height);
+            using (var graphics = Graphics.FromImage(shot))
+                graphics.CopyFromScreen(bounds.Left, bounds.Top, 0, 0, form.ClientSize);
+            var seam = shot.GetPixel(x, y);
+            var left = shot.GetPixel(x - 3, y);
+            var right = shot.GetPixel(x + 3, y);
+            static int Diff(Color a, Color b) => Math.Max(Math.Abs(a.R - b.R), Math.Max(Math.Abs(a.G - b.G), Math.Abs(a.B - b.B)));
+            return Diff(seam, left) > 12 && Diff(seam, right) > 12 ? $"({x},{y}) seam={seam.Name} left={left.Name} right={right.Name}" : "";
         }
-        finally { bitmap.UnlockBits(data); }
-        if (total > found.Count) found.Add($"共 {total} 个");
-        return total == 0 ? [] : found;
+        if (!SeamCheckProven)
+        {
+            MainForm.SkipCellSmoothingResetForTest = true;
+            string leaked;
+            try { leaked = Seam(); }
+            finally { MainForm.SkipCellSmoothingResetForTest = false; }
+            Phase($"  seam check self-proof · leaked smoothing detected={leaked.Length > 0} {leaked}");
+            if (leaked.Length == 0) GeometryFailures.Add("接缝检查自证失败：故意保留抗锯齿时屏幕上未检出灰色接缝。");
+            SeamCheckProven = true;
+        }
+        var found = Seam();
+        if (found.Length > 0) GeometryFailures.Add($"{name}：表格单元格边界出现灰色接缝 {found}");
     }
 
     private static void Recorded(string name, Action action)
@@ -1256,28 +1268,6 @@ internal static class SelfTest
             Phase($"  save PNG begin · {path}");
             bitmap.Save(path, ImageFormat.Png);
             Phase("  save PNG returned");
-            // The grid alone onto a transparent bitmap: nothing is painted under the cells, so a
-            // cell fill that does not fully cover its pixels shows up as translucency.
-            using var gridOnly = new Bitmap(Math.Max(1, form.GridForTest.Width), Math.Max(1, form.GridForTest.Height), PixelFormat.Format32bppArgb);
-            form.GridForTest.DrawToBitmap(gridOnly, new Rectangle(Point.Empty, form.GridForTest.Size));
-            var seams = form.GridForTest.Rows.Count > 0 ? TranslucentPixels(gridOnly) : [];
-            if (form.GridForTest.Rows.Count > 0 && !SeamCheckProven)
-            {
-                // Prove once that the check detects the bug it guards against.
-                MainForm.SkipCellSmoothingResetForTest = true;
-                try
-                {
-                    using var leaked = new Bitmap(gridOnly.Width, gridOnly.Height, PixelFormat.Format32bppArgb);
-                    form.GridForTest.DrawToBitmap(leaked, new Rectangle(Point.Empty, form.GridForTest.Size));
-                    var detected = TranslucentPixels(leaked);
-                    Phase($"  seam check self-proof · leaked smoothing detected={detected.Count > 0} {string.Join("、", detected.Take(2))}");
-                    if (detected.Count == 0) GeometryFailures.Add("接缝检查自证失败：故意保留抗锯齿时未检出半透明接缝。");
-                }
-                finally { MainForm.SkipCellSmoothingResetForTest = false; }
-                SeamCheckProven = true;
-            }
-            if (seams.Count > 0)
-                GeometryFailures.Add($"{Path.GetFileNameWithoutExtension(path)}：存在未被完全绘制的半透明像素（真实屏幕上显示为灰色接缝）：{string.Join("、", seams)}");
         }
         var working = Screen.FromControl(form).WorkingArea;
         var screen = Screen.FromControl(form).Bounds;
@@ -1301,6 +1291,7 @@ internal static class SelfTest
                 screenBitmap.Save(Path.Combine(Path.GetDirectoryName(path)!, Path.GetFileNameWithoutExtension(path) + "-screen.png"), ImageFormat.Png);
             }
             Phase("  CopyFromScreen returned");
+            CheckScreenSeams(form, bounds, Path.GetFileNameWithoutExtension(path));
             form.TopMost = previousTopMost;
             form.Opacity = previousOpacity;
             realScreen = true;
