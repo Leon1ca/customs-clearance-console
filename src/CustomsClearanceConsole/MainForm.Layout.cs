@@ -58,12 +58,25 @@ internal sealed partial class MainForm
             BackColor = Color.Transparent
         };
         header.Controls.Add(title);
-        var divider = new Panel { Location = new Point(186, 14), Size = new Size(1, 20), BackColor = ColorTranslator.FromHtml("#5C6D82") };
+        _headerTitle = title;
+        // The title label used to stay 160px wide from x=60 (right edge 220) and covered the
+        // fixed divider (x=186) and version (x=197); the real composited window then clipped
+        // the version to "5.0" even though DrawToBitmap looked fine. Size the label to its
+        // real text and place the divider/version strictly after it (P2).
+        var titleWidth = Math.Max(1, TextRenderer.MeasureText(title.Text, title.Font).Width);
+        title.Size = new Size(titleWidth, UiTokens.Metrics.Header);
+        var divider = new Panel
+        {
+            Location = new Point(title.Right + 16, 14),
+            Size = new Size(1, 20),
+            BackColor = ColorTranslator.FromHtml("#5C6D82")
+        };
         header.Controls.Add(divider);
+        _headerDivider = divider;
         var version = new Label
         {
             Text = "v" + (Application.ProductVersion.Split('+')[0]),
-            Location = new Point(197, 0),
+            Location = new Point(divider.Right + 10, 0),
             Size = new Size(90, UiTokens.Metrics.Header),
             Font = AppFonts.Mono(12F),
             ForeColor = ColorTranslator.FromHtml("#C9D6E8"),
@@ -71,6 +84,7 @@ internal sealed partial class MainForm
             BackColor = Color.Transparent
         };
         header.Controls.Add(version);
+        _headerVersion = version;
 
         var actions = new FlowLayoutPanel { Dock = DockStyle.Right, AutoSize = true, FlowDirection = FlowDirection.LeftToRight, Margin = Padding.Empty, BackColor = Color.Transparent, Padding = new Padding(0, 9, 10, 9) };
         _settings = Theme.IconButton("设置", new RoundedButton
@@ -309,6 +323,14 @@ internal sealed partial class MainForm
         AddColumn(grid, "Amount", "关单总货值", DataGridViewContentAlignment.MiddleRight);
         AddColumn(grid, "Detail", "查看", DataGridViewContentAlignment.MiddleCenter);
         AddColumn(grid, "Verify", "网页核验", DataGridViewContentAlignment.MiddleCenter);
+
+        // The generic header style carries 8px left/right padding. Inside the 28px index
+        // column that leaves ~12px, which clipped the bold "#" to a sliver on real screens.
+        // The index column owns its header padding and is centre-drawn; every other column
+        // keeps the shared header style (P2).
+        var indexHeader = grid.Columns["Index"].HeaderCell.Style;
+        indexHeader.Padding = new Padding(0);
+        indexHeader.Alignment = DataGridViewContentAlignment.MiddleCenter;
 
         grid.CellPainting += PaintRecordCell;
         grid.CellClick += GridCellClick;

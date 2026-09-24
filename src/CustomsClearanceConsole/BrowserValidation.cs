@@ -441,6 +441,16 @@ internal sealed class BrowserValidation : IAsyncDisposable
                 try { await cdp.SendAsync("Runtime.enable", null, CancellationToken.None, sessionId); } catch { }
                 try { await cdp.SendAsync("Page.enable", null, CancellationToken.None, sessionId); } catch { }
                 try { await cdp.SendAsync("DOM.enable", null, CancellationToken.None, sessionId); } catch { }
+                // A child target (typically an OOPIF query frame) needs the click monitor at
+                // document start too, otherwise a query that completes before the C# side
+                // injects the monitor is never observed and identity stays "waiting". The
+                // monitor only; the capture card must stay in the main frame.
+                try
+                {
+                    await cdp.SendAsync("Page.addScriptToEvaluateOnNewDocument",
+                        new { source = MonitorScript() }, CancellationToken.None, sessionId);
+                }
+                catch { }
                 try
                 {
                     await cdp.SendAsync("Target.setAutoAttach",
@@ -1194,6 +1204,28 @@ internal sealed class BrowserValidation : IAsyncDisposable
             await Task.Delay(150, token);
         }
         return last;
+    }
+
+    /// <summary>
+    /// E2E diagnostics: every registered execution context with its frame, CDP session,
+    /// authorization and whether the click monitor reached it. Used only to explain an
+    /// OOPIF failure; it never relaxes a check.
+    /// </summary>
+    public async Task<string> DescribeFramesForTestAsync(CancellationToken token)
+    {
+        List<FrameContext> contexts;
+        lock (_frameContexts) contexts = _frameContexts.ToList();
+        var parts = new List<string>();
+        foreach (var context in contexts)
+        {
+            string? url;
+            lock (_frameUrls) _frameUrls.TryGetValue(context.FrameId, out url);
+            string monitor;
+            try { monitor = await SafeEvaluateAsync("!!window.__customsConsoleMonitor", context.ContextId, context.SessionId, token); }
+            catch (Exception ex) { monitor = "error:" + ex.Message; }
+            parts.Add($"frame={context.FrameId};session={context.SessionId ?? "-"};authorized={IsAuthorizedFrameId(context.FrameId)};url={url};monitor={monitor}");
+        }
+        return parts.Count == 0 ? "(未登记任何执行上下文)" : string.Join(" | ", parts);
     }
 
     /// <summary>Hit-test result of the last real card-button click (E2E evidence).</summary>

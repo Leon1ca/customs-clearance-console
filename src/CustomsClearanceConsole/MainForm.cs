@@ -39,6 +39,9 @@ internal sealed partial class MainForm : Form
     private TableLayoutPanel _footerPanel = null!;
     private TableLayoutPanel _recordsContent = null!;
     private TitleBlock _titleBlock = null!;
+    private Label _headerTitle = null!;
+    private Panel _headerDivider = null!;
+    private Label _headerVersion = null!;
     private KpiPanel _kpi = null!;
     private MoneySummaryPanel _moneySummary = null!;
     private ProgressStrip _progressStrip = null!;
@@ -53,6 +56,10 @@ internal sealed partial class MainForm : Form
     private DataGridView _grid = null!;
     private Panel _gridHost = null!;
     private RecordStatePanel _recordState = null!;
+    // Business intent, independent of Control.Visible's effective getter. Before the form is
+    // first shown every ancestor reports Visible == false, so reading _recordState.Visible
+    // during construction cannot tell us whether the current state wants the panel (P1).
+    private bool _recordStateWanted;
     private Label _dropBanner = null!;
     private Label _footer = null!;
     private Label _pageLabel = null!;
@@ -78,6 +85,13 @@ internal sealed partial class MainForm : Form
     internal Button ScanForTest => _scan;
     internal Button ExportForTest => _exportButton;
     internal TableLayoutPanel BodyForTest => _body;
+    internal Panel GridHostForTest => _gridHost;
+    internal DataGridView GridForTest => _grid;
+    internal RecordStatePanel RecordStateForTest => _recordState;
+    internal bool RecordStateWantedForTest => _recordStateWanted;
+    internal Label HeaderTitleForTest => _headerTitle;
+    internal Panel HeaderDividerForTest => _headerDivider;
+    internal Label HeaderVersionForTest => _headerVersion;
 
     public MainForm()
     {
@@ -149,6 +163,18 @@ internal sealed partial class MainForm : Form
             _searchTimer.Dispose();
         }
         base.Dispose(disposing);
+    }
+
+    /// <summary>
+    /// Re-runs the record-state layout once the window is really shown. Ancestors report
+    /// Visible == false until the first show and the grid host has no useful ClientSize
+    /// during construction, so the initial empty/ready guidance must be laid out and raised
+    /// here for the first real frame (P1).
+    /// </summary>
+    protected override void OnShown(EventArgs e)
+    {
+        base.OnShown(e);
+        LayoutRecordState();
     }
 
     private BatchState CurrentState => _session is not null || _previewProcessing ? BatchState.Processing
@@ -622,8 +648,13 @@ internal sealed partial class MainForm : Form
         else if (records.Count > 0 && visibleCount == 0)
             _recordState.Set(new StateMessage("没有匹配的记录", "调整筛选或搜索条件；汇总仍按本批全部记录计算", null, null, null), false);
         _recordState.Visible = statePanelVisible;
-        if (_recordState.Visible)
+        _recordStateWanted = statePanelVisible;
+        if (statePanelVisible)
         {
+            // Use the computed business state, never Control.Visible's effective getter:
+            // while the form is still unshown the getter is false for every control and the
+            // old guard skipped LayoutRecordState/BringToFront, leaving the panel behind the
+            // grid (real-screen blank centre in the initial states, P1).
             LayoutRecordState();
             _recordState.BringToFront();
         }
@@ -641,6 +672,10 @@ internal sealed partial class MainForm : Form
     private void LayoutRecordState()
     {
         if (_gridHost is null || _recordState is null || _grid is null) return;
+        // Correct z-order even before the host has a real size: LayoutRecordState also runs
+        // from the constructor when ClientSize is still 0, and the panel must already be on
+        // top for the first shown frame (P1).
+        if (_recordStateWanted) _recordState.BringToFront();
         if (_gridHost.ClientSize.Width <= 0) return;
         var header = _grid.ColumnHeadersHeight;
         _recordState.Bounds = new Rectangle(0, header, _gridHost.ClientSize.Width, Math.Max(0, _gridHost.ClientSize.Height - header));

@@ -1087,6 +1087,54 @@ internal static class SelfTest
         // R4-4: the title block carries a real status and a real sub-line.
         if (string.IsNullOrWhiteSpace(form.TitleBlockForTest.StatusForTest) || string.IsNullOrWhiteSpace(form.TitleBlockForTest.SublineForTest))
             throw new InvalidOperationException("标题区状态徽标或副标题未接线。");
+        // P1: when the business state wants the record-state guidance, it has to be really
+        // visible on the shown window, front-most in its host (not covered by the grid) and
+        // laid out over the body below the column header. The old code read Control.Visible's
+        // effective getter before the form was shown, skipped layout/z-order and left the
+        // centre blank on the real screen while DrawToBitmap still looked fine.
+        var host = form.GridHostForTest;
+        var statePanel = form.RecordStateForTest;
+        if (form.RecordStateWantedForTest)
+        {
+            if (!statePanel.Visible)
+                throw new InvalidOperationException("记录状态面板在真实窗口不可见（P1）。");
+            // Lower z-order index == closer to the front. The panel must be in front of the
+            // grid, otherwise the opaque grid would paint over the guidance (the real-screen
+            // blank centre).
+            if (statePanel.Parent != host || host.Controls.GetChildIndex(statePanel) >= host.Controls.GetChildIndex(form.GridForTest))
+                throw new InvalidOperationException(
+                    $"记录状态面板未置于表格之前，可能被遮挡：parent={statePanel.Parent?.GetType().Name} panelIndex={host.Controls.GetChildIndex(statePanel)} gridIndex={host.Controls.GetChildIndex(form.GridForTest)}（P1）。");
+            var headerHeight = form.GridForTest.ColumnHeadersHeight;
+            var expectedHeight = Math.Max(0, host.ClientSize.Height - headerHeight);
+            if (statePanel.Left != 0 || Math.Abs(statePanel.Top - headerHeight) > 1
+                || Math.Abs(statePanel.Width - host.ClientSize.Width) > 1
+                || Math.Abs(statePanel.Height - expectedHeight) > 1)
+                throw new InvalidOperationException(
+                    $"记录状态面板边界 {statePanel.Bounds} 与期望 (0,{headerHeight},{host.ClientSize.Width},{expectedHeight}) 不符（P1）。");
+        }
+        else if (statePanel.Visible)
+        {
+            throw new InvalidOperationException("记录状态面板在该状态下仍然可见（P1）。");
+        }
+        // P2: the fixed-width title label used to cover the divider and version; assert the
+        // three header pieces never share pixels and that the version text fits its label.
+        var headerTitle = form.HeaderTitleForTest;
+        var headerDivider = form.HeaderDividerForTest;
+        var headerVersion = form.HeaderVersionForTest;
+        if (headerTitle.Bounds.IntersectsWith(headerDivider.Bounds) || headerTitle.Bounds.IntersectsWith(headerVersion.Bounds)
+            || headerDivider.Bounds.IntersectsWith(headerVersion.Bounds))
+            throw new InvalidOperationException(
+                $"标题/分隔线/版本发生重叠：title={headerTitle.Bounds} divider={headerDivider.Bounds} version={headerVersion.Bounds}（P2）。");
+        if (headerTitle.Right > headerDivider.Left || headerDivider.Right > headerVersion.Left)
+            throw new InvalidOperationException("标题、分隔线与版本顺序错误（P2）。");
+        var versionTextWidth = TextRenderer.MeasureText(headerVersion.Text, headerVersion.Font).Width;
+        if (headerVersion.Text.Length == 0 || versionTextWidth > headerVersion.ClientSize.Width)
+            throw new InvalidOperationException($"版本标签无法完整显示“{headerVersion.Text}”：需要 {versionTextWidth}px，标签仅 {headerVersion.ClientSize.Width}px（P2）。");
+        // P2: the index header must own its padding/alignment so "#" is not clipped inside
+        // the narrow index column.
+        var indexHeader = form.GridForTest.Columns["Index"].HeaderCell.Style;
+        if (indexHeader.Padding != new Padding(0) || indexHeader.Alignment != DataGridViewContentAlignment.MiddleCenter)
+            throw new InvalidOperationException($"序号表头 padding/对齐未按窄列修正：padding={indexHeader.Padding} alignment={indexHeader.Alignment}（P2）。");
     }
 
     private sealed record SnapshotEvidence(int RequestedWidth, int RequestedHeight, int ActualWidth, int ActualHeight,

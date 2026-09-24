@@ -17,6 +17,16 @@ internal static class BrowserCaptureE2E
 {
     public sealed record Scenario(string Name, bool Pass, IReadOnlyList<string> Details);
 
+    /// <summary>
+    /// Reads the fixture iframe's inline height/max-height and both priorities. Used to
+    /// compare the frame style captured before the capture with the style after restore, so
+    /// the assertion is against the real original instead of a hard-coded value.
+    /// </summary>
+    private const string FrameStyleProbe =
+        "JSON.stringify((function(){var f=document.getElementById('inner');if(!f)return {missing:true};" +
+        "return {height:f.style.getPropertyValue('height'),heightPriority:f.style.getPropertyPriority('height')," +
+        "maxHeight:f.style.getPropertyValue('max-height'),maxHeightPriority:f.style.getPropertyPriority('max-height')};})())";
+
     public static async Task<int> RunAsync(string outputFolder)
     {
         Directory.CreateDirectory(outputFolder);
@@ -102,9 +112,18 @@ internal static class BrowserCaptureE2E
         catch (TimeoutException) { return Harness(session, "测试侧等待超时，未取得生产结论。"); }
     }
 
-    private static async Task<BrowserCaptureResult> DriveAsync(BrowserValidation session, string? evidencePath, bool waitForSettled)
+    private static async Task<BrowserCaptureResult> DriveAsync(BrowserValidation session, string? evidencePath, bool waitForSettled,
+        Func<Task>? afterLoad = null)
     {
         var problem = await StartAndWaitAsync(session, waitForSettled);
+        // The page is loaded by now; let a scenario snapshot the original inline style
+        // before the capture mutates and restores it. Runs even when the settle wait failed
+        // so a failing scenario can still report the real original.
+        if (afterLoad is not null)
+        {
+            try { await afterLoad(); }
+            catch (Exception ex) { AppLog.Write($"读取捕获前样式失败：{ex.Message}"); }
+        }
         if (problem is not null) return Harness(session, problem);
         if (!waitForSettled) await Task.Delay(1200);
         var result = await ClickAndAwaitAsync(session, TimeSpan.FromSeconds(120));
@@ -469,7 +488,9 @@ internal static class BrowserCaptureE2E
         var frameUrl = other.Url($"/frame?content=800&result={number}&query=1");
         var url = server.Url($"/page?content=300&result={number}&frame=cross&clamp=1&xhost={Uri.EscapeDataString(frameUrl)}");
         await using var session = new BrowserValidation(number, folder, url, browser, headless: true, allowTestTarget: true);
-        var result = await DriveAsync(session, Path.Combine(outputFolder, "capture-cross-frame.png"), waitForSettled: true);
+        string? originalStyle = null;
+        var result = await DriveAsync(session, Path.Combine(outputFolder, "capture-cross-frame.png"), waitForSettled: true,
+            afterLoad: async () => originalStyle = await session.EvaluateRawAsync(FrameStyleProbe, CancellationToken.None));
         var details = new List<string>();
         if (result.State != "saved") details.Add($"跨源 frame 截图失败：{result.Message}");
         if (result.FilePath is null || !File.Exists(result.FilePath)) details.Add("未生成跨源 frame 截图。");
@@ -482,13 +503,12 @@ internal static class BrowserCaptureE2E
             if (!ColumnContainsColor(image, Color.FromArgb(0x77, 0x00, 0xAA)))
                 details.Add("跨源 frame 底部标记未出现在截图中（内容被截断）。");
         }
-        var style = await session.EvaluateRawAsync(
-            "JSON.stringify((function(){var f=document.getElementById('inner');return {height:f.style.getPropertyValue('height'),heightPriority:f.style.getPropertyPriority('height'),maxHeight:f.style.getPropertyValue('max-height'),maxHeightPriority:f.style.getPropertyPriority('max-height')};})())",
-            CancellationToken.None);
-        if (!style.Contains("\"height\":\"\"", StringComparison.Ordinal) ||
-            !style.Contains("\"maxHeight\":\"400px\"", StringComparison.Ordinal) ||
-            !style.Contains("\"maxHeightPriority\":\"important\"", StringComparison.Ordinal))
-            details.Add($"iframe 原高度/max-height 及 !important 优先级未复原：{style}");
+        // The frame element really is height:400px + max-height:400px !important in the
+        // fixture; the restore must give back exactly that. Comparing with the style
+        // captured before the capture is stricter than hard-coding either value.
+        var style = await session.EvaluateRawAsync(FrameStyleProbe, CancellationToken.None);
+        if (originalStyle is not null && !string.Equals(style, originalStyle, StringComparison.Ordinal))
+            details.Add($"iframe 原高度/max-height 及 !important 优先级未复原：原={originalStyle} 现={style}");
         return new Scenario("cross-origin-frame", details.Count == 0, details.Count == 0 ? ["顶层无查询，max-height 约束的跨源 frame 内查询首尾完整且原样式优先级复原"] : details);
     }
 
@@ -509,9 +529,18 @@ internal static class BrowserCaptureE2E
         var url = server.Url($"/page?content=300&result={number}&frame=cross&clamp=1&xhost={Uri.EscapeDataString(frameUrl)}");
         await using var session = new BrowserValidation(number, folder, url, browser, headless: true, allowTestTarget: true,
             extraBrowserArgs: [$"--host-resolver-rules=MAP {host} 127.0.0.1"]);
-        var result = await DriveAsync(session, Path.Combine(outputFolder, "capture-oopif-frame.png"), waitForSettled: true);
+        string? originalStyle = null;
+        var result = await DriveAsync(session, Path.Combine(outputFolder, "capture-oopif-frame.png"), waitForSettled: true,
+            afterLoad: async () => originalStyle = await session.EvaluateRawAsync(FrameStyleProbe, CancellationToken.None));
         var details = new List<string>();
-        if (result.State != "saved") details.Add($"跨站 OOPIF frame 截图失败：{result.Message}");
+        if (result.State != "saved")
+        {
+            details.Add($"跨站 OOPIF frame 截图失败：{result.Message}");
+            // Report the registered frames, their URLs and whether the monitor reached each
+            // one, so a persistent failure names the exact condition instead of guessing.
+            try { details.Add("OOPIF 帧诊断：" + await session.DescribeFramesForTestAsync(CancellationToken.None)); }
+            catch (Exception ex) { details.Add("OOPIF 帧诊断失败：" + ex.Message); }
+        }
         if (result.FilePath is null || !File.Exists(result.FilePath)) details.Add("未生成跨站 OOPIF frame 截图。");
         else
         {
@@ -522,13 +551,9 @@ internal static class BrowserCaptureE2E
             if (!ColumnContainsColor(image, Color.FromArgb(0x77, 0x00, 0xAA)))
                 details.Add("跨站 OOPIF frame 底部标记未入图（独立进程内容被截断）。");
         }
-        var style = await session.EvaluateRawAsync(
-            "JSON.stringify((function(){var f=document.getElementById('inner');return {height:f.style.getPropertyValue('height'),maxHeight:f.style.getPropertyValue('max-height'),maxHeightPriority:f.style.getPropertyPriority('max-height')};})())",
-            CancellationToken.None);
-        if (!style.Contains("\"height\":\"\"", StringComparison.Ordinal) ||
-            !style.Contains("\"maxHeight\":\"400px\"", StringComparison.Ordinal) ||
-            !style.Contains("\"maxHeightPriority\":\"important\"", StringComparison.Ordinal))
-            details.Add($"OOPIF frame 原高度/max-height 及优先级未复原：{style}");
+        var style = await session.EvaluateRawAsync(FrameStyleProbe, CancellationToken.None);
+        if (originalStyle is not null && !string.Equals(style, originalStyle, StringComparison.Ordinal))
+            details.Add($"OOPIF frame 原高度/max-height 及优先级未复原：原={originalStyle} 现={style}");
         return new Scenario("cross-site-oopif-frame", details.Count == 0, details.Count == 0 ? ["独立进程 OOPIF frame 内查询经 CDP session 完整捕获并复原样式"] : details);
     }
 
@@ -877,8 +902,18 @@ internal static class BrowserCaptureE2E
                 : $"报关单号 {result} 申报日期 2026-09-24 放行日期 2026-09-24 海关状态 已放行";
             var resultRow = error.Length > 0 ? "" : $"<tr><td>{rowText}</td></tr>";
             var initial = pre ? resultRow : "";
+            // The auto-query clicks only after the injected monitor exists (bounded wait). A
+            // real user clicks seconds after injection, but the old fixed 400ms timer could
+            // fire before the monitor reached a late-attached OOPIF frame, so the click was
+            // never observed and identity stayed "waiting|not-started". The click is still a
+            // real click on the real button and the monitor must still observe it, so this
+            // removes only the artificial race, not the verification.
+            var resultRowJson = JsonSerializer.Serialize(resultRow);
             var errorScript = autoQuery
-                ? $"setTimeout(function () {{ document.getElementById('query').click(); document.getElementById('result').innerHTML = {JsonSerializer.Serialize(resultRow)}; }}, 400);"
+                ? "(function(){var tries=0;function fire(){if(!window.__customsConsoleMonitor&&tries++<800){setTimeout(fire,25);return;}" +
+                  "var q=document.getElementById('query');if(q)q.click();" +
+                  "var r=document.getElementById('result');if(r)r.innerHTML=" + resultRowJson + ";}" +
+                  "fire();})();"
                 : "";
             var errorTextScript = error.Length > 0 ? $"document.getElementById('error').textContent = {JsonSerializer.Serialize(error)};" : "";
             return $$"""

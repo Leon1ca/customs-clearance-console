@@ -184,3 +184,28 @@
 2. `record.Totals` 对有关单分项的记录由可靠分项求和，属同源数据；明细结论因此显示“已识别可靠分项合计”，不宣称与独立票面总额一致（遵循 PRD §6 补充说明）。
 3. 无边框窗口在顶栏右侧保留最小化/最大化/关闭按钮（设计稿未画），其余顶栏元素严格按设计；已在本文记录该偏差。
 4. 浏览器 E2E 使用 `--headless=new` 受控实例与本机回环页面，不代表真实网站校验通过。
+
+## 里程碑 M10 · 真实屏幕残留（P1/P2）与浏览器 OOPIF/样式复原定点修复
+
+基线 `633db49`（run [35962368728](https://github.com/Leon1ca/customs-clearance-console/actions/runs/35962368728)）。该运行核心/构建/UI 契约/字体/导出/快照/打包/ZIP/根启动器 smoke 全部为 `success`；但门禁如实拦下被 `continue-on-error` 掩盖的浏览器两项真实失败，以及独立子路由对 `633db` 真实 1200×720 `-screen.png` 指出的三项视觉残留。本节不修改 `FINAL-ACCEPTANCE.md` 与 `CI-TRIAGE.md` 的既有结论，只记录实现状态。
+
+### P1 · 初始状态面板在真实窗口空白
+- 根因：`MainForm.UpdateSummary` 用 `Control.Visible` 的有效 getter（父窗口未 Show 时恒为 false）判断是否 `LayoutRecordState`/`BringToFront`，初始状态因此被 `Dock.Fill` 的表格盖住；`DrawToBitmap` 不暴露该差异。
+- 修复：新增业务意图字段 `_recordStateWanted`，按计算出的状态决定布局/置顶；`LayoutRecordState` 在宿主尚无尺寸时也先纠正 Z 序；新增 `OnShown` 在窗口真正显示后再布局一次。
+- 断言：`SelfTest.AssertSnapshotGeometry` 断言需要面板时其有效可见、父级正确、Z 序序号小于表格（在表格之前）、边界覆盖表头以下宿主区域；不需要时断言不可见。以 `*-screen.png` 真实屏幕图复核。
+
+### P2 · 版本号被标题遮挡、序号表头 `#` 被裁
+- 版本：标题标签原先固定 x60 宽 160（右界 220），覆盖分隔线 186 与版本 197。现按 `TextRenderer.MeasureText` 真实测量标题宽度，分隔线与版本严格排在标题右界之后。
+- 序号表头：通用表头内边距 8/8 在 28px 序号列中只剩约 12px，粗体 `#` 被裁成细条。现仅对 `Index` 列取消表头内边距并居中绘制，其余列不变。
+- 断言：断言标题/分隔线/版本三者边界互不相交且顺序正确、版本文本宽度可完整容纳、`Index` 表头 padding/对齐已按窄列修正。
+
+### 浏览器 E2E 两项真实失败
+- `cross-origin-frame`：断言误写为 `height:""`，而受控页 iframe 原始内联样式确为 `height:400px; max-height:400px !important`，正确的复原必然保留 `400px`。改为在捕获前读取真实原始内联样式，捕获后逐字比较（比硬编码任一值更严格）。
+- `cross-site-oopif-frame`：`waiting|not-started` 表示注入的点击监视器未在竞态前进入 OOPIF。修复：受控页自动查询先有界等待 `window.__customsConsoleMonitor` 再真实点击（真实用户点击远晚于注入，仅消除人为 400ms 竞态，不放宽断言）；子 target 附加时额外用 `Page.addScriptToEvaluateOnNewDocument` 注册仅含监视器的文档起始脚本（卡片仍只在主框架）；新增 `DescribeFramesForTestAsync` 帧诊断，失败时输出已登记上下文/URL/授权/监视器状态以便定点定位。同一原始样式比较同时覆盖该场景。
+
+### 云端运行记录（M10）
+
+| 运行 | 提交 | 结论 |
+|---|---|---|
+| [35962368728](https://github.com/Leon1ca/customs-clearance-console/actions/runs/35962368728) | `633db49` | 核心/构建/UI 契约/字体/导出/快照/打包/ZIP/根启动器 smoke 通过；浏览器 25/27，`cross-origin-frame`、`cross-site-oopif-frame` 失败已在本里程碑修复，待下一轮云端确认 |
+| 本轮 | 见下 | P1/P2 + 浏览器两项修复后待云端验证 |
