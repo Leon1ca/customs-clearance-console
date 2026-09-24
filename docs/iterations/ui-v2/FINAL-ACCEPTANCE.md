@@ -1,3 +1,5 @@
+> 2026-09-24 更新：`oopif-viewport-read-failure` 间歇失败已本地复现并按根因修复，Windows 云端完整门禁通过，详见 [HANDOFF-NEXT-AI.md](HANDOFF-NEXT-AI.md) 顶部“接手修复结果”。本文以下内容为历史记录，其结论只绑定文中注明的旧 SHA。
+
 # UI v2 独立验收：暂缓（重试仍有云端失败，待定位复验）
 
 > 用户已于 2026-09-24 要求停止并移交其他 AI。当前上传包含未验证补丁，完整接手说明见 [HANDOFF-NEXT-AI.md](HANDOFF-NEXT-AI.md)。本报告保持暂缓，不批准当前快照发布。

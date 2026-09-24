@@ -1,3 +1,5 @@
+> 2026-09-24 更新：`oopif-viewport-read-failure` 间歇失败已本地复现并按根因修复，Windows 云端完整门禁通过，详见 [HANDOFF-NEXT-AI.md](HANDOFF-NEXT-AI.md) 顶部“接手修复结果”。本文以下内容为历史记录，其结论只绑定文中注明的旧 SHA。
+
 # a9cf172 截图步骤停滞：短时只读排查
 
 范围：固定 `a9cf172fef08b939396db2961accbfd5847f55b5` 的 CaptureAllStates、桌面模式、渲染/事件与CLI异常路径。未本机运行产品/测试。run `35961148492` 的“停在快照步骤”来自主路由状态信息；尚无该步骤运行中堆栈或窗口证据，不能断言具体根因。本文不改变 FINAL-ACCEPTANCE 的源码结论。
