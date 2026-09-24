@@ -103,6 +103,14 @@
     const openLink = widget.querySelector('[data-role=open]');
     const collapse = widget.querySelector('[data-role=collapse]');
 
+    // Input-chain counters owned by this closed-shadow closure. The E2E reads them through
+    // diagnostics() to localise an unregistered real click: no DOM click only proves the
+    // point never produced a button click (a paint/compositor drop or a harness miss is a
+    // risk still to verify, not a proven cause); a DOM click without a binding call points
+    // at the page handler; a binding call without a backend accept points at the CDP binding.
+    let domClickCount = 0;
+    let bindingCallCount = 0;
+
     // The action button stays available in every non-capturing state so a failed or
     // rejected capture can always be retried without reloading the page.
     const api = {
@@ -114,6 +122,100 @@
       captureButtonRect() {
         const rect = captureButton.getBoundingClientRect();
         return { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
+      },
+      // Exact hit test inside this closed shadow root. document.elementFromPoint only proves
+      // the widget host container is on top; the button itself is resolved through the closed
+      // shadow root held by this closure. exactButtonHit is true only when the shadow hit is
+      // the capture button or one of its descendants; rect containment is never accepted as
+      // exact, and an unsupported/throwing shadow hit stays false instead of falling back to it.
+      hitTest(x, y) {
+        const rect = captureButton.getBoundingClientRect();
+        const inside = rect.width > 0 && rect.height > 0 &&
+          x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+        let top = null;
+        try { top = document.elementFromPoint(x, y); } catch (error) { top = null; }
+        const topIsHost = !!top && (top.id === 'ccc-widget-host' || (top.closest && top.closest('#ccc-widget-host')));
+        let exactButtonHit = false;
+        let shadowHit = 'unsupported';
+        try {
+          if (shadow && typeof shadow.elementFromPoint === 'function') {
+            const hit = shadow.elementFromPoint(x, y);
+            exactButtonHit = !!hit && (hit === captureButton || captureButton.contains(hit));
+            shadowHit = hit ? ((hit.getAttribute && hit.getAttribute('data-role')) || hit.tagName || 'other') : 'none';
+          }
+        } catch (error) { exactButtonHit = false; shadowHit = 'error'; }
+        return { inside, topIsHost, top: top ? (top.tagName || '') : 'none', exactButtonHit, shadowHit };
+      },
+      // Snapshot of everything the E2E needs to explain a real-click branch: rect, viewport,
+      // DPR, state/disabled/isCapturing, exact hit and the closure's click/binding counters.
+      diagnostics() {
+        const rect = captureButton.getBoundingClientRect();
+        let display = '', visibility = '';
+        try { const style = getComputedStyle(host); display = style.display; visibility = style.visibility; } catch (error) { /* detached */ }
+        const centerX = rect.left + rect.width / 2;
+        const centerY = rect.top + rect.height / 2;
+        const enabled = !captureButton.disabled;
+        const visible = captureButton.getClientRects().length > 0 && display !== 'none' && visibility !== 'hidden';
+        return {
+          state: widget.dataset.state,
+          isCapturing: !!api.isCapturing,
+          disabled: !!captureButton.disabled,
+          enabled,
+          visible,
+          canCapture: !!api.canCapture(),
+          rect: { x: rect.left, y: rect.top, width: rect.width, height: rect.height },
+          display,
+          visibility,
+          viewport: { w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio },
+          hit: api.hitTest(centerX, centerY),
+          domClickCount,
+          bindingCallCount
+        };
+      },
+      // Bounded render-readiness gate used before a real CDP mouse click and before the
+      // production completion is published. Resolves (never rejects) once the card is
+      // enabled and visible, its rect has been stable for two animation frames and the
+      // exact closed-shadow button hit is confirmed; a supplied expected viewport also has
+      // to be restored first (the capture temporarily enlarges it). No blind sleep.
+      whenInteractive(timeoutMs, expectedViewport) {
+        const budget = timeoutMs > 0 ? timeoutMs : 2000;
+        const deadline = Date.now() + budget;
+        const expected = expectedViewport || null;
+        return new Promise(resolve => {
+          let lastRect = null;
+          let stableFrames = 0;
+          let settled = false;
+          const finish = (ready, reason) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(guard);
+            const diag = api.diagnostics();
+            resolve(Object.assign({ ready, reason }, diag));
+          };
+          // rAF can be throttled; the guard keeps the wait bounded and never hangs a caller.
+          const guard = setTimeout(() => finish(false, 'no-frames'), budget + 500);
+          const viewportRestored = diag => !expected || (
+            Math.abs(diag.viewport.w - expected.w) <= 1 &&
+            Math.abs(diag.viewport.h - expected.h) <= 1 &&
+            Math.abs(diag.viewport.dpr - expected.dpr) <= 0.001);
+          const step = () => {
+            if (settled) return;
+            const diag = api.diagnostics();
+            if (!diag.enabled || !diag.visible || !viewportRestored(diag)) {
+              lastRect = null;
+              stableFrames = 0;
+              if (Date.now() > deadline) { finish(false, viewportRestored(diag) ? 'not-interactive' : 'viewport-not-restored'); return; }
+              requestAnimationFrame(step);
+              return;
+            }
+            const key = [diag.rect.x, diag.rect.y, diag.rect.width, diag.rect.height].join(',');
+            if (key === lastRect) stableFrames += 1; else { lastRect = key; stableFrames = 1; }
+            if (stableFrames >= 2 && diag.hit.exactButtonHit && diag.hit.topIsHost) { finish(true, 'ready'); return; }
+            if (Date.now() > deadline) { finish(false, 'unstable'); return; }
+            requestAnimationFrame(step);
+          };
+          requestAnimationFrame(step);
+        });
       },
       requestCapture() { if (!captureButton.disabled) captureButton.click(); },
       setState(state, payload) {
@@ -141,10 +243,16 @@
     window.__cccWidget = api;
 
     captureButton.addEventListener('click', () => {
+      domClickCount += 1;
       if (api.isCapturing) return;
       api.setState('capturing');
       api.setProgress(0, 1, '正在截取整页');
-      try { if (typeof window.cccRequestCapture === 'function') window.cccRequestCapture(''); }
+      try {
+        if (typeof window.cccRequestCapture === 'function') {
+          bindingCallCount += 1;
+          window.cccRequestCapture('');
+        }
+      }
       catch (error) { api.setState('error', { message: '无法请求截图', detail: String(error) }); }
     });
     openLink.addEventListener('click', () => {

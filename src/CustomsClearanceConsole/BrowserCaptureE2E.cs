@@ -112,10 +112,15 @@ internal static class BrowserCaptureE2E
         session.CaptureCompleted += handler;
         try
         {
+            var before = await WidgetSnapshotAsync(session);
             if (!await session.ClickCaptureButtonAsync(CancellationToken.None))
-                return Harness(session, "未找到可见的卡片按钮，未执行真实点击。");
+                return Harness(session, $"未找到可见的卡片按钮，未执行真实点击；点击前卡片={before}；就绪={session.LastClickReadiness}；失败={session.LastClickFailure}。");
             try { return await completion.Task.WaitAsync(timeout); }
-            catch (TimeoutException) { return Harness(session, "测试侧等待超时，未取得生产结论。"); }
+            catch (TimeoutException)
+            {
+                var final = await WidgetSnapshotAsync(session);
+                return Harness(session, $"测试侧等待超时，未取得生产结论；点击前={before}；超时={final}；命中={session.LastClickHitTarget}；精确命中={session.LastClickExactHit}；就绪={session.LastClickReadiness}。");
+            }
         }
         finally { session.CaptureCompleted -= handler; }
     }
@@ -140,54 +145,89 @@ internal static class BrowserCaptureE2E
         session.CaptureCompleted += handler;
         try
         {
-            // A real CDP click dispatched right after the card's temporary hide/show can be
-            // lost before the compositor has the card back in its hit-test tree. Re-issue the
-            // real click until the page actually reports capturing (or the capture already
-            // finished); this is input-delivery robustness only. A click that registers but
-            // never completes still fails the wait below, so the gate race stays observable.
-            for (var attempt = 0; ; attempt++)
+            // Exactly one real click. The click helper waits for a bounded render-readiness
+            // condition first, then the closure's DOM-click/binding-call counters are read before
+            // and after so a lost click is localised to the harness/hit-test, the page handler or
+            // the CDP binding instead of being papered over with an automatic second click.
+            var before = await WidgetSnapshotAsync(session);
+            if (!await session.ClickCaptureButtonAsync(CancellationToken.None))
+                return (Harness(session, $"未找到可见的卡片按钮，未执行真实点击；点击前卡片={before}；就绪={session.LastClickReadiness}；失败={session.LastClickFailure}。"), gateHeld);
+            var after = await WidgetSnapshotAsync(session);
+            if (!await WaitForInputRegistrationAsync(session, before, TimeSpan.FromSeconds(5)))
             {
-                if (!await session.ClickCaptureButtonAsync(CancellationToken.None))
-                    return (Harness(session, "未找到可见的卡片按钮，未执行真实点击。"), gateHeld);
-                if (await WaitForClickRegistrationAsync(session, completion.Task, TimeSpan.FromSeconds(2), CancellationToken.None)) break;
-                if (attempt >= 2)
-                    return (Harness(session, $"连续 3 次真实点击后卡片未进入截取状态（点击命中：{session.LastClickHitTarget}）。"), gateHeld);
+                var stalled = await WidgetSnapshotAsync(session);
+                return (Harness(session, $"真实点击未到达生产后端（未自动补点）；点击前={before}；点击后={after}；5 秒后={stalled}；命中={session.LastClickHitTarget}；精确命中={session.LastClickExactHit}；就绪={session.LastClickReadiness}。"), gateHeld);
             }
             try { return (await completion.Task.WaitAsync(timeout), gateHeld); }
             catch (TimeoutException)
             {
-                string diag;
-                try { diag = await session.DescribeWidgetForTestAsync(CancellationToken.None); }
-                catch (Exception ex) { diag = "探针失败:" + ex.Message; }
-                return (Harness(session, $"测试侧等待超时，未取得生产结论（点击命中：{session.LastClickHitTarget}；卡片={diag}）。"), gateHeld);
+                var final = await WidgetSnapshotAsync(session);
+                return (Harness(session, $"测试侧等待超时，未取得生产结论；点击前={before}；点击后={after}；超时={final}；命中={session.LastClickHitTarget}；精确命中={session.LastClickExactHit}；就绪={session.LastClickReadiness}。"), gateHeld);
             }
         }
         finally { session.CaptureCompleted -= handler; }
     }
 
-    /// <summary>
-    /// True once the page handled the click (capturing flag) or the capture already completed.
-    /// Only a click that never reaches the page falls through to a bounded re-issue.
-    /// </summary>
-    private static async Task<bool> WaitForClickRegistrationAsync(BrowserValidation session, Task completion, TimeSpan timeout, CancellationToken token)
+    /// <summary>Best-effort card/input-chain snapshot for a real click; never throws.</summary>
+    private static async Task<string> WidgetSnapshotAsync(BrowserValidation session)
     {
+        try { return await session.DescribeWidgetForTestAsync(CancellationToken.None); }
+        catch (Exception ex) { return "卡片诊断失败=" + ex.Message; }
+    }
+
+    /// <summary>
+    /// True once the page registered the click (binding-call counter advanced past the pre-click
+    /// snapshot). A missing DOM click only proves the point never produced a button click (a
+    /// paint/compositor loss or a harness miss stays a risk, not a proven cause); a DOM click
+    /// without a binding call points at the page handler; a binding call without a backend
+    /// accept points at the CDP binding. Never re-clicks: the caller reports the exact counters
+    /// when this is false.
+    /// </summary>
+    private static async Task<bool> WaitForInputRegistrationAsync(BrowserValidation session, string beforeJson, TimeSpan timeout)
+    {
+        TryReadInputCounters(beforeJson, out _, out var beforeBinding);
         var started = DateTime.UtcNow;
         while (DateTime.UtcNow - started < timeout)
         {
-            token.ThrowIfCancellationRequested();
-            if (completion.IsCompleted) return true;
-            try { if (await session.IsCapturingAsync(token)) return true; }
-            catch (Exception ex) when (ex is not OperationCanceledException) { /* transient probe failure */ }
-            await Task.Delay(120, token);
+            var snapshot = await WidgetSnapshotAsync(session);
+            if (TryReadInputCounters(snapshot, out _, out var binding) && binding > beforeBinding) return true;
+            await Task.Delay(120);
         }
-        return completion.IsCompleted;
+        return false;
     }
 
-    /// <summary>Best-effort card/binding diagnostics for a failed fast retry; never throws.</summary>
-    private static async Task<string> WidgetDiagnosticAsync(BrowserValidation session)
+    /// <summary>Reads the closure's DOM-click/binding-call counters out of a diagnostics snapshot.</summary>
+    private static bool TryReadInputCounters(string json, out long domClicks, out long bindingCalls)
     {
-        try { return "卡片诊断=" + await session.DescribeWidgetForTestAsync(CancellationToken.None); }
-        catch (Exception ex) { return "卡片诊断失败=" + ex.Message; }
+        domClicks = 0;
+        bindingCalls = 0;
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            if (document.RootElement.ValueKind != JsonValueKind.Object) return false;
+            if (!document.RootElement.TryGetProperty("domClickCount", out var dom) || dom.ValueKind != JsonValueKind.Number) return false;
+            if (!document.RootElement.TryGetProperty("bindingCallCount", out var binding) || binding.ValueKind != JsonValueKind.Number) return false;
+            domClicks = dom.GetInt64();
+            bindingCalls = binding.GetInt64();
+            return true;
+        }
+        catch (JsonException) { return false; }
+    }
+
+    /// <summary>
+    /// True when a whenInteractive snapshot explicitly reports ready=true. Used to assert the
+    /// completion-publish recovery readiness as a signal independent from the saved verdict.
+    /// </summary>
+    private static bool IsReadySnapshot(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return false;
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            return document.RootElement.ValueKind == JsonValueKind.Object &&
+                document.RootElement.TryGetProperty("ready", out var ready) && ready.ValueKind == JsonValueKind.True;
+        }
+        catch (JsonException) { return false; }
     }
 
     /// <summary>
@@ -512,7 +552,12 @@ internal static class BrowserCaptureE2E
         await Task.WhenAll(session.ClickCaptureButtonAsync(CancellationToken.None), session.ClickCaptureButtonAsync(CancellationToken.None));
         BrowserCaptureResult result;
         try { result = await completion.Task.WaitAsync(TimeSpan.FromSeconds(120)); }
-        catch (TimeoutException) { return new Scenario("double-click-single-file", false, ["测试侧等待超时，未取得生产结论。"]); }
+        catch (TimeoutException)
+        {
+            var final = await WidgetSnapshotAsync(session);
+            return new Scenario("double-click-single-file", false,
+                [$"测试侧等待超时，未取得生产结论；卡片={final}；命中={session.LastClickHitTarget}；就绪={session.LastClickReadiness}。"]);
+        }
         var files = Directory.EnumerateFiles(folder, "*.png").ToList();
         var details = new List<string>();
         if (result.State != "saved") details.Add($"状态 {result.State}：{result.Message}");
@@ -1013,11 +1058,17 @@ internal static class BrowserCaptureE2E
         // production completion is published, otherwise an immediate retry's binding can be
         // delivered into the still-held gate and swallowed while the card stays capturing.
         var (refused, gateHeldAtRefusal) = await ClickAndAwaitContractAsync(session, TimeSpan.FromSeconds(120));
+        var refusalReadiness = session.LastCompletionReadiness;
         if (gateHeldAtRefusal) details.Add("视口失败完成事件发布时截图锁仍被持有，快速重试可能被忙拒绝吞掉。");
         if (refused.State != "error") details.Add($"视口读取失败时未拒绝保存：{refused.State}：{refused.Message}");
         else if (!refused.Message.Contains("视口", StringComparison.Ordinal)) details.Add($"拒绝结论未说明视口读取失败：{refused.Message}");
         if (refused.FilePath is not null && File.Exists(refused.FilePath)) details.Add("视口读取失败时仍返回了截图文件。");
         if (Directory.EnumerateFiles(folder, "*.png").Any()) details.Add("视口读取失败时目录内仍出现 PNG。");
+        // The refusal is a saved-file verdict; the completion-publish readiness is asserted
+        // separately so a card that was not yet interactive is reported honestly without
+        // pretending the refusal itself was wrong.
+        if (!IsReadySnapshot(refusalReadiness))
+            details.Add($"视口失败完成事件发布时卡片未就绪（独立于拒绝结论）：{refusalReadiness}");
         // Injection exhausted: the same session must recover through the real mouse path and
         // save a complete capture. A small immediate-retry loop then re-clicks as soon as each
         // capture completes, which is exactly the ordering the fix must keep safe; a retry that
@@ -1027,11 +1078,17 @@ internal static class BrowserCaptureE2E
         else
         {
             var (recovered, gateHeldAtRecovery) = await ClickAndAwaitContractAsync(session, TimeSpan.FromSeconds(120));
+            var recoveryReadiness = session.LastCompletionReadiness;
             if (gateHeldAtRecovery) details.Add("注入结束恢复完成事件发布时截图锁仍被持有。");
             if (recovered.State != "saved") details.Add($"注入结束后未恢复保存：{recovered.State}：{recovered.Message}");
             else if (recovered.FilePath is null || !File.Exists(recovered.FilePath)) details.Add("注入结束后未生成截图。");
             else
             {
+                // The saved-file fact is asserted above and must never be re-judged by the
+                // recovery UX; a card that is not yet interactive at completion-publish time is
+                // its own, separately reported signal.
+                if (!IsReadySnapshot(recoveryReadiness))
+                    details.Add($"恢复保存完成，但完成事件发布时卡片未就绪（独立于保存结论）：{recoveryReadiness}");
                 using var image = new Bitmap(recovered.FilePath);
                 if (AssertOopifFrameComplete(image, "视口失败恢复 OOPIF", details))
                 {
@@ -1043,13 +1100,15 @@ internal static class BrowserCaptureE2E
             {
                 if (!await session.CanCaptureAsync(CancellationToken.None)) { details.Add($"快速重试第 {retry} 次前卡片按钮不可点击。"); break; }
                 var (again, gateHeldAtRetry) = await ClickAndAwaitContractAsync(session, TimeSpan.FromSeconds(120));
+                var retryReadiness = session.LastCompletionReadiness;
                 if (gateHeldAtRetry) { details.Add($"快速重试第 {retry} 次完成事件发布时截图锁仍被持有。"); break; }
                 if (again.State != "saved")
                 {
-                    var widget = await WidgetDiagnosticAsync(session);
-                    details.Add($"快速重试第 {retry} 次未保存：{again.State}：{again.Message}；{widget}");
+                    details.Add($"快速重试第 {retry} 次未保存：{again.State}：{again.Message}");
                     break;
                 }
+                if (!IsReadySnapshot(retryReadiness))
+                    details.Add($"快速重试第 {retry} 次保存完成，但完成事件发布时卡片未就绪（独立于保存结论）：{retryReadiness}");
                 if (again.FilePath is null || !File.Exists(again.FilePath)) { details.Add($"快速重试第 {retry} 次未生成截图。"); break; }
             }
         }

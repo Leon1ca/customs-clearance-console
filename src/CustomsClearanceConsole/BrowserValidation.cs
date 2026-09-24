@@ -56,6 +56,11 @@ internal sealed class BrowserValidation : IAsyncDisposable
     private int _captureGate;
     private int _navigationGeneration;
     private int _viewportReadFailures;
+    // Baseline viewports for the bounded render-readiness gate: the card click must wait for
+    // the capture's temporary viewport enlargement to be restored, and the production
+    // completion must not be published before that restore is observable in the page.
+    private (int Width, int Height, double Scale)? _clickBaselineViewport;
+    private (int Width, int Height, double Scale)? _captureBaselineViewport;
     private string? _shellScriptIdentifier;
     private string _mainFrameId = "";
     private string _currentUrl = "";
@@ -714,6 +719,28 @@ internal sealed class BrowserValidation : IAsyncDisposable
         }
         AppLog.Write($"网页截图结论：{result.State}。");
         await ReportAsync(result);
+        // Publish the retryable page state only after the card is interactively painted again.
+        // The capture hid the card and may have restored an enlarged viewport; a completion
+        // published before the card is painted could let a fast retry's real click be lost
+        // (a compositor/paint risk to verify, not a proven cause). The wait is bounded and
+        // best-effort: its outcome is recorded as a separate recovery signal and must never
+        // change the saved-file verdict or suppress the completion event.
+        LastCompletionReadiness = "";
+        try
+        {
+            using var ready = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+            ready.CancelAfter(TimeSpan.FromSeconds(3));
+            LastCompletionReadiness = await WaitForWidgetInteractiveAsync(TimeSpan.FromSeconds(2), _captureBaselineViewport, ready.Token);
+            if (!TryParseReadiness(LastCompletionReadiness, out var completionReadiness)
+                || !completionReadiness.Ready || !completionReadiness.ExactButtonHit
+                || !completionReadiness.Enabled || !completionReadiness.Visible)
+                AppLog.Write($"截图完成发布前卡片未恢复可交互（独立于保存结论，不改变 {result.State}）：{Shorten(LastCompletionReadiness)}");
+        }
+        catch (Exception ex)
+        {
+            LastCompletionReadiness = "就绪探测失败:" + ex.Message;
+            AppLog.Write($"等待卡片恢复可交互失败（独立于保存结论，不改变 {result.State}）：{ex.Message}");
+        }
         CaptureCompleted?.Invoke(this, result);
     }
 
@@ -737,6 +764,10 @@ internal sealed class BrowserValidation : IAsyncDisposable
             return new BrowserCaptureResult(SessionId, DeclarationNo, "error", null, "当前页面不是核验目标页，未保存截图。");
 
         var generation = Volatile.Read(ref _navigationGeneration);
+        // The readiness published with this capture's completion must target the viewport
+        // observed before this capture enlarged it; a stale value from a previous capture
+        // could make the completion wait for the wrong size.
+        _captureBaselineViewport = null;
 
         var identity = await ProbeIdentityAsync(token);
         if (identity.StartsWith("mismatch|", StringComparison.Ordinal))
@@ -813,6 +844,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
             if (capturedOopif.Count > 0 && viewport is null)
                 return new BrowserCaptureResult(SessionId, DeclarationNo, "error", null,
                     "无法读取浏览器实际视口尺寸，为避免保存空白跨进程框架截图，已拒绝本次截图。");
+            _captureBaselineViewport = viewport;
             var viewportWidth = 0;
             var viewportHeight = 0;
             var viewportScale = 1.0;
@@ -1487,10 +1519,36 @@ internal sealed class BrowserValidation : IAsyncDisposable
     public async Task<bool> ClickCaptureButtonAsync(CancellationToken token)
     {
         var cdp = _cdp ?? throw new InvalidOperationException("浏览器控制连接已断开。");
+        LastClickFailure = "";
+        LastClickExactHit = "";
+        // The card is hidden and shown around every capture. A CDP click dispatched before the
+        // card is painted again can be lost (a compositor/paint risk to verify, not a proven
+        // cause), so the single click is gated on a bounded render-readiness condition instead
+        // of a blind sleep or an automatic second click. The first ready probe fixes the
+        // baseline viewport every later click must see restored.
+        try
+        {
+            LastClickReadiness = await WaitForWidgetInteractiveAsync(TimeSpan.FromSeconds(3), _clickBaselineViewport, token);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            LastClickReadiness = "就绪探测失败:" + ex.Message;
+        }
+        if (!TryParseReadiness(LastClickReadiness, out var readiness))
+            return FailClick($"无法解析卡片就绪诊断：{Shorten(LastClickReadiness)}");
+        // Dispatch nothing unless the snapshot is a valid ready=true that also proves the button
+        // itself (not just the host card) is enabled, visible and exactly under the point. A
+        // readiness timeout or a not-ready/exact-miss snapshot returns false with the
+        // diagnostic instead of sending a mouse event the page cannot deliver.
+        if (!readiness.Ready || !readiness.ExactButtonHit || !readiness.Enabled || !readiness.Visible)
+            return FailClick($"卡片未就绪，未发送真实点击：{Shorten(LastClickReadiness)}");
+        if (_clickBaselineViewport is null && readiness.Viewport is { } baseline)
+            _clickBaselineViewport = baseline;
         var rectJson = await EvaluateContextAsync(
             "JSON.stringify((window.__cccWidget && window.__cccWidget.captureButtonRect && window.__cccWidget.captureButtonRect()) || null)",
             null, token, awaitPromise: false);
-        if (string.IsNullOrWhiteSpace(rectJson) || rectJson.TrimStart().StartsWith("null", StringComparison.OrdinalIgnoreCase)) return false;
+        if (string.IsNullOrWhiteSpace(rectJson) || rectJson.TrimStart().StartsWith("null", StringComparison.OrdinalIgnoreCase))
+            return FailClick("未找到可见的卡片按钮矩形。");
         double x, y;
         try
         {
@@ -1499,17 +1557,33 @@ internal sealed class BrowserValidation : IAsyncDisposable
             x = root.GetProperty("x").GetDouble() + root.GetProperty("width").GetDouble() / 2;
             y = root.GetProperty("y").GetDouble() + root.GetProperty("height").GetDouble() / 2;
         }
-        catch (Exception ex) { AppLog.Write($"读取卡片按钮位置失败：{ex.Message}"); return false; }
-        // Confirm the point hits the card host before the trusted click.
+        catch (Exception ex) { return FailClick($"读取卡片按钮位置失败：{ex.Message}"); }
         var point = string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{x},{y}");
-        LastClickHitTarget = await EvaluateContextAsync(
-            $"(() => {{ const el = document.elementFromPoint({point}); return el && (el.id === 'ccc-widget-host' || (el.closest && el.closest('#ccc-widget-host'))) ? 'host' : (el ? el.tagName : 'none'); }})()",
+        // Re-check the exact point once more after taking the rect and immediately before the
+        // trusted mouse input: a readiness snapshot that has gone stale must not authorise a
+        // changed/hidden point. The closed-shadow hit is the exact evidence; top host is kept.
+        LastClickExactHit = await EvaluateContextAsync(
+            $"JSON.stringify((window.__cccWidget && window.__cccWidget.hitTest && window.__cccWidget.hitTest({point})) || null)",
             null, token, awaitPromise: false);
+        if (!TryParseExactButtonHit(LastClickExactHit, out var exactButtonHit, out var topIsHost))
+            return FailClick($"无法解析发送前精确命中复核：{Shorten(LastClickExactHit)}");
+        LastClickHitTarget = topIsHost ? "host" : "none";
+        if (!exactButtonHit || !topIsHost)
+            return FailClick($"发送前精确命中复核失败（exact={exactButtonHit},host={topIsHost}）：{Shorten(LastClickExactHit)}");
         await cdp.SendAsync("Input.dispatchMouseEvent", new { type = "mouseMoved", x, y, button = "none", clickCount = 0 }, token);
         await cdp.SendAsync("Input.dispatchMouseEvent", new { type = "mousePressed", x, y, button = "left", clickCount = 1 }, token);
         await cdp.SendAsync("Input.dispatchMouseEvent", new { type = "mouseReleased", x, y, button = "left", clickCount = 1 }, token);
         return true;
     }
+
+    private bool FailClick(string reason)
+    {
+        LastClickFailure = reason;
+        AppLog.Write($"真实点击未执行：{reason}");
+        return false;
+    }
+
+    private static string Shorten(string value) => value.Length > 400 ? value[..400] : value;
 
     /// <summary>Navigates the page (E2E helper for leave/return and reload flows).</summary>
     public async Task NavigateAsync(string url, CancellationToken token)
@@ -1586,18 +1660,106 @@ internal sealed class BrowserValidation : IAsyncDisposable
     /// </summary>
     public bool CaptureLockHeldForTest => Volatile.Read(ref _captureGate) != 0;
 
-    /// <summary>E2E signal that the card handled a real click and started a capture.</summary>
-    public Task<bool> IsCapturingAsync(CancellationToken token) =>
-        EvaluateBooleanAsync("!!(window.__cccWidget && window.__cccWidget.isCapturing)", token);
+    /// <summary>Render-readiness evidence captured immediately before the last real card click.</summary>
+    public string LastClickReadiness { get; private set; } = "";
+
+    /// <summary>Exact closed-shadow button hit evidence for the last real card click.</summary>
+    public string LastClickExactHit { get; private set; } = "";
+
+    /// <summary>Why the last real card click was not dispatched, or empty when it was.</summary>
+    public string LastClickFailure { get; private set; } = "";
 
     /// <summary>
-    /// E2E diagnostics for a timed-out capture click: whether the page still exposes the CDP
-    /// binding, what the card thinks its state is, and where the visible button is.
+    /// Render-readiness observed just before the last production completion event was published.
+    /// This is a separate recovery/UX signal: it never changes the saved-file verdict.
+    /// </summary>
+    public string LastCompletionReadiness { get; private set; } = "";
+
+    /// <summary>
+    /// E2E diagnostics for the card's input chain: binding availability, card state, exact
+    /// closed-shadow button rect, viewport/DPR and the closure's DOM-click and binding-call
+    /// counters. Every real-click/timeout branch records this so a lost click is localised
+    /// (harness hit-test, page handler or CDP binding) instead of guessed.
     /// </summary>
     public Task<string> DescribeWidgetForTestAsync(CancellationToken token) =>
         EvaluateRawAsync(
-            "JSON.stringify((function(){var w=window.__cccWidget;return {binding:typeof window.cccRequestCapture==='function',isCapturing:w?!!w.isCapturing:null,canCapture:w?!!w.canCapture():null,bbox:(w&&w.captureButtonRect)?w.captureButtonRect():null,hosts:document.querySelectorAll('#ccc-widget-host').length};})())",
+            "JSON.stringify((window.__cccWidget && window.__cccWidget.diagnostics) ? window.__cccWidget.diagnostics() : null)",
             token);
+
+    /// <summary>
+    /// Bounded render-readiness gate (never a blind sleep): resolves once the card is enabled
+    /// and visible with a rect stable for two animation frames and an exact closed-shadow button
+    /// hit; when <paramref name="expectedViewport"/> is given the temporarily enlarged capture
+    /// viewport must first be restored. Returns the JSON diagnostics snapshot.
+    /// </summary>
+    public Task<string> WaitForWidgetInteractiveAsync(TimeSpan timeout, (int Width, int Height, double Scale)? expectedViewport, CancellationToken token)
+    {
+        var milliseconds = (int)Math.Clamp(timeout.TotalMilliseconds, 0, 30_000);
+        var expected = expectedViewport is { } viewport
+            ? FormattableString.Invariant($"{{w:{viewport.Width},h:{viewport.Height},dpr:{viewport.Scale}}}")
+            : "null";
+        return EvaluateContextAsync(
+            $"window.__cccWidget && window.__cccWidget.whenInteractive ? window.__cccWidget.whenInteractive({milliseconds}, {expected}).then(function(r){{ return JSON.stringify(r); }}) : Promise.resolve('')",
+            null, token, awaitPromise: true);
+    }
+
+    /// <summary>
+    /// The decision fields parsed out of a whenInteractive diagnostics snapshot. Parsing is
+    /// strict: a snapshot that is missing ready/hit/enabled/visible is not accepted as ready.
+    /// </summary>
+    private sealed record ClickReadinessSnapshot(
+        bool Ready, string Reason, bool ExactButtonHit, bool Enabled, bool Visible,
+        (int Width, int Height, double Scale)? Viewport);
+
+    private static bool TryParseReadiness(string? json, out ClickReadinessSnapshot snapshot)
+    {
+        snapshot = new ClickReadinessSnapshot(false, "", false, false, false, null);
+        if (string.IsNullOrWhiteSpace(json)) return false;
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return false;
+            var ready = root.TryGetProperty("ready", out var r) && r.ValueKind == JsonValueKind.True;
+            var reason = root.TryGetProperty("reason", out var rs) && rs.ValueKind == JsonValueKind.String ? rs.GetString() ?? "" : "";
+            var enabled = root.TryGetProperty("enabled", out var en) && en.ValueKind == JsonValueKind.True;
+            var visible = root.TryGetProperty("visible", out var vi) && vi.ValueKind == JsonValueKind.True;
+            var exact = root.TryGetProperty("hit", out var hit) && hit.ValueKind == JsonValueKind.Object
+                && hit.TryGetProperty("exactButtonHit", out var eb) && eb.ValueKind == JsonValueKind.True;
+            (int Width, int Height, double Scale)? viewport = null;
+            if (root.TryGetProperty("viewport", out var v) && v.ValueKind == JsonValueKind.Object &&
+                v.TryGetProperty("w", out var w) && w.ValueKind == JsonValueKind.Number &&
+                v.TryGetProperty("h", out var h) && h.ValueKind == JsonValueKind.Number &&
+                v.TryGetProperty("dpr", out var dpr) && dpr.ValueKind == JsonValueKind.Number)
+            {
+                var width = w.GetInt32();
+                var height = h.GetInt32();
+                var scale = dpr.GetDouble();
+                if (width > 0 && height > 0 && scale > 0) viewport = (width, height, scale);
+            }
+            snapshot = new ClickReadinessSnapshot(ready, reason, exact, enabled, visible, viewport);
+            return true;
+        }
+        catch (JsonException) { return false; }
+    }
+
+    /// <summary>Parses the exact closed-shadow button hit evidence returned by widget.hitTest.</summary>
+    private static bool TryParseExactButtonHit(string? json, out bool exactButtonHit, out bool topIsHost)
+    {
+        exactButtonHit = false;
+        topIsHost = false;
+        if (string.IsNullOrWhiteSpace(json)) return false;
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return false;
+            exactButtonHit = root.TryGetProperty("exactButtonHit", out var e) && e.ValueKind == JsonValueKind.True;
+            topIsHost = root.TryGetProperty("topIsHost", out var t) && t.ValueKind == JsonValueKind.True;
+            return true;
+        }
+        catch (JsonException) { return false; }
+    }
 
     public Task<int> CountWidgetHostsAsync(CancellationToken token) =>
         EvaluateIntAsync("document.querySelectorAll('#ccc-widget-host').length", token);

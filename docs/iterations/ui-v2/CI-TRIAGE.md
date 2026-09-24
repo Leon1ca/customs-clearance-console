@@ -182,6 +182,31 @@ ExpandFramesAsync只在owner需要GrowFrameFunction、`expanded.Add(frameId)`之
 
 该图证不覆盖原本足够高无需增长的OOPIF、viewport读取失败路径及导航场景自动尾部断言；这些已交DeepSeek补修，最终仍须对修复后的同一SHA产物终验。
 
+## 重复运行35969514354：完成通知与gate释放存在明确竞态
+
+独立读取GitHub日志：浏览器29/30，唯一失败oopif-viewport-read-failure，注入结束后第二次重试返回harness等待超时（120秒未收到生产结论）。独立git diff确认a2ddbb2到57134d0仅IMPLEMENTATION文档变化，不能因前轮30/30忽略本次失败。FINAL已暂缓，首轮成功事实与图证保留。
+
+定点路径（固定a2ddbb2，产品代码与57134d0相同）：
+
+1. BrowserValidation.cs:646用CompareExchange获取_captureGate；忙时直接return，无响应。
+2. CaptureAndReportAsync:691先ReportAsync(result)，widget.js:119–123会把终态按钮变为可点击；692发布CaptureCompleted。
+3. _captureGate要到外层Task.Run:650的finally才归零。CaptureCompleted的订阅者可在此之前运行；测试TCS虽使用RunContinuationsAsynchronously，但不保证其另一个线程晚于finally执行。
+4. 快速重试时，widget.js:143–147先设capturing/disabled，再调用binding。若binding在旧gate仍为1时送达，会被646丢弃，没有新的生产任务、完成事件或按钮恢复，符合本次“120秒无生产结论”的现象。
+
+这是源码中确定存在的时序窗口，不等同于已经从当前日志排他证明本次失败只由它导致；应在处理时记录请求到达/接受/忙拒绝及gate释放，确认具体失败序列。
+
+最小修复：完成捕获及恢复后，在对网页发布可重试终态和对外发布完成事件之前，保证该请求持有的gate已经由唯一owner释放。不要只在原函数提前清零而仍保留外层finally无条件二次清零，否则可能把下一已接受请求的gate清掉。保留双击防重复语义，并以完成后立即重试的定点回归验证；测试侧增加固定sleep不能代替修正生产状态顺序。ClickAndAwaitAsync的事件订阅也应在结束时解除，避免连续重试积累旧处理器，但它本身不是此处无事件的已证实根因。
+
+## 2426e1 竞态修复定点源码复核
+
+固定`2426e1239854031b762bea38477311fca871fab8`，只审截图gate及完成/重试相关差异，未运行本机产品/测试。**已报告竞态源码路径闭环，无新定点阻断，运行待run35971352756。**
+
+CaptureAndReportAsync在CaptureWithRetry返回/异常、以及CaptureCore的页面恢复finally全部完成后，由自身唯一finally释放gate，再调用ReportAsync及CaptureCompleted。外层Task.Run不再释放gate；全文引用检查只有一个Interlocked.Exchange清零位置，避免旧任务晚到finally清掉新请求的锁。忙请求只记录日志，不夺取或释放其他任务的锁。
+
+测试通过真实CDP点击，完成事件同步处理器读取gate状态，可确定性识别旧版本“通知时仍持锁”条件，不靠sleep规避。视口失败用例检查拒绝时gate释放、无PNG、同会话恢复成功及接续两次快速重试，最终恰好3张成功PNG；所有等待用例finally解除事件处理器。正常重复截图用例也检查该完成契约。新增日志可核对接受→释放→结论顺序。
+
+FINAL保持暂缓至同提交云端及重复验证完成；a2首轮30/30不冒充本修复提交运行证据。
+
 ## 07851ef P2 修复实现记录（不改上节独立结论）
 
 上节为独立复核结论，保持原文；本节只记录针对该 P2 的实现响应，最终是否闭环以同一 SHA 云端运行和独立终验为准。
@@ -196,3 +221,27 @@ ExpandFramesAsync只在owner需要GrowFrameFunction、`expanded.Add(frameId)`之
 对固定提交 `07851ef` 的云端运行 [35963761182](https://github.com/Leon1ca/customs-clearance-console/actions/runs/35963761182) 复核发现：核心/构建/UI 契约/字体/导出/快照/打包/ZIP/根启动器 smoke 的原始 outcome 均为 `success`，但浏览器 E2E 原始 outcome 为 `failure`（被 `continue-on-error` 掩盖），门禁如实报 `browser=failure`；浏览器 26/27，唯一失败为 `cross-site-oopif-frame`：`查询结果未就绪：waiting|not-started`。
 
 其帧诊断显示 OOPIF 上下文 `session=<子会话>;authorized=False;url=`（URL 为空），而 `monitor=True`。根因是 `BrowserValidation.OnAttachedToTarget` 未登记子 target 的 URL：OOPIF 的 `Page.frameNavigated` 在子会话启用 Page 之前触发会丢失，`Page.getFrameTree` 初始种子又可能早于 iframe 建立，于是该 frame 永远没有 URL、永远不通过 `IsAuthorizedFrameId`，身份探针从不进入该 frame。实现响应：attach 时登记 `targetInfo.url`，并在子会话 `Page.enable` 后查询一次 `Page.getFrameTree` 回填真实 URL（导航仍未提交时由随后到达的 `frameNavigated` 覆盖）。这只让真实 OOPIF URL 参与既有授权判定，不放宽授权规则；`cross-origin-frame`、身份/结果核验与像素断言均保留。
+
+
+## 2426e1 失败产物定位：快速重试 2 未进入可见生产请求链
+
+证据为 `/Users/leon1ca/Documents/Codex/2026-09-24/evidence-2426e12`，对应 run35971352756、固定2426e1239854031b762bea38477311fca871fab8。浏览器29/30，唯一失败仍是 `oopif-viewport-read-failure`，具体为快速重试第2次等待120秒无生产结论；没有完成事件持锁契约失败。本次只读日志、固定源码及目录，没有本机执行产品。
+
+`browser/app.log` 112–129行给出连续序列：07:50:26接受首次请求；07:50:27注入三次视口读取失败、释放锁、error；07:50:27接受恢复请求，07:50:29释放锁、saved；07:50:29接受快速重试1，07:50:30释放锁、saved。之后直到07:52:42下一场景才有新接受日志（frame IDs已更换）。120秒缺口中没有新请求接受、忙拒绝、异常或生产结论；全日志无忙拒绝记录。失败目录恰好两张PNG，对应恢复与快速重试1，快速重试2没有文件。
+
+**确定结论：** 已修gate顺序确实运行，当前失败没有“已接受后捕获卡死”的证据，也没有“持锁忙拒绝”的证据；应优先沿真正点击到绑定送达前的链路定位。不能继续把旧gate窗口当成本次失败的排他根因。
+
+**现有点击证据不足以归因：** 固定源码BrowserValidation.cs的ClickCaptureButtonAsync读取一次按钮矩形，并读取LastClickHitTarget，但不据此拒绝错误命中；随后发送三条CDP鼠标指令即返回true。BrowserCaptureE2E.cs:130–148只等完成事件，超时未保存LastClickHitTarget、实际DOM click/binding次数或点击前后viewport/矩形。CanCapture检查按钮可用与有矩形，不能证明鼠标命中按钮。故本轮可确定CDP调用返回，不能确定DOM点击处理器执行，也不能证明Emulation恢复/合成层时序就是原因。
+
+建议下一轮只为这条已有失败路径补精确诊断：每次真实点击记录坐标、按钮矩形/disabled、window.innerWidth/innerHeight/DPR、host及shadow内实际命中、DOM鼠标/click与binding发出计数，并在超时保留这些值和截图。视口恢复后若需要等待布局可点击，应以已恢复尺寸和稳定命中证据为条件；不要用固定长sleep或改成直接调用requestCapture掩盖失败。最终通过仍待同产品SHA云端重试可靠性复验。
+
+
+## 2336f69 诊断轮：首次恢复点击即超时，host命中尚不足以归因
+
+主路由提供的云端结果：固定产品checkpoint `2336f69`，run [35972919550](https://github.com/Leon1ca/customs-clearance-console/actions/runs/35972919550) 仍为浏览器29/30，唯一失败仍是 `oopif-viewport-read-failure`。本次失败提前到首次注入error后的recovered点击，尚未进入2426那轮的快速重试2；日志记录“点击命中：host”。该recovered分支未补WidgetDiagnostic，因此更细按钮/事件状态尚无证据。本节准确记录主路由已取得的运行结果，独立子路由尚未取得并重读本轮完整产物，不冒充独立日志复核。最终结论继续暂缓。
+
+host命中仅证明卡片容器，不能证明closed shadow内capture按钮命中、实际DOM click发生或binding发出。iframe展开/恢复及widget隐藏/恢复后，Runtime.evaluate和CDP输入返回也不足以证明合成层命中已经更新；这是待验证的定位假说，不是已证实根因。
+
+下一轮已交实现者的有界诊断方向：所有点击和超时分支（包括initial recovery）统一取证；在widget自身可访问closed shadow的范围内验证精确按钮命中，记录DOM click和binding计数；点击前最多有限帧/短截止时间等待viewport恢复、按钮可用、矩形连续帧稳定，然后只发一次真实mouse move/down/up。超时保留前后坐标/矩形、viewport/DPR、disabled/状态、命中与计数、现场画面。保留完成事件内gate已释放契约。不得以固定sleep、盲重试或直接调用内部requestCapture刷绿。
+
+有界渲染准备可以消除harness点击尚未呈现按钮的歧义，但rAF与DOM命中仍不是合成层提交的独立证明；若产品显示可点击却实际丢失用户点击，仍需修产品完成/渲染时序，不能单靠推迟测试宣告闭环。等待新固定产品提交与对应云端证据，不扩大源码审查。

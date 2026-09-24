@@ -1,38 +1,66 @@
-# 最终验收记录（待云端产物）
+# UI v2 独立验收：暂缓（重试仍有云端失败，待定位复验）
 
-当前固定源码基线：`a9cf172fef08b939396db2961accbfd5847f55b5`。前轮对 `6ef38baaa88c1aa31357cb5c77762ed23efe069f` 的既有 R4/R5/R6 结论沿用；本次只用 git show/diff 核对保留的 R5-2 修复及相关差异。不读取移动产品工作区，不在本机运行产品、编译或测试。尚未收到当前提交的最终云端产物，以下是源码结论，不能表述为最终验收通过。
+> 用户已于 2026-09-24 要求停止并移交其他 AI。当前上传包含未验证补丁，完整接手说明见 [HANDOFF-NEXT-AI.md](HANDOFF-NEXT-AI.md)。本报告保持暂缓，不批准当前快照发布。
 
-## R5-2 补修源码结论：已关闭所报阻断
+日期：2026-09-24。独立验收子路由，产品实现由DeepSeek执行。**暂缓最终通过结论。** a2ddbb2首轮run35968581532全绿及下列图证通过事实保留；但仅文档变化的57134d0触发重复run35969514354后，浏览器29/30，oopif-viewport-read-failure第二次重试等待120秒仍无生产完成事件。独立读取日志与git差异确认这些事实，不能忽略重复失败、只选择首轮绿色结论。
 
-前轮保留的问题是：prepare 脚本吞掉滚动容器的局部错误，仍返回 prepared，C# 因而可能保存未完整展开的截图。
+定点源码发现CaptureAndReportAsync先ReportAsync启用按钮、再发布CaptureCompleted，外层Task.Run finally随后才释放_captureGate；此间新的重试绑定会被gate直接丢弃，而网页已进入capturing状态，存在明确竞态，实际本次失败是否完全由该竞态引起仍待日志/修复验证。问题详见CI-TRIAGE.md相关复核章节；最终应等待生产时序修复及相同新SHA的重复验证，当前报告不作为最终交付批准。
 
-本提交 `BrowserScripts/capture-prepare.js` 保持修改前发布恢复账本，并将滚动容器扫描、样式读取/写入和 iframe 非预期错误加入 failures；存在错误时在返回 prepared 之前抛出 `prepare-failed`。跨源 DOM 不可访问的预期分支继续交给 CDP。
+最新定点源码基线为`2426e1239854031b762bea38477311fca871fab8`：CaptureWithRetry及其页面恢复结束后，由CaptureAndReportAsync唯一finally释放gate，再ReportAsync/发布完成事件；旧Task.Run的二次释放已删除。源码中仅保留一个gate释放位置。真实点击测试新增同步完成事件内检查gate已释放、失败后同会话立即恢复及连续两次重试，并要求恰好3张成功PNG；事件处理器finally解除。已报告竞态的源码路径闭环，无新的定点源码阻断，但最终通过仍待当前提交运行及重复证据。下列a2ddbb2证据保留为上一轮事实，不作为2426e1的运行结果。
 
-实际调用路径已核对：`BrowserValidation.cs:870–900` 在发送前登记恢复目标；`1324–1328` 将 exceptionDetails 转成异常；`709–716` 返回准备错误并阻止截图保存；`773–780` 的 finally 用独立令牌调用恢复脚本。恢复脚本按账本写回 height/max-height/overflow-y 的值与优先级、容器滚动位置及卡片状态。所报“局部准备失败仍 saved”的源码阻断已关闭。
+最新run35971352756仍为浏览器29/30，唯一失败为同场景“快速重试第2次”120秒无生产结论。独立读取evidence-2426e12/app.log对应browser日志：注入拒绝、恢复保存、快速重试1保存均先释放锁再发布结论；之后超时期间既无新接受请求也无忙拒绝，目录仅两张成功PNG。完成事件持锁断言未失败，因此已修gate窗口不是当前已证实根因。现有点击证据只证明CDP鼠标调用返回，未记录实际DOM点击/绑定送达和当时viewport，恢复后输入命中时序仍属待归因，不能作为事实。最终验收继续暂缓，详见CI-TRIAGE中2426失败产物章节。
 
-新增 `RunPrepareFailureRestoresAsync` 使用页面中的一次性样式写入异常：反向遍历先展开正常容器，再在坏容器失败；经真实卡片点击检查准备错误、无 PNG、已改样式与 scrollTop=300 恢复、账本清理及再次点击保存。该用例路径与所报缺陷相符，运行通过与否仍待云端证据，不能以测试代码存在替代结果。
+后续2336f69诊断轮run35972919550据主路由取得的结果仍为29/30；同一场景这次在首次error后的恢复点击即超时，记录host命中，但该分支缺更细WidgetDiagnostic。host不证明shadow按钮点击或binding已发出，具体原因仍未证实。此项作为新增未解决运行证据保留，独立子路由尚未重读该轮完整产物；待统一真实点击诊断和新提交复验，最终仍暂缓。
 
-## 既有问题的源码关闭状态
+真实生产验证码、高DPI和Windows 10仍属于下文明确列出的未验证边界，不能表述为已测通过。下文“最终证据/已报告问题关闭”指本次重复失败出现前的首轮核对结果，不覆盖新增的重试竞态。
 
-| 既有问题 | 定点源码结论 |
+- 固定产品提交：`a2ddbb2736aa06275c905a0b8e614102ebf33cb4`。
+- 云端运行：[35968581532](https://github.com/Leon1ca/customs-clearance-console/actions/runs/35968581532)。独立读取GitHub运行元数据，确认headSha相同，两个job及所有必需步骤为success，最终Enforce validation gate为success。
+- 实际产物：`/Users/leon1ca/Documents/Codex/2026-09-24/evidence-a2ddbb2`。
+- 方法：固定源码定点复核、读取云端日志/JSON、查看实际PNG、静态读取XLSX包XML和Markdown。本机未执行产品、编译或测试。
+
+## 最终证据
+
+| 范围 | 独立核对结果 |
 | --- | --- |
-| R4-1 按钮文字丢失 | 已修：Theme 工厂传递 text，Style 设置 Text 与 AccessibleName |
-| R4-2 工具栏/页脚高度溢出 | 已修原根因：嵌套单行 TableLayoutPanel 显式 Percent 行，SearchField 垂直内边距调整；实际可见文字待同提交抓屏 |
-| R4-3 KPI 重叠/待识别文件数错误 | 已修原根因：RequiredHeight 与实际绘制矩形一致，摘要高度取 KPI 下限；BatchTotalForDisplay 区分载入/处理中/完成 |
-| R4-4 标题状态未接线 | 已修：UpdateSummary 调用 UpdateTitleBlock，再调用 TitleBlock.Set |
-| R4-5 假四档截图尺寸覆盖 | 已修断言路径：Show 后无条件设 ClientSize，核对实际像素；加入实际屏幕抓图、屏幕尺寸报告与桌面准备。是否真正取得合格尺寸须等产物，不能凭源码关闭运行证据 |
-| R4-6 Excel 小数量显示为零 | 已修原格式：数量/单价使用28位可选小数格式，并回读格式检查精度；等待实际 xlsx |
-| R5-1 顶层 waiting 阻断 iframe | 已修原提前退出：VerifyStableAsync 不再把 waiting 列为终止标记，继续查授权子frame |
-| R5-2 prepare失败及恢复 | a9cf172 已补错误收集并抛出，连接至拒绝保存与finally恢复；所报源码阻断已关闭，新增失败注入E2E待运行结果 |
-| R5-3 iframe max-height截断及important丢失 | 已修原根因：保存并恢复height/max-height值与priority，写后等待并回读元素/内部viewport和content验证 |
-| R5-4 框架授权/未知context放行 | 已修原主要执行路径：未知context拒绝；自动填写、身份读取、prepare/expand使用授权frame集合；官方swapp查询frame已加入。跨源和OOPIF实际结果待云端 |
-| R5-5 HEADSET/RESET误作SET单位 | 已修该明确反例：取消任意substring，要求完整单位或严格数值前缀，数量附近的直接相邻证据 |
-| R5-6 同源补值假一致 | 已修所报合并路径：持久化BackfilledFields并排除完整复核；仅复核金额使用AmountOnlyFromSecondary，标为未复核 |
-| 旧明细精确值/汇总滚动 | 保留已有修复：画面/tooltip用Exact；滚动文字矩形明确加offset |
-| R6 官方DOM缺失 | 已加入共用ResultSelectors，覆盖queryDetail/content-field/field-order，并加入官网错误文案；官方DOM iframe受控用例已加入，尚待实际运行结果 |
+| 构建/核心 | 主程序构建及原生UI契约成功；日志为CORE_REGRESSION_OK: 69 checks |
+| 浏览器 | browser-e2e.json为Pass=true，30/30场景通过；实际云端日志一致 |
+| 根启动器 | 干净ZIP解压后的契约自检、环境/字体报告均退出码0；云端ZIP内容检查与打包成功 |
+| UI | 状态清单含28个条目，四档1200×720/1280×800/1440×900/1920×1080，实际DPI96；最终关键真实screen复核通过 |
+| 导出 | 云端回读通过，61条列表记录、60条明细、3币种，无Issues；静态独立检查相符 |
+| 字体 | Noto Sans SC Regular/Bold/Medium与JetBrains Mono Regular/Medium实际加载，静态字重检查通过；版本1.5.0.0 |
 
-OOPIF 已增加 Target 自动附加、sessionId 命令路由、按session/context维护注册表，解决上一轮“根本没有子target路径”的实现缺失。新增跨站fixture并不能单独作为运行成功证据，本轮不扩大到新的边缘场景；待同一SHA云端报告确认该路径确实运行。
+便携包的云端结构检查和两项根启动器运行证据已核对。下载文件的最终SHA256及本地ZIP逐项复核由主路由另行记录，本子路由不声称已执行其尚在进行的包核对。environment.json在普通构建输出目录探测到rootLicense/thirdPartyNotices=false不等同于正式ZIP缺许可，正式包须使用独立打包证据判断。
 
-## 待补最终证据
+## 实际图片
 
-等待最终固定SHA的云端构建/核心/原生UI/导出/浏览器E2E和便携包结果，再静态打开其PNG/XLSX/MD与环境清单复验。此处尚不批准交付。真实生产验证码/结果、真实125/150/200%显示器缩放未在本轮完成，后续报告应保持已验证与未验证的区别，不用自动环境测试替代。
+最终查看complete/ready/unloaded的1200×720真实screen图：未载入引导及目录按钮、已载入10个文件说明、完整v1.5.0及分隔线、完整#表头均可见，先前三项真实窗口问题关闭。筛选/搜索/分页、统计数、逐币种金额、明细/核验入口保持可读。最终冲突明细图保留主4800/复核4750，只合计可靠7680并明确第二项未计入；未恢复成同源数据无条件“一致”。此前已审四档主要布局、设置/清理/菜单结论沿用。
+
+最终逐张查看以下OOPIF产物：
+
+- browser/capture-oopif-frame.png：需展开owner。
+- browser/capture-oopif-preexpanded.png：原本1600px高、无需增长owner。
+- browser/child-session-navigation/310120260000000025.png：子session导航后。
+- browser/oopif-viewport-read-failure/310120260000000029.png：读取失败后同会话重试。
+
+四图均呈现顶部蓝标、内部滚动洋红尾标、匹配会话单号的结果文本行、紫色frame底标和父页尾部，旧版大片白块消失。预展开场景在紫标之后的空白是1600px原owner中未使用空间，结果及全部标记完整，不能误判为旧版漏画。
+
+app.log实际记录三次viewport读取失败；对应场景通过。固定源码在第一次失败后检查error、无PNG、按钮可重试，随后才再次截图，因此最终目录图片是重试成功证据。普通、预展开、导航场景同时有前后真实innerWidth/innerHeight/DPR恢复断言并通过；样式基线无效会失败，不再跳过恢复检查。
+
+## 导出直接核对
+
+最终XLSX三表为62/61/4行（含标题），三表均无公式节点。18位前导零单号010120260000000001、合同000123及=SUM(A1:A2)为inlineStr；数量0.0004保持数值及精确格式。最终XLSX全部内部文件与此前已审633db49样例一致，只有ZIP容器字节不同，旧三位格式把小数显示为0的问题没有回归。
+
+最终Markdown与已审样例内容相同，含61个逐关单段落，保留完整信息、逐项字段、冲突主复核值、未确认排除和缺失明细提示。以上与云端回读报告相符；未在本机Excel应用内进行渲染测试。
+
+## 已报告问题关闭范围
+
+R4的文字/布局/统计/标题/真实尺寸/导出小数问题，R5的iframe结果读取/准备失败恢复/max-height及优先级/授权/解析串项/同源补值问题，以及R6受控官方DOM选择器问题，均完成此前定点源码审查及相关云端证据闭环。后续计时器释放阻塞、初始状态遮挡、版本遮挡、#继承边距、子session误改主页面、OOPIF候选遗漏与屏幕外白块、viewport不可读仍保存、样式证据假阳性也已修复并验证。逐轮细节保留在CI-TRIAGE.md，不以实现者勾选清单作为验收依据。
+
+## 未验证边界
+
+1. 云端是Windows Server 2025，实际显示缩放100%（96 DPI）。125/150/200%仅有缩放逻辑断言，未在真实对应显示器验证；Windows 10客户端也未实测，不作兼容认证。
+2. 官方查询DOM、跨源iframe、OOPIF自动验证使用受控合成网页。真实singlewindow网站的人工验证码、真实关单查询、生产结果展示及浏览器保存全流程尚未由真人完成，不能把受控DOM通过说成生产网站人工核验通过。未绕过验证码。
+3. 弹窗产物主要是WinForms渲染快照，关键主窗口有真实screen图；未把所有DrawToBitmap图片冒充实际桌面交互验证。
+
+建议交付时附便携包、该提交/运行链接、本报告及上述实机验收事项。之后若修改产品代码，应核对新提交的受影响证据，不沿用本报告批准不同产品SHA。后续仅文档提交不改变本报告绑定的产品构建与产物。
