@@ -140,12 +140,47 @@ internal static class BrowserCaptureE2E
         session.CaptureCompleted += handler;
         try
         {
-            if (!await session.ClickCaptureButtonAsync(CancellationToken.None))
-                return (Harness(session, "未找到可见的卡片按钮，未执行真实点击。"), gateHeld);
+            // A real CDP click dispatched right after the card's temporary hide/show can be
+            // lost before the compositor has the card back in its hit-test tree. Re-issue the
+            // real click until the page actually reports capturing (or the capture already
+            // finished); this is input-delivery robustness only. A click that registers but
+            // never completes still fails the wait below, so the gate race stays observable.
+            for (var attempt = 0; ; attempt++)
+            {
+                if (!await session.ClickCaptureButtonAsync(CancellationToken.None))
+                    return (Harness(session, "未找到可见的卡片按钮，未执行真实点击。"), gateHeld);
+                if (await WaitForClickRegistrationAsync(session, completion.Task, TimeSpan.FromSeconds(2), CancellationToken.None)) break;
+                if (attempt >= 2)
+                    return (Harness(session, $"连续 3 次真实点击后卡片未进入截取状态（点击命中：{session.LastClickHitTarget}）。"), gateHeld);
+            }
             try { return (await completion.Task.WaitAsync(timeout), gateHeld); }
-            catch (TimeoutException) { return (Harness(session, $"测试侧等待超时，未取得生产结论（点击命中：{session.LastClickHitTarget}）。"), gateHeld); }
+            catch (TimeoutException)
+            {
+                string diag;
+                try { diag = await session.DescribeWidgetForTestAsync(CancellationToken.None); }
+                catch (Exception ex) { diag = "探针失败:" + ex.Message; }
+                return (Harness(session, $"测试侧等待超时，未取得生产结论（点击命中：{session.LastClickHitTarget}；卡片={diag}）。"), gateHeld);
+            }
         }
         finally { session.CaptureCompleted -= handler; }
+    }
+
+    /// <summary>
+    /// True once the page handled the click (capturing flag) or the capture already completed.
+    /// Only a click that never reaches the page falls through to a bounded re-issue.
+    /// </summary>
+    private static async Task<bool> WaitForClickRegistrationAsync(BrowserValidation session, Task completion, TimeSpan timeout, CancellationToken token)
+    {
+        var started = DateTime.UtcNow;
+        while (DateTime.UtcNow - started < timeout)
+        {
+            token.ThrowIfCancellationRequested();
+            if (completion.IsCompleted) return true;
+            try { if (await session.IsCapturingAsync(token)) return true; }
+            catch (Exception ex) when (ex is not OperationCanceledException) { /* transient probe failure */ }
+            await Task.Delay(120, token);
+        }
+        return completion.IsCompleted;
     }
 
     /// <summary>Best-effort card/binding diagnostics for a failed fast retry; never throws.</summary>

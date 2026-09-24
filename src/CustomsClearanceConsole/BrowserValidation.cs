@@ -1586,6 +1586,10 @@ internal sealed class BrowserValidation : IAsyncDisposable
     /// </summary>
     public bool CaptureLockHeldForTest => Volatile.Read(ref _captureGate) != 0;
 
+    /// <summary>E2E signal that the card handled a real click and started a capture.</summary>
+    public Task<bool> IsCapturingAsync(CancellationToken token) =>
+        EvaluateBooleanAsync("!!(window.__cccWidget && window.__cccWidget.isCapturing)", token);
+
     /// <summary>
     /// E2E diagnostics for a timed-out capture click: whether the page still exposes the CDP
     /// binding, what the card thinks its state is, and where the visible button is.
