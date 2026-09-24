@@ -327,9 +327,7 @@ internal sealed class MoneySummaryPanel : RoundedPanel
 
     private void DrawEmptyState(Graphics graphics, Func<int, int> S, int top)
     {
-        using var stripePen = new Pen(UiTokens.Colors.EmptyStripe, S(1));
-        for (var y = top; y < Height - S(1); y += S(32))
-            graphics.DrawLine(stripePen, 1, y, Width - 2, y);
+        // Plain white body: no placeholder stripes behind the empty message.
         var icon = UiV2Icons.Load(Ui2.AmountEmpty, 24, DeviceDpi);
         using var titleFont = Theme.UiFont(13F, FontStyle.Bold);
         using var noteFont = Theme.UiFont(12F);
@@ -345,7 +343,18 @@ internal sealed class MoneySummaryPanel : RoundedPanel
         using (var white = new SolidBrush(Color.White)) graphics.FillRectangle(white, block);
         if (icon is not null)
         {
-            using (var iconBack = new SolidBrush(Theme.Canvas)) graphics.FillRectangle(iconBack, block.X, block.Y + S(6), S(40), S(40));
+            // Design icon block: 40x40, #F2F4F7 fill, 1px #E3E7ED border, rounded.
+            var iconBlock = new Rectangle(block.X, block.Y + S(6), S(40), S(40));
+            var smoothing = graphics.SmoothingMode;
+            graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            using (var path = Theme.RoundedPath(iconBlock, S(8)))
+            using (var iconBack = new SolidBrush(ColorTranslator.FromHtml("#F2F4F7")))
+            using (var iconBorder = new Pen(ColorTranslator.FromHtml("#E3E7ED")))
+            {
+                graphics.FillPath(iconBack, path);
+                graphics.DrawPath(iconBorder, path);
+            }
+            graphics.SmoothingMode = smoothing;
             graphics.DrawImage(icon, block.X + S(8), block.Y + S(14), icon.Width, icon.Height);
             icon.Dispose();
         }
@@ -381,6 +390,27 @@ internal sealed class FilterSegmented : Control
         Invalidate();
     }
 
+    /// <summary>
+    /// Width the segments need at the control's DPI (design: padding 3, items spaced 2). The
+    /// toolbar column is sized to this so the last segment ("需关注") no longer absorbs all the
+    /// leftover width and looks larger than the others.
+    /// </summary>
+    public int ContentWidth(int dpi)
+    {
+        int S(int px) => (int)Math.Round(px * dpi / 96F);
+        var scale = dpi / DpiLayout.SystemDpi;
+        using var labelFont = Theme.UiFont(13F * scale, FontStyle.Bold);
+        using var countFont = Theme.MonoFont(12F * scale);
+        var total = S(3) * 2;
+        for (var i = 0; i < _segments.Count; i++)
+        {
+            var labelWidth = TextRenderer.MeasureText(_segments[i].Name, labelFont, new Size(int.MaxValue, S(30)), TextFormatFlags.NoPadding).Width;
+            var countWidth = TextRenderer.MeasureText(_segments[i].Count.ToString(), countFont, new Size(int.MaxValue, S(30)), TextFormatFlags.NoPadding).Width;
+            total += labelWidth + countWidth + S(30) + (i > 0 ? S(2) : 0);
+        }
+        return total;
+    }
+
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
@@ -409,11 +439,9 @@ internal sealed class FilterSegmented : Control
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
         var dpi = DeviceDpi / 96F;
         int S(int px) => (int)Math.Round(px * dpi);
-        using (var background = Theme.RoundedPath(new RectangleF(0, 0, Width - 1, Height - 1), S(7)))
-        using (var brush = new SolidBrush(Theme.SegmentBg)) graphics.FillPath(brush, background);
+        graphics.Clear(Parent?.BackColor ?? Theme.Surface);
         _bounds.Clear();
         var pad = S(3);
-        var available = Width - pad * 2;
         var widths = new int[_segments.Count];
         using var labelFont = Theme.UiFont(13F, FontStyle.Bold);
         using var countFont = Theme.MonoFont(12F);
@@ -426,12 +454,16 @@ internal sealed class FilterSegmented : Control
             widths[i] = labelWidth + countWidth + S(30);
             total += widths[i];
         }
+        // The track wraps the segments exactly; every segment keeps its own width.
+        var trackWidth = Math.Min(Width, pad * 2 + total + S(2) * Math.Max(0, _segments.Count - 1));
+        using (var background = Theme.RoundedPath(new RectangleF(0, 0, trackWidth - 1, Height - 1), S(7)))
+        using (var brush = new SolidBrush(Theme.SegmentBg)) graphics.FillPath(brush, background);
         var x = pad;
         using var selectedFont = Theme.UiFont(13F, FontStyle.Bold);
         for (var i = 0; i < _segments.Count; i++)
         {
             var segment = _segments[i];
-            var width = i == _segments.Count - 1 ? Math.Max(widths[i], Width - pad - x) : widths[i];
+            var width = widths[i];
             var rect = new Rectangle(x, pad, width, Height - pad * 2);
             _bounds.Add(rect);
             if (segment.Selected || i == _hover)

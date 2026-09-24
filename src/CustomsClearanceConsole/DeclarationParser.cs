@@ -92,10 +92,8 @@ internal sealed partial class DeclarationParser
         record.Consignee = CleanValue(record.Consignee, "境外收货人");
         record.Consignee = NormalizeConsigneeIdentifiers(record.Consignee);
         record.ContractNo = NormalizeContractOcr(CleanValue(record.ContractNo, "合同协议号"));
-        record.DestinationCountry = FindCountryCandidate(first,
+        record.DestinationCountry = ResolveDestinationCountry(first,
             CleanValue(record.DestinationCountry, "运抵国（地区）", "运抵国(地区)", "运抵国"));
-        record.DestinationCountry = Regex.Replace(record.DestinationCountry, @"\([A-Z]{3}\)|（[A-Z]{3}）|(?<!\d)\d(?!\d)", "", RegexOptions.IgnoreCase);
-        record.DestinationCountry = Regex.Replace(record.DestinationCountry, @"\s+", " ").Trim();
         record.Confidence = CalculateConfidence(record, document.UsedOcr);
 
         var missing = new List<string>();
@@ -762,26 +760,70 @@ internal sealed partial class DeclarationParser
         return candidates.FirstOrDefault() ?? "";
     }
 
-    private static string FindCountryCandidate(TextPage page, string current)
-    {
-        string[] knownCountries = ["印度尼西亚", "哈萨克斯坦", "澳大利亚", "新加坡", "加拿大", "意大利", "西班牙", "阿联酋", "越南", "泰国", "美国", "英国", "德国", "法国", "日本", "韩国", "墨西哥", "巴西", "印度", "荷兰", "波兰"];
-        foreach (var country in knownCountries)
-            if (current.Contains(country)) return country;
+    [GeneratedRegex(@"[（(]\s*([A-Za-z]{3})\s*[)）]")]
+    private static partial Regex CountryCodeRegex();
 
-        const string codePattern = @"\b(USA|CAN|GBR|DEU|FRA|ITA|ESP|JPN|KOR|AUS|SGP|MEX|BRA|IDN|IND|NLD|POL|ARE|VNM|KAZ|THA)\b";
-        var code = Regex.Match(current, codePattern, RegexOptions.IgnoreCase).Value.ToUpperInvariant();
-        var byCode = code switch
+    /// <summary>
+    /// 目的国 comes from the 运抵国（地区） field, in this order:
+    /// 1. the code printed in the label cell, e.g. "运抵国（地区） (DZA)", which is exact on text
+    ///    layers and short enough for OCR to read reliably;
+    /// 2. the country named first in the value cell (a neighbouring cell such as 指运港
+    ///    "斯基克达（阿尔及利亚）" can leak in after it);
+    /// 3. a code inside the value cell;
+    /// 4. the code in the goods table's 最终目的国 column.
+    /// The old rule knew 21 countries and otherwise scanned the whole page for any of them, so
+    /// unlisted countries (阿尔及利亚) were missed and unrelated text could win.
+    /// </summary>
+    internal static string ResolveDestinationCountry(TextPage page, string value)
+    {
+        var fromLabel = CountryNames.FromCode(ReadLabelCountryCode(page, "运抵国"));
+        if (fromLabel is not null) return fromLabel;
+        var named = CountryNames.FirstNameIn(value);
+        if (named is not null) return named;
+        foreach (Match match in CountryCodeRegex().Matches(value))
+            if (CountryNames.FromCode(match.Groups[1].Value.ToUpperInvariant()) is { } coded) return coded;
+        var fromGoods = CountryNames.FromCode(ReadColumnCountryCode(page, "最终目的国"));
+        if (fromGoods is not null) return fromGoods;
+        var cleaned = CountryCodeRegex().Replace(value, "");
+        cleaned = Regex.Replace(cleaned, @"(?<!\d)\d(?!\d)", "");
+        return Regex.Replace(cleaned, @"\s+", " ").Trim();
+    }
+
+    /// <summary>The "(XXX)" code printed next to a label, within the label's own cell.</summary>
+    private static string? ReadLabelCountryCode(TextPage page, string label)
+    {
+        var anchor = FindAnchor(page, label);
+        if (anchor is null) return null;
+        var tolerance = Math.Max(4, page.Height * .012);
+        var rightAnchor = FindKnownAnchors(page)
+            .Where(x => x.Left > anchor.Right + 1 && Math.Abs(x.CenterY - anchor.CenterY) <= tolerance)
+            .OrderBy(x => x.Left)
+            .FirstOrDefault();
+        var right = rightAnchor?.Left - 1 ?? anchor.Right + page.Width * .08;
+        var cell = page.Tokens
+            .Where(t => Math.Abs(t.CenterY - anchor.CenterY) <= tolerance && t.Left >= anchor.Left - 1 && t.Right <= right + 1)
+            .OrderBy(t => t.Left);
+        var match = CountryCodeRegex().Match(string.Join("", cell.Select(t => t.Text)));
+        return match.Success ? match.Groups[1].Value.ToUpperInvariant() : null;
+    }
+
+    /// <summary>The first "(XXX)" code below a goods-table header, within that column.</summary>
+    private static string? ReadColumnCountryCode(TextPage page, string header)
+    {
+        var anchor = FindAnchor(page, header);
+        if (anchor is null) return null;
+        var width = anchor.Right - anchor.Left;
+        var tokens = page.Tokens
+            .Where(t => t.Top > anchor.Bottom && t.Top < anchor.Bottom + page.Height * .12 &&
+                        t.CenterX >= anchor.Left - width * .25 && t.CenterX <= anchor.Right + width * .25)
+            .OrderBy(t => t.Top).ThenBy(t => t.Left);
+        foreach (var token in tokens)
         {
-            "USA" => "美国", "CAN" => "加拿大", "GBR" => "英国", "DEU" => "德国", "FRA" => "法国", "ITA" => "意大利", "ESP" => "西班牙",
-            "JPN" => "日本", "KOR" => "韩国", "AUS" => "澳大利亚", "SGP" => "新加坡", "MEX" => "墨西哥", "BRA" => "巴西", "IND" => "印度",
-            "IDN" => "印度尼西亚", "NLD" => "荷兰", "POL" => "波兰", "ARE" => "阿联酋", "VNM" => "越南", "KAZ" => "哈萨克斯坦",
-            "THA" => "泰国", _ => ""
-        };
-        if (!string.IsNullOrWhiteSpace(byCode)) return byCode;
-        var joined = current + " " + string.Join(" ", page.Tokens.Select(t => t.Text));
-        foreach (var country in knownCountries)
-            if (joined.Contains(country)) return country;
-        return current;
+            var match = CountryCodeRegex().Match(token.Text);
+            if (match.Success && CountryNames.FromCode(match.Groups[1].Value.ToUpperInvariant()) is not null)
+                return match.Groups[1].Value.ToUpperInvariant();
+        }
+        return null;
     }
 
     private static int CalculateConfidence(DeclarationRecord record, bool usedOcr)

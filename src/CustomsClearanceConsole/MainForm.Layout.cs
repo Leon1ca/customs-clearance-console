@@ -32,6 +32,7 @@ internal sealed partial class MainForm
         _body.Controls.Add(BuildRecordsPanel(), 0, 4);
         root.Controls.Add(_body, 0, 1);
         Controls.Add(root);
+        EdgeHitPassThrough.Attach(this, [root, _body, .. root.Controls.Cast<Control>(), .. EdgeControls]);
 
         _toast = new ToastControl { Anchor = AnchorStyles.Bottom, Location = new Point(0, ClientSize.Height - 50) };
         Controls.Add(_toast);
@@ -42,6 +43,9 @@ internal sealed partial class MainForm
             _toast.Location = new Point((ClientSize.Width - _toast.Width) / 2, ClientSize.Height - _toast.Height - 18);
         };
     }
+
+    /// <summary>Title-bar controls that touch the window edge (see EdgeHitPassThrough).</summary>
+    private readonly List<Control> EdgeControls = [];
 
     private Control BuildHeader()
     {
@@ -124,6 +128,8 @@ internal sealed partial class MainForm
             actions.Controls.Add(button);
         }
         header.Controls.Add(actions);
+        EdgeControls.Add(actions);
+        EdgeControls.AddRange(actions.Controls.Cast<Control>());
         foreach (var control in new Control[] { header, title, version, divider, logoBack })
             control.MouseDown += (_, e) => { if (e.Button == MouseButtons.Left) BeginWindowDrag(); };
         foreach (var control in new Control[] { header, title, version, logoBack })
@@ -277,7 +283,7 @@ internal sealed partial class MainForm
         return footer;
     }
 
-    private DataGridView BuildGrid()
+    private RecordGrid BuildGrid()
     {
         var grid = new RecordGrid
         {
@@ -287,7 +293,9 @@ internal sealed partial class MainForm
             AllowUserToAddRows = false,
             AllowUserToDeleteRows = false,
             AllowUserToResizeRows = false,
-            AllowUserToResizeColumns = true,
+            // Column borders are dragged through the fit-mode resizer below (live, neighbour
+            // compensated); the grid's own resize would change one column and break the fill.
+            AllowUserToResizeColumns = false,
             AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None,
             ReadOnly = true,
             RowHeadersVisible = false,
@@ -361,17 +369,11 @@ internal sealed partial class MainForm
         grid.CellPainting += PaintRecordCell;
         grid.CellClick += GridCellClick;
         grid.CellDoubleClick += GridCellDoubleClick;
-        grid.CellMouseDown += (_, e) => { SelectCellForContextMenu(e); if (e.Button == MouseButtons.Right && e.RowIndex >= 0 && e.ColumnIndex >= 0) _copyMenu.ShowAt(Cursor.Position, grid.SelectedCells.Count > 0); };
+        grid.CellMouseDown += (_, e) => { SelectCellForContextMenu(e); if (e.Button == MouseButtons.Right && e.RowIndex >= 0 && e.ColumnIndex >= 0) _copyMenu.ShowAt(grid, Cursor.Position, grid.SelectedCells.Count > 0); };
         grid.KeyDown += GridKeyDown;
-        grid.ColumnWidthChanged += (_, e) =>
-        {
-            if (_applyingWidths || e.Column is null || !e.Column.Visible) return;
-            if (e.Column.Name == "Consignee")
-                _manualWidths[e.Column.Name] = e.Column.Width;
-            else
-                _manualWidths[e.Column.Name] = e.Column.Width;
-        };
-        grid.ColumnHeaderMouseDoubleClick += (_, _) => { _manualWidths.Clear(); ApplyGridColumns(); };
+        AttachColumnResizer(grid);
+        grid.SizeChanged += (_, _) => ApplyGridColumns();
+        grid.VerticalBarVisibilityChanged += (_, _) => ApplyGridColumns();
         // No CellFormatting blanking: custom painting happens in CellPainting with
         // e.Handled = true, so real cell values stay available for copy, tooltips and
         // accessibility. Blanks would make No/Amount/Status copy as empty (R3-2).
@@ -420,7 +422,8 @@ internal sealed partial class MainForm
         _body.RowStyles[2].Height = processing ? S(_layout.CompactHeight ? 92 : 104) : 0;
         _body.RowStyles[3].Height = processing ? S(_layout.CompactHeight ? 34 : 38) : 0;
         _statsRow.ColumnStyles[0].Width = S(_layout.KpiPanelWidth);
-        _toolbar.ColumnStyles[0].Width = S(372);
+        _statsRow.Margin = new Padding(0, 0, 0, S(_layout.SectionGap));
+        SizeFilterColumn();
         _toolbar.ColumnStyles[1].Width = S(_layout.SearchWidth + 8);
         _recordsContent.RowStyles[0].Height = S(_layout.Toolbar);
         _grid.ColumnHeadersHeight = S(38);
@@ -430,9 +433,19 @@ internal sealed partial class MainForm
         _body.ResumeLayout(true);
     }
 
+    /// <summary>Columns that absorb width changes; the others hold fixed-size content.</summary>
+    private static readonly string[] FlexibleColumns = ["Consignee", "Contract", "Port", "Dest", "PortDest"];
+
+    /// <summary>
+    /// "Fit" column layout (as in PrimeNG / ag-Grid fit mode): the visible columns always fill
+    /// the grid's client width exactly, so the first and last columns stay flush with both
+    /// edges. The base widths are the responsive design widths, or the widths the user dragged
+    /// (kept in logical pixels); any difference to the available width is spread over the
+    /// flexible text columns in proportion to their width, never below their minimum.
+    /// </summary>
     private void ApplyGridColumns()
     {
-        if (_grid.Columns.Count == 0) return;
+        if (_grid is null || _grid.Columns.Count == 0 || _applyingWidths) return;
         var dpi = _layoutDpi;
         int S(int px) => (int)Math.Round(px * dpi / 96.0);
         var table = _layout.Table;
@@ -443,43 +456,148 @@ internal sealed partial class MainForm
             _grid.Columns["Port"].Visible = !merged;
             _grid.Columns["Dest"].Visible = !merged;
             _grid.Columns["PortDest"].Visible = merged;
-            var inner = ClientSize.Width == 0 ? S(1100) : ClientSize.Width - S(48) - S(2) - S(32);
             foreach (DataGridViewColumn each in _grid.Columns) each.MinimumWidth = Math.Max(2, S(LogicalMinimumWidth(each.Name)));
-            void Set(string name, int logical, bool fill = false)
+            var visible = _grid.Columns.Cast<DataGridViewColumn>().Where(x => x.Visible).OrderBy(x => x.DisplayIndex).ToList();
+            int DesignWidth(string name) => name switch
             {
-                var column = _grid.Columns[name];
-                if (!column.Visible) return;
-                if (_manualWidths.TryGetValue(name, out var manual) && !fill) { column.Width = Math.Max(column.MinimumWidth, manual); return; }
-                column.Width = Math.Max(column.MinimumWidth, S(logical));
-            }
-            Set("Index", table.Index);
-            Set("Status", table.Status);
-            Set("No", table.Number);
-            Set("Contract", table.Contract);
-            Set("Port", table.Port);
-            Set("Dest", table.Dest);
-            Set("PortDest", table.PortDest);
-            Set("Amount", table.Amount);
-            Set("Detail", table.Detail);
-            Set("Verify", table.Verify);
-            var used = new[] { "Index", "Status", "No", "Contract", "Port", "Dest", "PortDest", "Amount", "Detail", "Verify" }
-                .Where(name => _grid.Columns[name].Visible)
-                .Sum(name => _grid.Columns[name].Width);
-            var consignee = _grid.Columns["Consignee"];
-            if (_manualWidths.TryGetValue("Consignee", out var manualConsignee))
-                consignee.Width = Math.Max(consignee.MinimumWidth, manualConsignee);
-            else
-                consignee.Width = Math.Max(consignee.MinimumWidth, inner - used);
+                "Index" => table.Index, "Status" => table.Status, "No" => table.Number, "Consignee" => table.Consignee,
+                "Contract" => table.Contract, "Port" => table.Port, "Dest" => table.Dest, "PortDest" => table.PortDest,
+                "Amount" => table.Amount, "Detail" => table.Detail, _ => table.Verify
+            };
+            var widths = visible.ToDictionary(x => x.Name,
+                x => Math.Max(x.MinimumWidth, S(_userLogicalWidths.TryGetValue(x.Name, out var user) ? user : DesignWidth(x.Name))));
+            var available = _grid.FitWidth;
+            if (available <= 0) available = widths.Values.Sum();
+            DistributeWidth(visible, widths, available - widths.Values.Sum());
+            foreach (var column in visible) column.Width = widths[column.Name];
         }
         finally { _applyingWidths = false; }
+    }
+
+    /// <summary>Spreads <paramref name="delta"/> over the flexible columns (fixed ones only as a last resort).</summary>
+    private static void DistributeWidth(List<DataGridViewColumn> visible, Dictionary<string, int> widths, int delta)
+    {
+        if (delta == 0) return;
+        var flexible = visible.Where(x => FlexibleColumns.Contains(x.Name)).ToList();
+        if (flexible.Count == 0) flexible = visible;
+        for (var pass = 0; pass < 4 && delta != 0; pass++)
+        {
+            var candidates = delta > 0 ? flexible : flexible.Where(x => widths[x.Name] > x.MinimumWidth).ToList();
+            if (candidates.Count == 0) break;
+            var basis = Math.Max(1, candidates.Sum(x => widths[x.Name]));
+            var remaining = delta;
+            for (var i = 0; i < candidates.Count; i++)
+            {
+                var column = candidates[i];
+                var share = i == candidates.Count - 1 ? remaining : (int)Math.Round((double)delta * widths[column.Name] / basis);
+                var next = Math.Max(column.MinimumWidth, widths[column.Name] + share);
+                remaining -= next - widths[column.Name];
+                widths[column.Name] = next;
+            }
+            delta = remaining;
+        }
+    }
+
+    // ---- fit-mode column resizing ----
+
+    private int _resizeLeft = -1;
+    private int _resizeStartX;
+    private int _resizeStartLeftWidth;
+    private int _resizeStartRightWidth;
+
+    /// <summary>
+    /// Live border dragging in the header: the column left of the border and its right
+    /// neighbour change by the same amount, so the total stays equal to the grid width. The
+    /// last column's right edge is the grid edge and cannot be dragged. Double-clicking a
+    /// border restores the design widths.
+    /// </summary>
+    private void AttachColumnResizer(RecordGrid grid)
+    {
+        grid.MouseMove += (_, e) =>
+        {
+            if (_resizeLeft >= 0)
+            {
+                var left = VisibleColumnAt(_resizeLeft);
+                var right = VisibleColumnAt(_resizeLeft + 1);
+                if (left is null || right is null) return;
+                var delta = e.X - _resizeStartX;
+                delta = Math.Max(delta, left.MinimumWidth - _resizeStartLeftWidth);
+                delta = Math.Min(delta, _resizeStartRightWidth - right.MinimumWidth);
+                _applyingWidths = true;
+                try
+                {
+                    left.Width = _resizeStartLeftWidth + delta;
+                    right.Width = _resizeStartRightWidth - delta;
+                }
+                finally { _applyingWidths = false; }
+                return;
+            }
+            var border = BorderAt(e.Location);
+            var wanted = border >= 0 ? Cursors.SizeWE : Cursors.Default;
+            if (grid.Cursor != wanted) grid.Cursor = wanted;
+        };
+        grid.MouseDown += (_, e) =>
+        {
+            if (e.Button != MouseButtons.Left) return;
+            var border = BorderAt(e.Location);
+            if (border < 0) return;
+            var left = VisibleColumnAt(border);
+            var right = VisibleColumnAt(border + 1);
+            if (left is null || right is null) return;
+            if (e.Clicks >= 2)
+            {
+                _userLogicalWidths.Clear();
+                ApplyGridColumns();
+                return;
+            }
+            _resizeLeft = border;
+            _resizeStartX = e.X;
+            _resizeStartLeftWidth = left.Width;
+            _resizeStartRightWidth = right.Width;
+            grid.Capture = true;
+        };
+        grid.MouseUp += (_, _) =>
+        {
+            if (_resizeLeft < 0) return;
+            _resizeLeft = -1;
+            grid.Capture = false;
+            // Keep every visible width in logical pixels so later window resizes and DPI
+            // changes scale the user's layout instead of discarding it.
+            foreach (DataGridViewColumn column in grid.Columns)
+                if (column.Visible) _userLogicalWidths[column.Name] = (int)Math.Round(column.Width * 96.0 / _layoutDpi);
+        };
+        grid.MouseLeave += (_, _) => { if (_resizeLeft < 0 && grid.Cursor == Cursors.SizeWE) grid.Cursor = Cursors.Default; };
+    }
+
+    private DataGridViewColumn? VisibleColumnAt(int visibleIndex) =>
+        _grid.Columns.Cast<DataGridViewColumn>().Where(x => x.Visible).OrderBy(x => x.DisplayIndex).ElementAtOrDefault(visibleIndex);
+
+    /// <summary>Index of the visible column whose right border is under the header point, or -1.</summary>
+    private int BorderAt(Point point)
+    {
+        if (point.Y < 0 || point.Y > _grid.ColumnHeadersHeight) return -1;
+        var grip = Math.Max(3, DpiLayout.Scale(4, _layoutDpi));
+        var visible = _grid.Columns.Cast<DataGridViewColumn>().Where(x => x.Visible).OrderBy(x => x.DisplayIndex).ToList();
+        for (var i = 0; i < visible.Count - 1; i++)
+        {
+            var rect = _grid.GetColumnDisplayRectangle(visible[i].Index, false);
+            if (rect.Width > 0 && Math.Abs(point.X - rect.Right) <= grip) return i;
+        }
+        return -1;
     }
 
     /// <summary>Double-buffered grid so repaints during resize do not flicker.</summary>
     private sealed class RecordGrid : DataGridView
     {
+        public event EventHandler? VerticalBarVisibilityChanged;
+
         public RecordGrid()
         {
             DoubleBuffered = true;
+            VerticalScrollBar.VisibleChanged += (_, e) => VerticalBarVisibilityChanged?.Invoke(this, e);
         }
+
+        /// <summary>Width the columns must fill: the client width minus a visible vertical scroll bar.</summary>
+        public int FitWidth => ClientSize.Width - (VerticalScrollBar.Visible ? VerticalScrollBar.Width : 0);
     }
 }

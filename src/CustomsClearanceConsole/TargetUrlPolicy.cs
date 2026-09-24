@@ -22,7 +22,12 @@ internal static class TargetUrlPolicy
     public static bool IsSingleWindowInquiry(string? url)
     {
         if (!IsSingleWindowOrigin(url)) return false;
-        var uri = new Uri(url!, UriKind.Absolute);
+        return IsInquiryRoute(new Uri(url!, UriKind.Absolute));
+    }
+
+    /// <summary>The inquiry route, taken from the fragment when the page routes by hash.</summary>
+    public static bool IsInquiryRoute(Uri uri)
+    {
         var route = uri.Fragment.Length > 0 ? uri.Fragment : uri.PathAndQuery;
         return route.Contains("/publicInquiryDetail", StringComparison.OrdinalIgnoreCase);
     }

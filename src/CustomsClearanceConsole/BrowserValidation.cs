@@ -40,6 +40,11 @@ internal sealed class BrowserValidation : IAsyncDisposable
     private readonly bool _headless;
     private readonly bool _allowTestTarget;
     private readonly Uri? _testOrigin;
+    /// <summary>
+    /// A test target opened with a fragment route is judged by the same fragment-route rule as
+    /// the production page, so the E2E exercises the official page's hash routing.
+    /// </summary>
+    private readonly bool _testRoutesByFragment;
     private readonly IReadOnlyList<string>? _extraBrowserArgs;
     private readonly CancellationTokenSource _lifetime = new();
     private readonly SemaphoreSlim _reconnectGate = new(1, 1);
@@ -89,6 +94,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
             if (!Uri.TryCreate(urlOverride, UriKind.Absolute, out var testUri) || testUri.Host.Length == 0)
                 throw new ArgumentException("测试目标地址必须是绝对 URL。", nameof(urlOverride));
             _testOrigin = new Uri($"{testUri.Scheme}://{testUri.Host}:{testUri.Port}");
+            _testRoutesByFragment = testUri.Fragment.Length > 1;
         }
     }
 
@@ -190,7 +196,9 @@ internal sealed class BrowserValidation : IAsyncDisposable
     /// "singlewindow" (for example https://example.com/?singlewindow) is not accepted.
     /// </summary>
     private bool IsTargetUrl(string? url) =>
-        _allowTestTarget ? MatchesTargetOrigin(url, out _) : TargetUrlPolicy.IsSingleWindowInquiry(url);
+        _allowTestTarget
+            ? MatchesTargetOrigin(url, out var parsed) && (!_testRoutesByFragment || TargetUrlPolicy.IsInquiryRoute(parsed!))
+            : TargetUrlPolicy.IsSingleWindowInquiry(url);
 
     /// <summary>
     /// Sub-frames must be either the trusted single-window origin (same page) or the one
@@ -322,6 +330,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
         _cdp.On("Runtime.executionContextsCleared", OnContextsCleared);
         _cdp.On("Runtime.bindingCalled", OnBindingCalled);
         _cdp.On("Page.frameNavigated", OnFrameNavigated);
+        _cdp.On("Page.navigatedWithinDocument", OnNavigatedWithinDocument);
         _cdp.On("Target.attachedToTarget", OnAttachedToTarget);
         _cdp.On("Target.detachedFromTarget", OnDetachedFromTarget);
         await _cdp.SendAsync("Page.enable", null, token);
@@ -352,7 +361,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
             CollectFrameParents(frameTree, parents);
             var root = frameTree.GetProperty("frame");
             var rootId = root.GetProperty("id").GetString() ?? "";
-            var rootUrl = root.TryGetProperty("url", out var current) ? current.GetString() ?? "" : "";
+            var rootUrl = FrameUrl(root);
             lock (_frameUrls)
             {
                 foreach (var (id, url) in frames)
@@ -517,7 +526,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
                     var tree = await cdp.SendAsync("Page.getFrameTree", null, CancellationToken.None, sessionId);
                     var rootFrame = tree.GetProperty("result").GetProperty("frameTree").GetProperty("frame");
                     var rootFrameId = rootFrame.GetProperty("id").GetString() ?? "";
-                    var rootUrl = rootFrame.TryGetProperty("url", out var rootUrlProperty) ? rootUrlProperty.GetString() ?? "" : "";
+                    var rootUrl = FrameUrl(rootFrame);
                     if (rootFrameId.Length > 0 && IsKnownUrl(rootUrl))
                         lock (_frameUrls) _frameUrls[rootFrameId] = rootUrl;
                 }
@@ -568,7 +577,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
             var sessionId = SessionIdOf(message);
             var frame = message.GetProperty("params").GetProperty("frame");
             var frameId = frame.GetProperty("id").GetString() ?? "";
-            var url = frame.TryGetProperty("url", out var value) ? value.GetString() ?? "" : "";
+            var url = FrameUrl(frame);
             var parentId = frame.TryGetProperty("parentId", out var parent) ? parent.GetString() ?? "" : "";
             var isMain = sessionId is null && parentId.Length == 0;
             lock (_frameUrls)
@@ -595,6 +604,36 @@ internal sealed class BrowserValidation : IAsyncDisposable
             }
         }
         catch (Exception ex) { AppLog.Write($"读取页面导航失败：{ex.Message}"); }
+    }
+
+    /// <summary>
+    /// Fragment / history navigation of a single-page app (the official page routes by hash).
+    /// Its full URL, fragment included, replaces the recorded frame address; leaving the
+    /// inquiry route counts as a navigation, staying on it does not interrupt a capture.
+    /// </summary>
+    private void OnNavigatedWithinDocument(JsonElement message)
+    {
+        try
+        {
+            var sessionId = SessionIdOf(message);
+            var parameters = message.GetProperty("params");
+            var frameId = parameters.GetProperty("frameId").GetString() ?? "";
+            var url = parameters.TryGetProperty("url", out var value) ? value.GetString() ?? "" : "";
+            if (frameId.Length == 0 || !IsKnownUrl(url)) return;
+            bool isMain;
+            lock (_frameUrls)
+            {
+                _frameUrls[frameId] = url;
+                isMain = sessionId is null && frameId.Equals(_mainFrameId, StringComparison.Ordinal);
+                if (isMain) _currentUrl = url;
+            }
+            if (isMain && !IsTargetUrl(url))
+            {
+                Interlocked.Increment(ref _navigationGeneration);
+                _ = SetWidgetStateAsync("error", "已离开核验目标页面，截图请求将被忽略。");
+            }
+        }
+        catch (Exception ex) { AppLog.Write($"读取页面内导航失败：{ex.Message}"); }
     }
 
     private async Task ReconnectAsync(CancellationToken token)
@@ -723,7 +762,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
             {
                 var tree = await cdp.SendAsync("Page.getFrameTree", null, token, session);
                 var frame = tree.GetProperty("result").GetProperty("frameTree").GetProperty("frame");
-                Fill(frame.GetProperty("id").GetString() ?? "", frame.TryGetProperty("url", out var url) ? url.GetString() ?? "" : "");
+                Fill(frame.GetProperty("id").GetString() ?? "", FrameUrl(frame));
             }
             catch (Exception ex) when (ex is not OperationCanceledException) { AppLog.Write($"刷新子框架地址失败 {frameId}：{ex.Message}"); }
         }
@@ -1438,11 +1477,27 @@ internal sealed class BrowserValidation : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// A CDP Frame's address. <c>Frame.url</c> excludes the fragment, which CDP reports
+    /// separately as <c>urlFragment</c>; the official inquiry page routes by fragment
+    /// (<c>https://www.singlewindow.cn/#/publicInquiryDetail?id=pi4</c>), so without it the
+    /// main page was recorded as <c>https://www.singlewindow.cn/</c> and every capture request
+    /// was refused as "当前页面不是核验目标页".
+    /// </summary>
+    internal static string FrameUrl(JsonElement frame)
+    {
+        var url = frame.TryGetProperty("url", out var urlValue) ? urlValue.GetString() ?? "" : "";
+        if (url.Length > 0 && !url.Contains('#') &&
+            frame.TryGetProperty("urlFragment", out var fragmentValue) && fragmentValue.GetString() is { Length: > 1 } fragment)
+            url += fragment.StartsWith('#') ? fragment : "#" + fragment;
+        return url;
+    }
+
     private static void CollectFrames(JsonElement tree, List<(string FrameId, string Url)> frames)
     {
         if (!tree.TryGetProperty("frame", out var frame)) return;
         var id = frame.TryGetProperty("id", out var idValue) ? idValue.GetString() ?? "" : "";
-        var url = frame.TryGetProperty("url", out var urlValue) ? urlValue.GetString() ?? "" : "";
+        var url = FrameUrl(frame);
         if (id.Length > 0) frames.Add((id, url));
         if (tree.TryGetProperty("childFrames", out var children) && children.ValueKind == JsonValueKind.Array)
             foreach (var child in children.EnumerateArray()) CollectFrames(child, frames);
@@ -2339,11 +2394,14 @@ internal sealed class BrowserValidation : IAsyncDisposable
             {
                 var json = await http.GetStringAsync($"http://127.0.0.1:{port}/json", cancellationToken);
                 using var doc = JsonDocument.Parse(json);
-                // Only the configured target page may be attached; never fall back to
-                // an unrelated tab such as a startup page.
+                // Only a page of the target site may be attached; never fall back to an
+                // unrelated tab such as a startup page. The origin is enough here: this
+                // throw-away profile only opened our page, and a single-page app can still be
+                // on another hash route while loading. Capture requests stay restricted to the
+                // inquiry route (IsTargetUrl) regardless.
                 var target = doc.RootElement.EnumerateArray().FirstOrDefault(x =>
                     x.TryGetProperty("type", out var type) && type.GetString() == "page" &&
-                    x.TryGetProperty("url", out var url) && IsTargetUrl(url.GetString()) &&
+                    x.TryGetProperty("url", out var url) && MatchesTargetOrigin(url.GetString(), out _) &&
                     x.TryGetProperty("webSocketDebuggerUrl", out _));
                 if (target.ValueKind != JsonValueKind.Undefined)
                     return target.GetProperty("webSocketDebuggerUrl").GetString()!;

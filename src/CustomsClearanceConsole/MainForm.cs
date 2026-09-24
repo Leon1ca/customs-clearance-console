@@ -16,7 +16,8 @@ internal sealed partial class MainForm : Form
     private List<DeclarationRecord> _visible = [];
     private ScanSession? _session;
     private readonly Dictionary<string, BrowserValidation> _browserSessions = [];
-    private readonly Dictionary<string, int> _manualWidths = new(StringComparer.Ordinal);
+    /// <summary>Column widths the user dragged, in 96-DPI logical pixels.</summary>
+    private readonly Dictionary<string, int> _userLogicalWidths = new(StringComparer.Ordinal);
     private bool _applyingWidths;
     private bool _previewProcessing;
     private string _batchFolder = "";
@@ -61,7 +62,7 @@ internal sealed partial class MainForm : Form
     private Button _exportButton = null!;
     private Button _scan = null!;
     private Button _settings = null!;
-    private DataGridView _grid = null!;
+    private RecordGrid _grid = null!;
     private Panel _gridHost = null!;
     private RecordStatePanel _recordState = null!;
     // Business intent, independent of Control.Visible's effective getter. Before the form is
@@ -203,8 +204,6 @@ internal sealed partial class MainForm : Form
             {
                 DpiLayout.ScaleChildren(this, from, dpi);
                 _layoutDpi = dpi;
-                // Manually dragged column widths are physical pixels of the old DPI.
-                _manualWidths.Clear();
                 RefreshDpiImages();
             }
             if (placeWindow && !AllowOversizeForSnapshot) PlaceOnScreen();
@@ -617,6 +616,14 @@ internal sealed partial class MainForm : Form
         };
     }
 
+    /// <summary>The filter column wraps the segments plus the design's 16px gap to the search box.</summary>
+    private void SizeFilterColumn()
+    {
+        if (_toolbar is null || _filterSegmented is null) return;
+        var width = _filterSegmented.ContentWidth(_layoutDpi) + DpiLayout.Scale(16, _layoutDpi);
+        _toolbar.ColumnStyles[0].Width = Math.Min(DpiLayout.Scale(372, _layoutDpi), width);
+    }
+
     /// <summary>Stats row height that fits both the KPI grid and the currency summary.</summary>
     private int StatsRowHeight()
     {
@@ -625,7 +632,9 @@ internal sealed partial class MainForm : Form
         var kpi = KpiPanel.RequiredHeight(dpi, _layout.CompactHeight);
         var money = S(96 + _moneySummary.RowCount * (_layout.AmountRow + 4) +
             (_moneySummary.UnconfirmedRowCount > 0 ? 26 + _moneySummary.UnconfirmedRowCount * 26 : 0));
-        return Math.Max(kpi, money);
+        // Design section gap (16, compact 12) between the statistics row and the records panel;
+        // without it the two white panels touched and read as one block.
+        return Math.Max(kpi, money) + S(_layout.SectionGap);
     }
 
     /// <summary>Pushes the real batch state, folder and timing into the title block (R4-4).</summary>
@@ -739,6 +748,7 @@ internal sealed partial class MainForm : Form
             new FilterSegment("重复", "重复记录", counts[2], records.Count > 0, _filterIndex == 2),
             new FilterSegment("需关注", "需关注记录", counts[3], records.Count > 0, _filterIndex == 3)
         ]);
+        SizeFilterColumn();
 
         _dropBanner ??= new Label { Visible = false, AutoSize = false, TextAlign = ContentAlignment.MiddleCenter, Font = Theme.UiFont(13F), Height = 34 };
         var statePanelVisible = visibleCount == 0;
@@ -1157,7 +1167,7 @@ internal sealed partial class MainForm : Form
             var point = cell is null ? new Point(20, 20) : new Point(
                 _grid.GetCellDisplayRectangle(cell.ColumnIndex, cell.RowIndex, true).Left + 16,
                 _grid.GetCellDisplayRectangle(cell.ColumnIndex, cell.RowIndex, true).Bottom - 4);
-            _copyMenu.ShowAt(_grid.PointToScreen(point), _grid.SelectedCells.Count > 0);
+            _copyMenu.ShowAt(_grid, _grid.PointToScreen(point), _grid.SelectedCells.Count > 0);
             e.Handled = true;
             e.SuppressKeyPress = true;
         }
@@ -1513,7 +1523,8 @@ internal sealed partial class MainForm : Form
 
     protected override void WndProc(ref Message message)
     {
-        const int wmNchittest = 0x84, grip = 8, wmGetMinMaxInfo = 0x24;
+        const int wmNchittest = 0x84, wmGetMinMaxInfo = 0x24;
+        var grip = DpiLayout.Scale(6, DeviceDpi);
         // A borderless window is normally clamped to the physical desktop tracking size.
         // Snapshot rendering explicitly lifts that clamp; the normal window keeps it.
         if (message.Msg == wmGetMinMaxInfo && AllowOversizeForSnapshot)
@@ -1538,6 +1549,16 @@ internal sealed partial class MainForm : Form
             Marshal.StructureToPtr(info, message.LParam, false);
             return;
         }
+        const int wmEnterSizeMove = 0x0231, wmExitSizeMove = 0x0232, gwlExStyle = -20, wsExComposited = 0x02000000;
+        if (message.Msg is wmEnterSizeMove or wmExitSizeMove)
+        {
+            // While the user drags the window edge, compose the whole window in one off-screen
+            // pass so panels, grid and buttons move together instead of repainting one by one
+            // (flicker / tearing while stretching). Normal use keeps the cheaper painting.
+            var style = GetWindowLong(Handle, gwlExStyle);
+            SetWindowLong(Handle, gwlExStyle, message.Msg == wmEnterSizeMove ? style | wsExComposited : style & ~wsExComposited);
+            if (message.Msg == wmExitSizeMove) Invalidate(true);
+        }
         if (message.Msg == wmNchittest && WindowState == FormWindowState.Normal)
         {
             base.WndProc(ref message);
@@ -1561,6 +1582,8 @@ internal sealed partial class MainForm : Form
     }
 
     [DllImport("user32.dll")] private static extern bool ReleaseCapture();
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongW")] private static extern int GetWindowLong(IntPtr hWnd, int index);
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongW")] private static extern int SetWindowLong(IntPtr hWnd, int index, int value);
     [DllImport("user32.dll")] private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 
     private sealed class InlineProgress<T>(Action<T> action) : IProgress<T>
