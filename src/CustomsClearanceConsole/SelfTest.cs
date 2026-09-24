@@ -156,7 +156,7 @@ internal static class SelfTest
         {
             DeclarationNo = "310120260000000010",
             SourcePath = "multi.pdf",
-            Status = "双引擎校验通过",
+            Status = "OCR 识别完成",
             LineTotals =
             [
                 new DeclarationLineTotal { Sequence = 1, ItemNo = "1", Currency = "USD", Amount = 100m, IsReliable = true },
@@ -236,7 +236,7 @@ internal static class SelfTest
                 SourcePath = "mix-currency.pdf",
                 Consignee = "MIX CURRENCY LTD",
                 ContractNo = "MX-2026-01",
-                Status = "双引擎校验通过",
+                Status = "OCR 识别完成",
                 LineTotals =
                 [
                     new DeclarationLineTotal { Sequence = 1, PageNumber = 1, ItemNo = "1", Currency = "EUR", Amount = 55m, IsReliable = true },
@@ -429,7 +429,7 @@ internal static class SelfTest
         };
         var totals = DeclarationParser.SumReliableLineTotals(lines);
         if (totals.GetValueOrDefault("CNY") != 100m)
-            throw new InvalidOperationException("双引擎冲突金额被错误计入合计。");
+            throw new InvalidOperationException("未通过校验的金额被错误计入合计。");
     }
 
     private static void RunMarkdownExportRegression()
@@ -1485,7 +1485,7 @@ internal static class SelfTest
                 VerificationUnit = attention ? "KG" : "",
                 VerificationUnitPrice = attention ? 4.00m : null,
                 VerificationProductName = attention ? "复合调味料（复核）" : "",
-                Note = attention ? "双引擎不一致：主 12480.00；复核 12180.00，未计入合计" : "双引擎一致"
+                Note = attention ? "数量×单价与总价不符（单价 5.2，总价 12,480.00），未计入合计" : "数量×单价=总价，规则校验通过"
             };
             var record = new DeclarationRecord
             {
@@ -1495,8 +1495,8 @@ internal static class SelfTest
                 ExitCustoms = customs,
                 DestinationCountry = country,
                 SourcePath = source,
-                Status = attention ? "需关注" : "双引擎校验通过",
-                Warning = attention ? "金额双引擎不一致" : "",
+                Status = attention ? "需关注" : "OCR 识别完成",
+                Warning = attention ? "数量×单价与总价不符" : "",
                 Confidence = 90,
                 ScannedAt = new DateTime(2026, 9, 24, 14, 32, 0),
                 LineTotals = [lineTotal]
@@ -1523,11 +1523,11 @@ internal static class SelfTest
             ContractNo = "PRF2026/0412",
             SourcePath = "scan_0921_03.jpg",
             Status = "需关注",
-            Warning = "金额双引擎不一致",
+            Warning = "数量×单价与总价不符",
             LineTotals =
             [
-                new DeclarationLineTotal { Sequence = 1, PageNumber = 1, ItemNo = "1", ProductName = "脱水蔬菜", Quantity = 2400, Unit = "KG", UnitPrice = 3.20m, Currency = "USD", Amount = 7680.00m, IsReliable = true, Note = "双引擎一致" },
-                new DeclarationLineTotal { Sequence = 2, PageNumber = 1, ItemNo = "2", ProductName = "复合调味料", Quantity = 1200, Unit = "KG", UnitPrice = 4.00m, Currency = "USD", Amount = 4800.00m, VerificationAmount = 4750.00m, IsReliable = false, Note = "双引擎不一致，未计入合计" }
+                new DeclarationLineTotal { Sequence = 1, PageNumber = 1, ItemNo = "1", ProductName = "脱水蔬菜", Quantity = 2400, Unit = "KG", UnitPrice = 3.20m, Currency = "USD", Amount = 7680.00m, IsReliable = true, Note = "数量×单价=总价，规则校验通过" },
+                new DeclarationLineTotal { Sequence = 2, PageNumber = 1, ItemNo = "2", ProductName = "复合调味料", Quantity = 1200, Unit = "KG", UnitPrice = 4.00m, Currency = "USD", Amount = 4800.00m, VerificationAmount = 4750.00m, IsReliable = false, Note = "数量×单价与总价不符，未计入合计" }
             ]
         };
         record.Totals = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase) { ["USD"] = 7680.00m };
@@ -1570,12 +1570,7 @@ internal static class SelfTest
                 .ThenBy(x => x.Left)
                 .Select(x => new { x.Text, x.Left, x.Top, x.Right, x.Bottom, x.Confidence })
         };
-        var output = new
-        {
-            primary = document.Pages.Select(Page),
-            secondary = document.VerificationPages.Select(Page),
-            document.SecondaryOcrError
-        };
+        var output = new { pages = document.Pages.Select(Page) };
         Console.WriteLine(JsonSerializer.Serialize(output, new JsonSerializerOptions { WriteIndented = true }));
     }
 
@@ -1638,7 +1633,7 @@ internal static class SelfTest
                 throw new InvalidOperationException("横向混合扫描关单的关键字段仍不正确。");
             if (!rotated.LineTotals.Select(x => x.ItemNo).SequenceEqual(Enumerable.Range(1, 10).Select(x => x.ToString())))
                 throw new InvalidOperationException("横向混合扫描关单的逐项序号不连续。");
-            if (rotated.Status != "双引擎校验通过")
+            if (rotated.Status != "OCR 识别完成")
                 throw new InvalidOperationException($"横向混合扫描关单仍被标记为异常：{rotated.Warning}");
             if (records.Where(x => x.DeclarationNo.StartsWith("31012026051652", StringComparison.Ordinal))
                 .Any(x => x.DestinationCountry != "印度尼西亚"))

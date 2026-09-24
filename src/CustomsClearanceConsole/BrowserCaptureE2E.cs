@@ -66,6 +66,8 @@ internal static class BrowserCaptureE2E
             checks.Add(await RunOopifViewportReadFailureAsync(outputFolder, browser, server));
             checks.Add(await RunOfficialDomSuccessAsync(outputFolder, browser, server));
             checks.Add(await RunOfficialHashRouteAsync(outputFolder, browser, server));
+            checks.Add(await RunOfficialSameSiteFrameAsync(outputFolder, browser, server));
+            checks.Add(await RunStalledCaptureAsync(outputFolder, browser, server));
             checks.Add(await RunOfficialDomWrongNumberAsync(outputFolder, browser, server));
             checks.Add(await RunOfficialDomEmptyAsync(outputFolder, browser, server));
             checks.Add(await RunOfficialDomErrorAsync(outputFolder, browser, server));
@@ -1214,6 +1216,88 @@ internal static class BrowserCaptureE2E
         return new Scenario("official-hash-route", details.Count == 0, details.Count == 0 ? ["单页应用切换到 #/publicInquiryDetail 后截图被接受并保存"] : details);
     }
 
+    /// <summary>
+    /// The official configuration exactly: the page on www.* and the query frame on swapp.* of
+    /// the same site (same renderer process, but cross-origin, so the page cannot reach into
+    /// the frame), created after load, with the hash route.
+    /// </summary>
+    private static async Task<Scenario> RunOfficialSameSiteFrameAsync(string outputFolder, string browser, TestServer server)
+    {
+        var folder = Path.Combine(outputFolder, "official-same-site");
+        Directory.CreateDirectory(folder);
+        const string number = "310120260000000032";
+        const string top = "www.e2e-sw.test", query = "swapp.e2e-sw.test";
+        var frameOrigin = $"http://{query}:{server.Port}";
+        var url = $"http://{top}:{server.Port}/page?result={number}&frame=official&mode=ok&lazy=1500&ohost={Uri.EscapeDataString(frameOrigin)}#/publicInquiryDetail?id=pi4";
+        await using var session = new BrowserValidation(number, folder, url, browser, headless: true, allowTestTarget: true,
+            extraBrowserArgs: [$"--host-resolver-rules=MAP {top} 127.0.0.1, MAP {query} 127.0.0.1"]);
+        var problem = await StartAndWaitAsync(session, false);
+        var details = new List<string>();
+        if (problem is not null) return new Scenario("official-same-site", false, [problem]);
+        if (!await session.ClickElementInFrameAsync("#inner", "#queryBtn", CancellationToken.None))
+            details.Add("未能在 frame 内真实点击查询按钮。");
+        var identity = await session.WaitForIdentitySettledAsync(TimeSpan.FromSeconds(30), CancellationToken.None);
+        if (!identity.StartsWith("ready|", StringComparison.Ordinal)) details.Add($"查询未就绪：{identity}");
+        var started = DateTime.UtcNow;
+        var result = await ClickAndAwaitAsync(session, TimeSpan.FromSeconds(120));
+        var seconds = (DateTime.UtcNow - started).TotalSeconds;
+        if (result.State != "saved") details.Add($"同站跨源 frame 截图失败（{seconds:F0}s）：{result.State}：{result.Message}");
+        else if (seconds > 30) details.Add($"同站跨源 frame 截图耗时 {seconds:F0}s，过慢。");
+        else if (result.FilePath is not null)
+        {
+            using var image = new Bitmap(result.FilePath);
+            if (!ColumnContainsColor(image, Color.FromArgb(0x77, 0x00, 0xAA)))
+                details.Add("同站跨源 frame 的查询结果底部未入图。");
+        }
+        return new Scenario("official-same-site", details.Count == 0, details.Count == 0 ? [$"www/swapp 同站跨源查询框架截图保存（{seconds:F1}s）"] : details);
+    }
+
+    /// <summary>
+    /// A browser that stops answering in the middle of a capture must not leave the card on
+    /// "截取中": the capture ends at its deadline with a timeout reason on the card, the page is
+    /// restored and the next click captures normally.
+    /// </summary>
+    private static async Task<Scenario> RunStalledCaptureAsync(string outputFolder, string browser, TestServer server)
+    {
+        var folder = Path.Combine(outputFolder, "stalled-capture");
+        if (Directory.Exists(folder)) Directory.Delete(folder, recursive: true);
+        Directory.CreateDirectory(folder);
+        const string number = "310120260000000033";
+        var url = server.Url($"/page?result={number}&frame=official&mode=ok") + "#/publicInquiryDetail?id=pi4";
+        await using var session = new BrowserValidation(number, folder, url, browser, headless: true, allowTestTarget: true);
+        var problem = await StartAndWaitAsync(session, false);
+        var details = new List<string>();
+        if (problem is not null) return new Scenario("stalled-capture", false, [problem]);
+        // The query frame may still be loading right after start; retry the real click until it lands.
+        var clicked = false;
+        for (var attempt = 0; attempt < 40 && !clicked; attempt++)
+        {
+            clicked = await session.ClickElementInFrameAsync("#inner", "#queryBtn", CancellationToken.None);
+            if (!clicked) await Task.Delay(250);
+        }
+        if (!clicked) details.Add("未能在 frame 内真实点击查询按钮。");
+        var identity = await session.WaitForIdentitySettledAsync(TimeSpan.FromSeconds(30), CancellationToken.None);
+        if (!identity.StartsWith("ready|", StringComparison.Ordinal)) details.Add($"查询未就绪：{identity}");
+
+        session.CaptureDeadline = TimeSpan.FromSeconds(3);
+        session.StallCaptureForTest = TimeSpan.FromSeconds(30);
+        var started = DateTime.UtcNow;
+        var stalled = await ClickAndAwaitAsync(session, TimeSpan.FromSeconds(20));
+        var seconds = (DateTime.UtcNow - started).TotalSeconds;
+        if (stalled.State != "error" || !stalled.Message.Contains("截图超时", StringComparison.Ordinal) || !stalled.Message.Contains("准备页面", StringComparison.Ordinal))
+            details.Add($"卡住的截图未按时限结束（{seconds:F0}s）：{stalled.State}：{stalled.Message}");
+        var card = await WidgetSnapshotAsync(session);
+        if (!card.Contains("截图超时", StringComparison.Ordinal)) details.Add($"卡片未显示超时原因：{card}");
+        if (session.CaptureLockHeldForTest) details.Add("超时后截图锁仍被占用。");
+        if (Directory.EnumerateFiles(folder, "*.png").Any()) details.Add("超时的截图仍然生成了文件。");
+
+        session.CaptureDeadline = TimeSpan.FromSeconds(60);
+        session.StallCaptureForTest = TimeSpan.Zero;
+        var retry = await ClickAndAwaitAsync(session, TimeSpan.FromSeconds(120));
+        if (retry.State != "saved") details.Add($"超时后重试未保存：{retry.State}：{retry.Message}");
+        return new Scenario("stalled-capture", details.Count == 0, details.Count == 0 ? [$"卡住的截图 {seconds:F1}s 内以超时结束并显示原因，重试保存成功"] : details);
+    }
+
     private static async Task<Scenario> RunOfficialDomWrongNumberAsync(string outputFolder, string browser, TestServer server)
     {
         var folder = Path.Combine(outputFolder, "official-dom-wrong");
@@ -1670,7 +1754,7 @@ internal static class BrowserCaptureE2E
             var frameSrc = frame == "cross" && xhost.Length > 0
                 ? xhost
                 : frame == "official"
-                    ? $"/official?result={result}&mode={mode}&decl={decl}"
+                    ? (parameters.TryGetValue("ohost", out var ohost) && ohost.Length > 0 ? ohost : "") + $"/official?result={result}&mode={mode}&decl={decl}"
                     : $"/frame?content=800&result={result}&query={(autoQuery ? "1" : "0")}";
             // A cross-origin frame scenario puts the query form and the matching result ONLY
             // inside the iframe: the top-level shell has neither query nor result, exactly

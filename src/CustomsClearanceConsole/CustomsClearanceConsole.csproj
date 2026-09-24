@@ -8,9 +8,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyName>关单核验台</AssemblyName>
-    <Version>1.5.2</Version>
-    <FileVersion>1.5.2.0</FileVersion>
-    <AssemblyVersion>1.5.2.0</AssemblyVersion>
+    <Version>1.5.3</Version>
+    <FileVersion>1.5.3.0</FileVersion>
+    <AssemblyVersion>1.5.3.0</AssemblyVersion>
     <RootNamespace>CustomsClearanceConsole</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
@@ -19,6 +19,7 @@
   </PropertyGroup>
   <ItemGroup>
     <EmbeddedResource Include="BrowserScripts/*.js" />
+    <EmbeddedResource Include="..\..\tests\CoreRegression\Fixtures\declaration-5166-rapidocr.json" LogicalName="ocr-selftest-layout.json" />
     <Reference Include="Clipper2Lib"><HintPath>dual-ocr-bin\Clipper2Lib.dll</HintPath><Private>true</Private></Reference>
     <Reference Include="Emgu.CV"><HintPath>dual-ocr-bin\Emgu.CV.dll</HintPath><Private>true</Private></Reference>
     <Reference Include="Microsoft.ML.OnnxRuntime"><HintPath>dual-ocr-bin\Microsoft.ML.OnnxRuntime.dll</HintPath><Private>true</Private></Reference>

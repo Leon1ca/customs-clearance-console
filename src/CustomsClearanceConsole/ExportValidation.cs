@@ -37,8 +37,8 @@ internal static class ExportValidation
                 ContractNo = i == 1 ? "=SUM(A1:A2)" : i == 2 ? "000123" : i == 3 ? "+1-2" : i == 8 ? "HT-2026-NL\n0008" : $"HT-2026-{i + 1:D4}",
                 ExitCustoms = i % 2 == 0 ? "大连湾海关" : "宁波北仑海关",
                 DestinationCountry = i % 4 == 0 ? "美国" : i % 4 == 1 ? "日本" : i % 4 == 2 ? "德国" : "泰国",
-                Status = i % 7 == 3 ? "需关注" : "双引擎校验通过",
-                Warning = i % 7 == 3 ? "金额双引擎不一致" : "",
+                Status = i % 7 == 3 ? "需关注" : "OCR 识别完成",
+                Warning = i % 7 == 3 ? "数量×单价与总价不符" : "",
                 Confidence = 80 + i % 20,
                 ScreenshotPath = i % 9 == 0 ? $"synthetic-{i + 1:D3}.png" : "",
                 LineTotals =
@@ -53,7 +53,7 @@ internal static class ExportValidation
                         Currency = currency,
                         Amount = amount,
                         IsReliable = i % 7 != 3,
-                        Note = i % 7 == 3 ? $"双引擎不一致：主 {amount:N2}；复核 {verifyAmount:N2}，未计入合计" : "双引擎一致",
+                        Note = i % 7 == 3 ? $"数量×单价与总价不符（总价 {amount:N2}），未计入合计" : "数量×单价=总价，规则校验通过",
                         VerificationAmount = i % 7 == 3 ? verifyAmount : null,
                         VerificationQuantity = i % 7 == 3 ? verifyQuantity : null,
                         VerificationUnit = i % 7 == 3 ? "KG" : "",
@@ -110,7 +110,7 @@ internal static class ExportValidation
             ContractNo = records[0].ContractNo,
             ExitCustoms = records[0].ExitCustoms,
             DestinationCountry = records[0].DestinationCountry,
-            Status = "双引擎校验通过",
+            Status = "OCR 识别完成",
             Confidence = 95,
             Totals = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase) { ["USD"] = 100m },
             LineTotals = [new DeclarationLineTotal { Sequence = 1, PageNumber = 1, ItemNo = "1", ProductName = "重复样本", Quantity = 1, Unit = "件", UnitPrice = 100m, Currency = "USD", Amount = 100m }]

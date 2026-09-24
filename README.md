@@ -8,7 +8,7 @@
 
 ## 当前版本
 
-v1.5.2（2026-09-24）：修复官网长截图提示“当前页面不是核验目标页”（官网按 # 路由）；目的国按运抵国国别代码识别并补全国别表；表格列宽贴边自适应、拖动实时调整；复制菜单、按钮边框、每页条数下拉、筛选分段、金额汇总空状态等界面细节修正。详见 [更新说明](docs/release-notes-v1.5.2.md)。此前变化见 [v1.5.1](docs/release-notes-v1.5.1.md)、[v1.5.0](docs/release-notes-v1.5.0.md)。
+v1.5.3（2026-09-24）：识别改为 PP-OCRv5 单引擎并按规则复核（数量×单价=总价等），速度明显提升，支持 WEBP/GIF/多页 TIFF 与横放、倒置页面；修复出境关别不显示；长截图加入时限与无响应提示，卡片不再停在“截取中”；金额列省略号、表头分隔线、弹窗边框无阴影、拖动窗口卡顿等界面问题。详见 [更新说明](docs/release-notes-v1.5.3.md)。此前变化见 [v1.5.2](docs/release-notes-v1.5.2.md)、[v1.5.1](docs/release-notes-v1.5.1.md)、[v1.5.0](docs/release-notes-v1.5.0.md)。
 
 便携版完整解压后双击根目录 `关单核验台.exe`。
 
@@ -16,7 +16,7 @@ v1.5.2（2026-09-24）：修复官网长截图提示“当前页面不是核验�
 
 - 扫描指定文件夹当前层的 PDF、PNG、JPG/JPEG、BMP、TIF/TIFF，每批最多 200 个文件。
 - 提取 6 个字段：报关单号、境外收货人、合同协议号、出境关别、目的国、关单总货值。
-- PDF 文字层优先；扫描件和图片使用 Tesseract + RapidOCR/PP-OCRv5 双引擎，并逐字段交叉校验。
+- PDF 文字层优先；扫描件和图片（PNG/JPG/BMP/TIFF/GIF/WEBP）使用 PP-OCRv5 单引擎识别，再用规则复核（数量×单价=总价、表头单号一致、国别、关别）。
 - 当前批次中相同报关单号置顶并显示浅红标记及重复提示，去重合计只选一份规范记录。
 - 多币种分别显示去重前/去重后金额，不进行汇率换算。
 - 多币种总价在总览卡片中逐币种换行，避免窄窗口截断。
@@ -59,7 +59,7 @@ third-party-notices/           第三方许可文本
 dotnet build .\src\CustomsClearanceConsole\CustomsClearanceConsole.csproj -c Release
 ```
 
-准备脚本会从发布包的 `app` 与 `tools` 目录复制开发运行所需的 DLL、OCR 模型、Tesseract 和 PDFium。构建后的程序不会使用系统全局 OCR 环境。
+准备脚本会从发布包的 `app` 与 `tools` 目录复制开发运行所需的 DLL、PP-OCRv5 模型和 PDFium（旧发布包中的 Tesseract 不再复制）。构建后的程序不会使用系统全局 OCR 环境。
 
 主程序测试入口：
 

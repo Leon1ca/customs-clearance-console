@@ -3,7 +3,7 @@ namespace CustomsClearanceConsole;
 internal sealed partial class BatchScanner
 {
     public const int MaximumFiles = 200;
-    public static readonly string[] SupportedExtensions = [".pdf", ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"];
+    public static readonly string[] SupportedExtensions = [".pdf", ".png", ".jpg", ".jpeg", ".jfif", ".bmp", ".tif", ".tiff", ".gif", ".webp"];
     private readonly Func<string, CancellationToken, Task<DocumentText>> _extract;
     internal BatchScanner(Func<string, CancellationToken, Task<DocumentText>> extract) => _extract = extract;
     private readonly DeclarationParser _parser = new();
