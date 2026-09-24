@@ -144,6 +144,9 @@ internal sealed partial class MainForm : Form
         RefreshGrid();
     }
 
+    /// <summary>Native UI self-test hook: the layout applied for the current client size.</summary>
+    internal Responsive.Layout AppliedLayout => _layout;
+
     // ---- settings / batch loading ----
 
     private void ShowDirectorySettings()

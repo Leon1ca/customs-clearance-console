@@ -488,28 +488,35 @@ internal static class SelfTest
         {
             var records = BuildSnapshotRecords(workspace.Path);
             new StateStore().Save(new AppState { LastFolder = workspace.Path, ScreenshotFolder = workspace.Path, Records = records });
-            foreach (var size in new[] { new Size(1200, 720), new Size(1600, 1000) })
+            foreach (var logical in new[] { new Size(1200, 720), new Size(1600, 1000) })
             {
-                using var form = new MainForm { Size = size, StartPosition = FormStartPosition.Manual, Location = new Point(-32000, -32000), ShowInTaskbar = false, Opacity = 0 };
+                using var form = new MainForm { StartPosition = FormStartPosition.Manual, Location = new Point(-32000, -32000), ShowInTaskbar = false, Opacity = 0 };
                 form.Show();
+                // Drive the form by logical 96-DPI dimensions so the assertion holds on any
+                // runner DPI; the PRD thresholds are defined in logical units.
+                var scale = form.DeviceDpi / 96.0;
+                form.ClientSize = new Size((int)Math.Round(logical.Width * scale), (int)Math.Round(logical.Height * scale));
                 form.PerformLayout();
                 Application.DoEvents();
+                var expected = Responsive.Compute(logical.Width, logical.Height);
                 var controls = Descendants(form).ToList();
                 var grid = controls.OfType<DataGridView>().Single();
                 if (grid.ColumnCount != 11) throw new InvalidOperationException("记录表列数不是 11。");
                 if (grid.Rows.Count != records.Count) throw new InvalidOperationException("记录表行数与批次不一致。");
-                if (grid.Columns["No"].Width < 150) throw new InvalidOperationException("单号列宽不足。");
-                if (size.Width == 1200 && (!grid.Columns["PortDest"].Visible || grid.Columns["Port"].Visible || grid.Columns["Dest"].Visible))
-                    throw new InvalidOperationException("1200 宽未按规则合并出境关别/目的国。");
-                if (size.Width == 1600 && (grid.Columns["PortDest"].Visible || !grid.Columns["Port"].Visible || !grid.Columns["Dest"].Visible))
-                    throw new InvalidOperationException("1600 宽不应合并出境关别/目的国。");
+                if (grid.Columns["No"].Width < (int)Math.Round(150 * scale) - 2) throw new InvalidOperationException("单号列宽不足。");
+                if (form.AppliedLayout.Table.PortDestMerged != expected.Table.PortDestMerged)
+                    throw new InvalidOperationException($"应用的列合并分档与逻辑宽度 {logical.Width} 不一致：实际 {form.AppliedLayout.Table.PortDestMerged}。");
+                if (expected.Table.PortDestMerged && (!grid.Columns["PortDest"].Visible || grid.Columns["Port"].Visible || grid.Columns["Dest"].Visible))
+                    throw new InvalidOperationException($"{logical.Width} 逻辑宽未按规则合并出境关别/目的国。");
+                if (!expected.Table.PortDestMerged && (grid.Columns["PortDest"].Visible || !grid.Columns["Port"].Visible || !grid.Columns["Dest"].Visible))
+                    throw new InvalidOperationException($"{logical.Width} 逻辑宽不应合并出境关别/目的国。");
                 if (controls.OfType<FilterSegmented>().SingleOrDefault() is not { } segmented || segmented.AccessibleName != "记录筛选")
                     throw new InvalidOperationException("缺少筛选分段控件。");
                 var kpi = controls.OfType<KpiPanel>().Single();
-                if (kpi.Width < 380) throw new InvalidOperationException("KPI 面板宽度异常。");
+                if (kpi.Width < (int)Math.Round(380 * scale) - 2) throw new InvalidOperationException("KPI 面板宽度异常。");
                 var money = controls.OfType<MoneySummaryPanel>().Single();
                 if (money.RowCount < 2) throw new InvalidOperationException("多币种汇总行数异常。");
-                if (grid.Height < 120) throw new InvalidOperationException("记录区域高度不足。");
+                if (grid.Height < (int)Math.Round(120 * scale) - 2) throw new InvalidOperationException("记录区域高度不足。");
                 if (!controls.OfType<Button>().Any(x => x.AccessibleName == "导出列表") || !controls.OfType<Button>().Any(x => x.AccessibleName == "开始识别") || !controls.OfType<Button>().Any(x => x.AccessibleName == "设置"))
                     throw new InvalidOperationException("缺少标题行/顶栏按钮。");
                 foreach (var pair in new (DataGridView Grid, Control Other)[] { (grid, kpi), (grid, money) })
@@ -665,6 +672,11 @@ internal static class SelfTest
             Opacity = 0
         };
         form.Show();
+        // Snapshots are defined in 96-DPI logical units; scale the physical client size by
+        // the runner's real DPI so the layout matches the PRD dimensions on any runner.
+        var scale = form.DeviceDpi / 96.0;
+        if (Math.Abs(scale - 1.0) > 0.001)
+            form.ClientSize = new Size((int)Math.Round(width * scale), (int)Math.Round(height * scale));
         form.PerformLayout();
         Application.DoEvents();
         return form;
@@ -716,9 +728,9 @@ internal static class SelfTest
                 using var composite = RenderForm(form);
                 using (var graphics = Graphics.FromImage(composite))
                     graphics.DrawImage(popupBitmap, popup.Left - form.Left, popup.Top - form.Top);
-                composite.Save(Path.Combine(outputFolder, $"{name}-1440x900.png"), ImageFormat.Png);
+                composite.Save(Path.Combine(outputFolder, $"{name}.png"), ImageFormat.Png);
             }
-            states.Add((name, "1280x800", $"{name}-1440x900.png", notes));
+            states.Add((name, "logical-1280x800", $"{name}.png", notes));
             states.Add((name + "-popup", "-", $"{name}-popup.png", notes));
         }
         finally

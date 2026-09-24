@@ -64,12 +64,36 @@
 - R2-8 记录并恢复各滚动容器位置；恢复使用独立超时 token；连接中断后启动真实重连任务。
 - R2-9 E2E 扩展：>12000px 分片拼接与接缝像素、未查询/验证码错误/拒写拒绝、可见按钮重复截图唯一命名、同源 frame、刷新单实例。
 
+## 里程碑 M6 · 独立预审 R3 定点修复
+
+对 `REVIEW-round3-ui-package.md` 逐条处理，并按要求补齐 R1/R2 的云端回归。代码改动均已提交，结论以云端运行为准（见"云端运行记录"）。
+
+- **R3-1 编译**：`DetailForm.Columns()` 实体化为 6 列元组列表并统一使用 `.Rect`；`RecordStatePanel` 的 `S(int)` 调用一致。
+- **R3-2 复制为空**：删除 `CellFormatting` 中把 No/Amount/Status 置空的逻辑，`RefreshGrid` 写入真实完整文本；`CopySelectedCells` 读取 `Value` 并经 `ExtractCopySelection()`；新增 `RunCopySelectionRegression` 真实选择 3 行 × 6 列并断言单号/源文件/币种/状态/操作列均非空，金额文本不跨币种相加。
+- **R3-3 多币种明细**：明细新增独立“币种”列并逐行标币；页脚按币种逐行合计，行数多时页脚增高，绝不跨币种求和；`ReliableCurrencyTotals`/`CurrencySummaryText` 供回归断言。
+- **R3-4 汇总**：`MoneySummaryPanel` 开启真实 `AutoScroll`，超出部分出现滚动条而非静默丢弃币种；未确认金额按币种分列（`UnconfirmedRow`），并纳入"含不可靠分项"的部分确认记录（不再只取 Totals 全空的记录）；记录表金额单元格逐币种绘制、溢出显示" +N 币种"，完整文本进入 Tooltip。
+- **R3-5 包结构**：publish 后把 `app/tools` 移到包根 `tools`，根目录保留 `runtime/`、`tools/`、根启动器；`package-release.ps1` 校验根 tools/runtime/许可；新增"干净解压 ZIP → 根启动器 `--ui-contract-self-test` 与 `--env-report`"smoke 步骤，记录退出码并校验解压后字体真实加载。
+- **R3-6 字体/许可**：删除随仓库的可变字体；`scripts/prepare-fonts.ps1` 从固定提交 `google/fonts@2894aab3` 下载 Noto Sans SC 可变字体并核对 SHA256，用 `fontTools 4.60.2` 实例化 400/500/700 静态 TTF 并校验无 `fvar`、`usWeightClass` 正确；下载 `JetBrainsMono-2.304.zip` 核对 SHA256；OFL 原文随包并记录保留字名 `Source` 未被使用；根 `LICENSE`、`third-party-notices/`、`app/fonts` OFL 随包；`global.json` 固定 SDK 8.0.x；`AppFonts.VerifyShipset()` 在环境报告中硬校验静态字重解析。
+- **R3-7 DPI/菜单**：`ProbeDpi()` 在 PER_MONITOR_AWARE_V2 线程上下文读取真实 `DeviceDpi`/`GetDpiForWindow`/`GetDpiForSystem` 并写入报告；`CaptureRealMenu` 通过真实按钮点击弹出真实 `DesignMenu` 窗口、断言其位于工作区并截图（另存弹出窗口图与合成图）；`RunDesignMenuInteractionRegression` 走真实菜单命中/选择事件路径。
+- **R3-8 长字段**：明细行悬停 Tooltip 展示完整商品名、数量/单位、单价、总价、另一引擎值与说明；页脚 Tooltip 展示完整结论；金额与单号单元格 Tooltip 为完整多币种/含源文件文本。
+- **浏览器 E2E**：在既有场景上新增"不点不保存"、"结果缺号拒绝"、"旧结果未变化拒绝"、"失败后重试成功"、"跨源 frame"、"并发会话隔离"；成功场景增加控件排除像素断言与内部滚动末端断言；>12000px 场景增加首/中/尾标记断言。
+
+### 云端运行记录
+
+| 运行 | 提交 | 结论 |
+|---|---|---|
+| [35954437659](https://github.com/Leon1ca/customs-clearance-console/actions/runs/35954437659) | `3a7dfa5` | 核心回归通过；主程序 14 处 `DetailForm` 编译错误 |
+| [35954697691](https://github.com/Leon1ca/customs-clearance-console/actions/runs/35954697691) | `0d7b8cf` | 编译通过；自检 `缺少标题行/顶栏按钮` |
+| [35955293382](https://github.com/Leon1ca/customs-clearance-console/actions/runs/35955293382) | `4d54daf` | 字体 SHA256/实例化/构建通过；自检"记录区与统计区发生重叠"坐标空间误报 |
+| 本轮 | `793e026` | 见下 |
+
 ## 未完成 / 待云端验证
 
-- [ ] 首次云端运行：修复编译与测试问题，取得准确 CI 结论（不得把未运行检查写成通过）。
-- [ ] 真实单一窗口人工验证码流程与真机 DPI 缩放（125/150/200%）仍需人工验收。
+- [ ] 本轮 `793e026` 云端运行的最终步骤结论（自检 / 环境与字体 / 导出 / 快照 / 浏览器 E2E / 打包 / 干净解压 smoke）；在结论出来前不把未运行步骤写成通过。
+- [ ] 真实单一窗口人工验证码流程与真机 DPI 缩放（125/150/200%）仍需人工验收；云端 runner 实际 DeviceDpi 如实记录，未伪造。
 - [ ] 独立验收子路由结论与缺陷闭环。
-- [ ] Noto Sans SC 官方当前仅提供可变字体，已在 `fonts/FONTS.md` 说明；如需静态实例须另有官方来源。
+- [x] Noto Sans SC 静态字体改由云端 `fontTools` 从官方固定提交实例化（见 `fonts/FONTS.md`），不再依赖可变字体，也不再作为偏差留待用户确认。
+- [ ] 跨源 frame 场景仅验证可见内容被合成进截图；受同源策略限制，跨源 frame 内部滚动容器的展开能力仍以云端 E2E 结论为准。
 
 ## 决策记录
 
