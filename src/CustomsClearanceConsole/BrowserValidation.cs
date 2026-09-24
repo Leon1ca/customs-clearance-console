@@ -780,12 +780,14 @@ internal sealed class BrowserValidation : IAsyncDisposable
             // this only runs when an attached child-session frame was actually grown.
             var viewportWidth = 0;
             var viewportHeight = 0;
+            var viewportScale = 1.0;
             try
             {
                 using var viewportDoc = JsonDocument.Parse(await EvaluateContextAsync(
-                    "JSON.stringify({w:window.innerWidth||0,h:window.innerHeight||0})", null, token, awaitPromise: false));
+                    "JSON.stringify({w:window.innerWidth||0,h:window.innerHeight||0,dpr:window.devicePixelRatio||1})", null, token, awaitPromise: false));
                 viewportWidth = viewportDoc.RootElement.GetProperty("w").GetInt32();
                 viewportHeight = viewportDoc.RootElement.GetProperty("h").GetInt32();
+                viewportScale = viewportDoc.RootElement.TryGetProperty("dpr", out var dpr) && dpr.GetDouble() > 0 ? dpr.GetDouble() : 1;
             }
             catch (Exception ex) { AppLog.Write($"读取视口尺寸失败：{ex.Message}"); }
             var enlargedViewport = expandedOopif.Count > 0 && viewportWidth > 0 && viewportHeight > 0
@@ -798,7 +800,7 @@ internal sealed class BrowserValidation : IAsyncDisposable
                     {
                         width = Math.Max(viewportWidth, width),
                         height = Math.Max(viewportHeight, height),
-                        deviceScaleFactor = 0,
+                        deviceScaleFactor = viewportScale,
                         mobile = false
                     }, token);
                     await Task.Delay(200, token);
