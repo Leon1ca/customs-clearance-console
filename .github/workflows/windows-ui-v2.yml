@@ -143,8 +143,44 @@ jobs:
       - name: Native UI state snapshots and layout assertions
         id: snapshots
         continue-on-error: true
-        timeout-minutes: 25
-        run: dotnet "$env:APP_DLL" --ui-state-snapshot artifacts/validation/ui-states
+        timeout-minutes: 8
+        shell: pwsh
+        env:
+          CUSTOMS_CONSOLE_APILOG: ${{ github.workspace }}\artifacts\validation\ui-states\app.log
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:GITHUB_WORKSPACE 'artifacts/validation/ui-states'
+          New-Item -ItemType Directory -Force $evidence | Out-Null
+          $collect = Join-Path $env:GITHUB_WORKSPACE 'scripts/collect-snapshot-diagnostics.ps1'
+          # The native snapshot process is bounded well below the whole-job budget: a hung UI
+          # or native call (modal dialog, CopyFromScreen, display switch) must not burn the
+          # 25-minute step. Evidence is collected before the process is killed, then the step
+          # fails so the final gate stays red while browser/export/package still run.
+          $limitMinutes = 5
+          $stdout = Join-Path $evidence 'snapshot-stdout.log'
+          $stderr = Join-Path $evidence 'snapshot-stderr.log'
+          $process = Start-Process -FilePath 'dotnet' `
+            -ArgumentList @("$env:APP_DLL", '--ui-state-snapshot', $evidence) `
+            -PassThru -NoNewWindow -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          Write-Host "UI 快照进程已启动：PID=$($process.Id)，上限 $limitMinutes 分钟。"
+          if (-not $process.WaitForExit($limitMinutes * 60 * 1000)) {
+            Write-Host "::error::UI 快照进程超过 $limitMinutes 分钟未退出，收集诊断证据后结束。"
+            & $collect -OutputFolder $evidence -ProcessId $process.Id -Label 'timeout'
+            try { $process.Kill($true) } catch { Write-Host "结束进程失败：$($_.Exception.Message)" }
+            try { $process.WaitForExit(30000) | Out-Null } catch { }
+            Write-Host '----- snapshot stdout tail -----'
+            Get-Content -LiteralPath $stdout -Tail 200 -ErrorAction SilentlyContinue | Write-Host
+            Write-Host '----- snapshot stderr tail -----'
+            Get-Content -LiteralPath $stderr -Tail 200 -ErrorAction SilentlyContinue | Write-Host
+            throw "UI 快照进程超时（$limitMinutes 分钟），已保存超时诊断证据。"
+          }
+          Write-Host "UI 快照进程退出码：$($process.ExitCode)"
+          Get-Content -LiteralPath $stdout -ErrorAction SilentlyContinue | Write-Host
+          Get-Content -LiteralPath $stderr -ErrorAction SilentlyContinue | Write-Host
+          if ($process.ExitCode -ne 0) {
+            & $collect -OutputFolder $evidence -ProcessId 0 -Label 'failed'
+            throw "UI 快照命令退出码非 0：$($process.ExitCode)"
+          }
 
       - name: Controlled browser long-screenshot E2E
         id: browser

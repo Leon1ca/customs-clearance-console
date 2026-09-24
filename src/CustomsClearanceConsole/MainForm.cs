@@ -136,6 +136,21 @@ internal sealed partial class MainForm : Form
         RefreshAll();
     }
 
+    /// <summary>
+    /// FormClosed is not raised for snapshot forms that are torn down with Dispose(), so stop
+    /// the debounce timer here as well; otherwise it keeps firing RefreshGrid on a disposed
+    /// window during later DoEvents() calls.
+    /// </summary>
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _searchTimer.Stop();
+            _searchTimer.Dispose();
+        }
+        base.Dispose(disposing);
+    }
+
     private BatchState CurrentState => _session is not null || _previewProcessing ? BatchState.Processing
         : _state.Records.Count > 0 ? BatchState.Complete
         : _batchFolder.Length > 0 ? BatchState.Ready
@@ -406,6 +421,10 @@ internal sealed partial class MainForm : Form
 
     private void RefreshGrid()
     {
+        // A leaked debounce timer from a disposed snapshot window can fire during a later
+        // DoEvents(); never let it touch a torn-down grid ("No row can be added ... does not
+        // have columns"). Dispose stops the timer, this guard covers an already-queued tick.
+        if (IsDisposed || Disposing || _grid is null || _grid.IsDisposed || _grid.Columns.Count == 0) return;
         _visible = FilteredRecords().ToList();
         _page = Math.Clamp(_page, 1, PageCount());
         var size = CurrentPageSize();

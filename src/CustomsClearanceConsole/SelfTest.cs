@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Drawing.Imaging;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -608,6 +609,20 @@ internal static class SelfTest
 
     // ---- snapshot evidence ----
 
+    private static readonly Stopwatch SnapshotClock = Stopwatch.StartNew();
+
+    /// <summary>
+    /// Flushed stage marker for the native snapshot pipeline. It goes to stderr (always kept
+    /// in the CI job log) and to the app log so a hang can be attributed to the exact native
+    /// call instead of the whole 25-minute step.
+    /// </summary>
+    private static void Phase(string message)
+    {
+        var line = $"[UI-PHASE +{SnapshotClock.Elapsed.TotalSeconds:F2}s] {message}";
+        try { Console.Error.WriteLine(line); Console.Error.Flush(); } catch { }
+        AppLog.Write(line);
+    }
+
     public static void CaptureUi(string outputPath, int width, int height)
     {
         var directory = Path.GetDirectoryName(Path.GetFullPath(outputPath));
@@ -627,6 +642,7 @@ internal static class SelfTest
 
     public static void CaptureAllStates(string outputFolder)
     {
+        Phase($"CaptureAllStates start · folder={outputFolder} · appLog={AppLog.FilePath}");
         Directory.CreateDirectory(outputFolder);
         Console.OutputEncoding = Encoding.UTF8;
         var states = new List<(string Name, string Size, string File, string Notes)>();
@@ -634,13 +650,18 @@ internal static class SelfTest
         // shown in a visible window. A cloud runner's default desktop can be smaller, so a
         // real display mode is selected first; if that is impossible the run fails below
         // instead of silently reporting 1044px screenshots as 1200/1920.
+        Phase("DPI probe begin");
         var probe = ProbeDpi();
         var dpiScale = probe.FormDpi / 96.0;
+        Phase($"DPI probe done · formDpi={probe.FormDpi} windowDpi={probe.WindowDpi} systemDpi={probe.SystemDpi}");
+        Phase("desktop size ensure begin");
         var desktopConfigured = EnsureDesktopSize(
             (int)Math.Round(1920 * dpiScale), (int)Math.Round(1080 * dpiScale), out var desktopDetail);
+        Phase($"desktop size ensure done · configured={desktopConfigured} · {desktopDetail}");
 
         void Capture(string state, string size, int width, int height, Action<string> seed, Action<MainForm>? configure = null)
         {
+            Phase($"{state}-{size} begin");
             var stateRoot = Path.Combine(outputFolder, "data", $"{state}-{size}");
             Directory.CreateDirectory(stateRoot);
             var previousData = Environment.GetEnvironmentVariable("CUSTOMS_CONSOLE_DATA");
@@ -648,13 +669,17 @@ internal static class SelfTest
             try
             {
                 seed(stateRoot);
+                Phase($"{state}-{size} seeded");
                 var file = Path.Combine(outputFolder, $"{state}-{size}.png");
                 using var form = NewSnapshotForm(width, height);
+                Phase($"{state}-{size} form shown");
                 configure?.Invoke(form);
                 form.PerformLayout();
                 Application.DoEvents();
+                Phase($"{state}-{size} layout+DoEvents done · starting capture");
                 var evidence = SaveSnapshot(form, file, width, height);
                 states.Add((state, size, Path.GetFileName(file), JsonSerializer.Serialize(evidence)));
+                Phase($"{state}-{size} done · realScreen={evidence.RealScreen}");
             }
             finally { Environment.SetEnvironmentVariable("CUSTOMS_CONSOLE_DATA", previousData); }
         }
@@ -699,18 +724,22 @@ internal static class SelfTest
         Environment.SetEnvironmentVariable("CUSTOMS_CONSOLE_DATA", menuRoot);
         try
         {
+            Phase("menus begin");
             SeedComplete(menuRoot);
             using var form = NewSnapshotForm(1280, 800);
             form.Opacity = 1;
             form.Location = new Point(0, 0);
             form.Activate();
             Application.DoEvents();
+            Phase("menus form ready");
             CaptureRealMenu(form, "导出列表", "menu-export", outputFolder, states);
             CaptureRealMenu(form, "清理", "menu-cleanup", outputFolder, states);
+            Phase("menus done");
         }
         finally { Environment.SetEnvironmentVariable("CUSTOMS_CONSOLE_DATA", previous); }
 
         // Dialogs.
+        Phase("dialogs begin");
         CaptureDialog(Path.Combine(outputFolder, "dialog-settings.png"), "settings");
         CaptureDialog(Path.Combine(outputFolder, "dialog-detail.png"), "detail");
         CaptureDialog(Path.Combine(outputFolder, "dialog-detail-conflict.png"), "detail-conflict");
@@ -723,6 +752,7 @@ internal static class SelfTest
         states.Add(("dialog", "-", "dialog-cleanup-docs-step1.png", "关单清理 1/2"));
         states.Add(("dialog", "-", "dialog-cleanup-docs-step2.png", "关单清理 2/2"));
         states.Add(("dialog", "-", "dialog-cleanup-list.png", "列表清理"));
+        Phase($"dialogs done · {states.Count} states captured");
 
         // The four required sizes must each have a real visible-window screen capture; a
         // DrawToBitmap-only image is not accepted as proof of the declared size.
@@ -752,6 +782,7 @@ internal static class SelfTest
         };
         File.WriteAllText(Path.Combine(outputFolder, "ui-states.json"),
             JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true }), new UTF8Encoding(false));
+        Phase($"report written · total elapsed {SnapshotClock.Elapsed.TotalSeconds:F2}s");
         Console.WriteLine($"UI_STATES_OK · {states.Count} snapshots → {outputFolder}");
     }
 
@@ -767,14 +798,18 @@ internal static class SelfTest
             ShowInTaskbar = false,
             Opacity = 0
         };
+        Phase($"  form.Show begin ({width}x{height})");
         form.Show();
+        Phase("  form.Show returned");
         // Snapshots are defined in 96-DPI logical units; the physical client size is scaled
         // by the runner's real DPI and then asserted, never assumed.
         var scale = form.DeviceDpi / 96.0;
         var desired = new Size((int)Math.Round(width * scale), (int)Math.Round(height * scale));
         form.ClientSize = desired;
         form.PerformLayout();
+        Phase("  form layout set · DoEvents begin");
         Application.DoEvents();
+        Phase($"  form DoEvents returned · client={form.ClientSize}");
         if (form.ClientSize.Width != desired.Width || form.ClientSize.Height != desired.Height)
             throw new InvalidOperationException($"快照窗口尺寸被约束：请求 {desired}，实际 {form.ClientSize}（{width}x{height}）。");
         return form;
@@ -782,10 +817,14 @@ internal static class SelfTest
 
     private static Bitmap RenderForm(MainForm form)
     {
+        Phase("  RenderForm PerformLayout begin");
         form.PerformLayout();
+        Phase("  RenderForm DoEvents begin");
         Application.DoEvents();
         var bitmap = new Bitmap(form.ClientSize.Width, form.ClientSize.Height);
+        Phase($"  RenderForm DrawToBitmap begin · {bitmap.Size}");
         form.DrawToBitmap(bitmap, new Rectangle(Point.Empty, form.ClientSize));
+        Phase("  RenderForm DrawToBitmap returned");
         return bitmap;
     }
 
@@ -805,8 +844,10 @@ internal static class SelfTest
     {
         var button = Descendants(form).OfType<Button>().FirstOrDefault(x => x.AccessibleName == buttonAccessibleName)
             ?? throw new InvalidOperationException($"找不到工具栏按钮：{buttonAccessibleName}");
+        Phase($"  {name} PerformClick begin");
         button.PerformClick();
         Application.DoEvents();
+        Phase($"  {name} PerformClick+DoEvents returned");
         var popup = Application.OpenForms.Cast<Form>()
             .FirstOrDefault(candidate => !ReferenceEquals(candidate, form) && candidate.Visible && candidate.Width > 0 && candidate.Height > 0)
             ?? throw new InvalidOperationException($"菜单 {name} 未真实弹出。");
@@ -820,7 +861,9 @@ internal static class SelfTest
             var notes = $"真实弹出 bounds={bounds};anchor={anchor};working={working};popupDpi={popup.DeviceDpi};anchorDpi={button.DeviceDpi}";
             using (var popupBitmap = new Bitmap(popup.Width, popup.Height))
             {
+                Phase($"  {name} popup DrawToBitmap begin · {popupBitmap.Size}");
                 popup.DrawToBitmap(popupBitmap, new Rectangle(Point.Empty, popup.Size));
+                Phase($"  {name} popup DrawToBitmap returned");
                 popupBitmap.Save(Path.Combine(outputFolder, $"{name}-popup.png"), ImageFormat.Png);
                 using var composite = RenderForm(form);
                 using (var graphics = Graphics.FromImage(composite))
@@ -832,8 +875,10 @@ internal static class SelfTest
         }
         finally
         {
+            Phase($"  {name} popup Close begin");
             popup.Close();
             Application.DoEvents();
+            Phase($"  {name} popup Close returned");
         }
     }
 
@@ -975,10 +1020,12 @@ internal static class SelfTest
         }
         var found = false;
         var best = NewDevMode();
+        var enumerated = 0;
         for (var mode = 0; ; mode++)
         {
             var candidate = NewDevMode();
             if (!EnumDisplaySettings(null, mode, ref candidate)) break;
+            enumerated++;
             if (candidate.PelsWidth < requiredWidth || candidate.PelsHeight < requiredHeight) continue;
             if (!found || (long)candidate.PelsWidth * candidate.PelsHeight < (long)best.PelsWidth * best.PelsHeight)
             {
@@ -986,14 +1033,17 @@ internal static class SelfTest
                 found = true;
             }
         }
+        Phase($"  EnumDisplaySettings done · {enumerated} modes · found={found}");
         if (!found)
         {
             detail = $"没有 >= {requiredWidth}x{requiredHeight} 的显示模式（当前 {current.Width}x{current.Height}）";
             return false;
         }
         best.Fields = DmPelsWidth | DmPelsHeight;
+        Phase($"  ChangeDisplaySettings begin · requested={best.PelsWidth}x{best.PelsHeight}");
         var result = ChangeDisplaySettings(ref best, 0);
         var after = SystemInformation.VirtualScreen;
+        Phase($"  ChangeDisplaySettings returned · result={result} actual={after.Width}x{after.Height}");
         detail = $"请求 {best.PelsWidth}x{best.PelsHeight}，ChangeDisplaySettings={result}，实际 {after.Width}x{after.Height}";
         return result == DispChangeSuccessful && after.Width >= requiredWidth && after.Height >= requiredHeight;
     }
@@ -1048,15 +1098,20 @@ internal static class SelfTest
         var desired = new Size((int)Math.Round(logicalWidth * scale), (int)Math.Round(logicalHeight * scale));
         if (form.ClientSize.Width != desired.Width || form.ClientSize.Height != desired.Height)
             throw new InvalidOperationException($"快照窗口尺寸被约束：请求 {desired}，实际 {form.ClientSize}（{logicalWidth}x{logicalHeight}）。");
+        Phase($"  geometry assert begin · client={form.ClientSize}");
         AssertSnapshotGeometry(form, logicalWidth, logicalHeight);
+        Phase("  geometry assert passed");
         using (var bitmap = RenderForm(form))
         {
             if (bitmap.Width != form.ClientSize.Width || bitmap.Height != form.ClientSize.Height)
                 throw new InvalidOperationException($"PNG 尺寸 {bitmap.Size} 与实际 ClientSize {form.ClientSize} 不一致。");
+            Phase($"  save PNG begin · {path}");
             bitmap.Save(path, ImageFormat.Png);
+            Phase("  save PNG returned");
         }
         var working = Screen.FromControl(form).WorkingArea;
         var screen = Screen.FromControl(form).Bounds;
+        Phase($"  screen info · bounds={screen} working={working} desktop={SystemInformation.VirtualScreen} form={form.Bounds}");
         var bounds = form.Bounds;
         var realScreen = false;
         if (screen.Contains(bounds))
@@ -1066,16 +1121,23 @@ internal static class SelfTest
             form.Opacity = 1;
             form.TopMost = true;
             form.Activate();
+            Phase("  CopyFromScreen show/DoEvents begin");
             Application.DoEvents();
+            Phase("  CopyFromScreen begin");
             using (var screenBitmap = new Bitmap(form.ClientSize.Width, form.ClientSize.Height))
             {
                 using (var graphics = Graphics.FromImage(screenBitmap))
                     graphics.CopyFromScreen(bounds.Left, bounds.Top, 0, 0, form.ClientSize);
                 screenBitmap.Save(Path.Combine(Path.GetDirectoryName(path)!, Path.GetFileNameWithoutExtension(path) + "-screen.png"), ImageFormat.Png);
             }
+            Phase("  CopyFromScreen returned");
             form.TopMost = previousTopMost;
             form.Opacity = previousOpacity;
             realScreen = true;
+        }
+        else
+        {
+            Phase("  CopyFromScreen skipped · window not fully on screen");
         }
         var logicalActual = new Size(
             (int)Math.Round(form.ClientSize.Width * 96.0 / form.DeviceDpi),
@@ -1089,6 +1151,7 @@ internal static class SelfTest
 
     public static void CaptureDialog(string outputPath, string kind)
     {
+        Phase($"  dialog {kind} begin · {outputPath}");
         var directory = Path.GetDirectoryName(Path.GetFullPath(outputPath));
         if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
         var record = BuildSnapshotRecords(Path.GetTempPath()).First();
@@ -1112,10 +1175,14 @@ internal static class SelfTest
         form.Show();
         form.PerformLayout();
         Application.DoEvents();
+        Phase($"  dialog {kind} shown+DoEvents");
         using var bitmap = new Bitmap(form.Width, form.Height);
+        Phase($"  dialog {kind} DrawToBitmap begin · {bitmap.Size}");
         form.DrawToBitmap(bitmap, new Rectangle(Point.Empty, form.Size));
+        Phase($"  dialog {kind} DrawToBitmap returned");
         bitmap.Save(outputPath, ImageFormat.Png);
         form.Close();
+        Phase($"  dialog {kind} done");
     }
 
     private static CleanupDialog StepTwoCleanupDialog(CleanupKind kind, int count, string folder)

@@ -6,7 +6,19 @@ internal static partial class AppLog
 {
     private static readonly object Gate = new();
     public static string Folder => AppPaths.DataFolder;
-    public static string FilePath => Path.Combine(Folder, "app.log");
+
+    /// <summary>
+    /// Log file used by all writes. CI can pin it to a path inside the uploaded evidence
+    /// folder via CUSTOMS_CONSOLE_APILOG, otherwise it stays next to the data folder.
+    /// </summary>
+    public static string FilePath
+    {
+        get
+        {
+            var configured = Environment.GetEnvironmentVariable("CUSTOMS_CONSOLE_APILOG");
+            return string.IsNullOrWhiteSpace(configured) ? Path.Combine(Folder, "app.log") : configured;
+        }
+    }
 
     public static void Write(Exception ex) => Write(ex.ToString());
 
@@ -16,8 +28,10 @@ internal static partial class AppLog
         {
             lock (Gate)
             {
-                Directory.CreateDirectory(Folder);
-                File.AppendAllText(FilePath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {message}{Environment.NewLine}", Encoding.UTF8);
+                var path = FilePath;
+                var directory = Path.GetDirectoryName(path);
+                if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
+                File.AppendAllText(path, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {message}{Environment.NewLine}", Encoding.UTF8);
             }
         }
         catch { }
