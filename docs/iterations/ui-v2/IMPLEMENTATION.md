@@ -113,6 +113,49 @@
 | 本轮 | 见下 | M7 修复后待云端验证 |
 
 
+## 里程碑 M8 · 独立复核 R4 产物 / R5 / R6 定点修复
+
+针对 `REVIEW-round4-artifacts.md`（基于 `72212a3` 的云端 PNG/XML）、`REVIEW-round5-fixed-commit.md`（基于 `6be4e7f` 的调用路径复核）与 `REVIEW-round6-official-dom.md`（官方查询 frame 静态 DOM 核对）逐条修复。R4 的界面修复为上一轮已完成但未提交的工作区改动，本轮保留并补齐断言与真实尺寸证据；R5、R6 为本轮新修。
+
+### R4 界面与真实尺寸证据
+
+- **R4-1 按钮文字**：`Theme` 的六个普通按钮工厂把 `text` 传给 `Style(...)`，`Style` 现在写入 `Text` 与 `AccessibleName`（原先固定 `Text = string.Empty`）。分页“上一页/下一页”、清理、设置浏览/取消/保存文字恢复可见可访问。
+- **R4-2 工具栏/页脚溢出**：嵌套 toolbar/footer `TableLayoutPanel` 增加显式 `RowStyle(Percent,100)`，子控件 `Dock=Fill` 且带上下 margin；`SearchField` 内边距改为 `(44,5,12,5)`。`CaptureAllStates` 新增几何断言：toolbar/footer 每个可见子控件都在父 `ClientRectangle` 内，清理按钮高度不超过设计槽位。
+- **R4-3 KPI 与文件数**：新增 `KpiPanel.RequiredHeight(dpi, compact)` 与统一 `CompactMetrics()`（按 `RequiredHeight(false)` 判定），标签/数值/注释三段按像素分配；`MainForm.BatchTotalForDisplay()` 按真实批次状态取 `_batchFileCount`/进度总数，待识别显示载入文件数；`StatsRowHeight()` 取 KPI 与币种汇总的较大值。新增断言：KPI 高度 ≥ 所需、四格 label/value/note 不相交且不越界。
+- **R4-4 标题接线**：`UpdateTitleBlock()` 把真实状态、目录、开始/完成时间与记录数写入 `TitleBlock.Set`，随 `UpdateSummary` 更新；断言状态与副标题非空。
+- **R4-5 四档真实尺寸**：`CaptureAllStates` 先用 `EnumDisplaySettings`/`ChangeDisplaySettings` 把桌面提升到 ≥1920×1080；`NewSnapshotForm` Show 后按 `DeviceDpi` 设置最终 `ClientSize` 并断言未被约束（`MainForm.AllowOversizeForSnapshot` 配合 `WM_GETMINMAXINFO` 解除窗口跟踪尺寸上限）；`SaveSnapshot` 断言 PNG 像素等于实际 `ClientSize`，并额外用 `Graphics.CopyFromScreen` 对可见窗口做**真实屏幕抓图**（`*-screen.png`）。每档记录请求逻辑尺寸、实际 ClientSize、PNG 尺寸、工作区/屏幕、DPI 与按实际尺寸计算的 Responsive 分支；任一关键状态缺少真实屏幕抓图即失败，不再把 1044 宽图当 1200/1920 通过。
+- **R4-6 Excel 显示精度**：数量/单价 numFmt 提升到 28 位小数（`#,##0.############################`）；`ExcelListExporter.Validate` 解析每个数量/单价单元格的样式→numFmtId→formatCode，按格式可显示的小数位回读并标记会被舍入/显示为零的值；合成样例的冲突 Note 与复核数量/单价改由同一组真实数值推导，样例自洽。
+
+### R5 定点缺陷
+
+- **R5-1 顶层 waiting 不再抢先**：`VerifyStableAsync` 的可终止标记收紧为 `stable|/mismatch|/error|/stale|`；`EvaluateAllContextsAsync` 先在顶层、再遍历所有**已授权** frame 上下文，任一 frame 给出终态即采纳，全为 waiting 时按强度返回最具体结果。顶层外壳不再因 `waiting|not-started` 提前结束，同源/跨源 iframe 内查询可正常收敛。
+- **R5-2 准备账本与异常**：`capture-prepare.js` 在首次修改前先发布 `window.__cccCaptureState`，之后每步只增不改；`PrepareContextsAsync` 在发送执行前把目标登记进恢复账本，CDP `exceptionDetails` 由 `EvaluateContextAsync` 抛为异常，缺少 `prepared` 标记或脚本异常都会拒绝保存；`finally` 恢复全部已触达目标。
+- **R5-3 真实可见高度**：`ExpandFramesAsync` 写入高度后等待布局，回读 iframe 的 `clientHeight`、计算样式 `max-height` 与 frame 自身 `scrollHeight/innerHeight`；只有内容完全暴露才算成功，否则拒绝保存。增长前保存 `height`/`max-height` 的**值与 priority**，恢复时按原 priority 还原（同源 JS 分支同样处理）。
+- **R5-4 授权贯穿链路**：新增 `TargetUrlPolicy.IsAuthorizedFrame`（可信单窗口同源 frame + 已核实 `swapp.singlewindow.cn` 的 `/qspserver/sw/qsp/query/view/queryDecStatus` 路由，https）；`IsAuthorizedContext(contextId, sessionId)` 对未知 frame/来源直接拒绝，不再回退顶层 URL；读取/注入/自动填写/身份/准备/扩展全部只遍历授权 frame；`ConnectAsync` 登记完整 frame 树与父子关系，并支持 `Target.setAutoAttach`（flatten）经子 target/session 处理 OOPIF。
+- **R5-5 单位子串**：`IsKnownUnitToken` 改为完整单位匹配（精确等于 KnownUnits，或 `<数字><单位>` 且余下部分精确等于单位），删除 `Contains` 子串匹配；数量补全改为**相邻**单位证据（`ordered[k+1]` 且间距 ≤ `maxFragmentGap`），任意单词不再写入单位。新增 HEADSET/RESET 生产路径反例。
+- **R5-6 复核来源**：`DeclarationLineTotal` 新增 `BackfilledFields`（从复核引擎补入的字段）与 `AmountOnlyFromSecondary`；`IsFullyVerified` 要求字段既存在且**非补入**，`AmountVerification` 对仅复核金额标为“金额未复核”。补值不再被当作双引擎独立一致。
+
+### R6 官方查询 DOM 兼容（静态源码核对）
+
+- **共用结果区域定义**：`identity.js`/`verify.js`/`probe.js` 的结果选择器改由单一生产常量 `BrowserValidation.ResultSelectors` 注入（`__RESULT_SELECTORS__`），新增 `#queryDetail .display-content .content-field` 与 `[class*=field-order]`，覆盖官网 `processData` 渲染的 `.field-order/.field-title/.field-time/.field-text`；单号只从可见结果文本中的 18 位号读取，输入框/标题/卡片仍不能充当身份。
+- **错误文案**：错误集合补充“验证码无效”“验证码输入错误”“没有符合条件的数据”。
+- **仿官网 DOM fixture + 场景**：新增 `/official` frame（`#entryId` 无 placeholder + 相邻“报关单号”label、`#queryBtn`、`#queryDetail` + `.display-content/.content-field/.field-order`，结果仅在 iframe，顶层无查询结果），E2E 用真实 CDP 鼠标在 frame 内点击 `#queryBtn` 并真实点击卡片，覆盖成功、错号、空结果、验证码无效、捕获中 `field-order` 变化五种场景，成功场景断言首尾标记完整入图。
+- **诚实边界**：静态源码不能保证真实响应的每个 key 都是 18 位号。若已授权官方端点返回的结果区域不含 18 位号，当前实现按“未确认”拒绝保存，不会用输入框的值冒充成功；此类结果的可靠关联仍需实机人工验收，未宣称现场验证。
+
+### 浏览器 E2E 与云端失败
+
+- 修复合成页 `#scrollband` 的 margin 塌陷（改绝对定位），`success-fullpage` 页脚标记回到文档末端。
+- `same-origin-frame` 由 R5-1 修复；`cross-origin-frame` 改为**顶层无查询/结果、查询仅在跨源 iframe** 并加 `max-height` 约束与样式 priority 复原断言。
+- 新增 `cross-site-oopif-frame`：`.test` 主机映射到回环，构造真正跨站 OOPIF，验证会话路由下的查询、准备、扩展与完整捕获。
+- 现有刷新/导航返回/结果变化撤销/重连/长图分片/去重等成功场景保持不重写。
+
+### 云端运行记录
+
+| 运行 | 提交 | 结论 |
+|---|---|---|
+| [35958026991](https://github.com/Leon1ca/customs-clearance-console/actions/runs/35958026991) | `6be4e7f` | 核心/构建/UI 契约/字体/导出/快照通过；浏览器 20 场景 17 通过，`success-fullpage` 页脚标记、`same-origin-frame`（R5-1）、`cross-origin-frame` 失败 |
+| 本轮 | 见下 | R4/R5 修复后待云端验证 |
+
 ## 未完成 / 待云端验证
 
 - [ ] M7 本轮云端运行的最终步骤结论（核心回归 / 自检 / 环境与字体 / 导出 / 快照 / 浏览器 E2E / 打包 / 干净解压 smoke）；在结论出来前不把未运行步骤写成通过。

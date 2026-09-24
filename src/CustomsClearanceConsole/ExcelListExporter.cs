@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.IO.Compression;
+using System.Text.RegularExpressions;
 using System.Xml.Linq;
 
 namespace CustomsClearanceConsole;
@@ -73,6 +74,7 @@ internal static class ExcelListExporter
             if (issues.Count > 0) return issues;
 
             var workbook = Load(archive, "xl/workbook.xml");
+            var styles = Load(archive, "xl/styles.xml");
             var sheetNames = workbook.Descendants(Main + "sheet").Select(x => (string?)x.Attribute("name")).ToList();
             foreach (var name in new[] { "关单列表", "关单明细", "币种汇总" })
                 if (!sheetNames.Contains(name)) issues.Add($"缺少工作表：{name}");
@@ -93,6 +95,27 @@ internal static class ExcelListExporter
             var rows3 = ReadRows(sheet3);
             if (rows3.Count == 0) issues.Add("币种汇总为空。");
             else AssertHeader(rows3[0], ["币种", "去重前", "去重后（计入）", "重复扣减", "确认口径"], "币种汇总", issues);
+
+            // R4-6: the raw XML keeps the full decimal, but a cell format with fewer decimal
+            // places would round it on screen (e.g. 0.0004 shown as 0). Resolve each
+            // quantity/unit-price cell's real number format and flag anything it cannot show.
+            var numberFormats = ReadNumberFormats(styles);
+            var cellXfs = styles.Descendants(Main + "cellXfs").Elements(Main + "xf")
+                .Select(x => (int?)x.Attribute("numFmtId") ?? 0)
+                .ToList();
+            foreach (var cell in sheet2.Descendants(Main + "c"))
+            {
+                var column = ColumnIndex((string?)cell.Attribute("r") ?? "");
+                if (column is not (7 or 9 or 13 or 14) || cell.Attribute("t") is not null) continue;
+                var raw = cell.Element(Main + "v")?.Value;
+                if (raw is null || !decimal.TryParse(raw, NumberStyles.Any, CultureInfo.InvariantCulture, out var value)) continue;
+                var styleIndex = (int?)cell.Attribute("s") ?? 0;
+                if (styleIndex < 0 || styleIndex >= cellXfs.Count) continue;
+                var displayedDecimals = DisplayedDecimalPlaces(ResolveNumberFormat(cellXfs[styleIndex], numberFormats));
+                if (displayedDecimals is null) continue;
+                if (value != 0 && decimal.Round(value, Math.Min(displayedDecimals.Value, 28)) != value)
+                    issues.Add($"数量/单价单元格 {cell.Attribute("r")?.Value} 的值 {raw} 超出显示格式可保留的小数位，将显示为零或四舍五入。");
+            }
 
             // A declaration number must always be an inline string, never a numeric value.
             foreach (var cell in sheet1.Descendants(Main + "c"))
@@ -172,9 +195,9 @@ internal static class ExcelListExporter
                         var amountCheck = CellText(row.GetValueOrDefault(18));
                         if (line.HasAmountDifference && amountCheck != "金额不一致")
                             issues.Add($"金额不一致的分项金额确认写成“{amountCheck}”。");
-                        if (!line.HasAmountDifference && line.VerificationAmount is null && amountCheck != "金额未复核")
+                        if (!line.HasAmountDifference && line.AmountVerification == "金额未复核" && amountCheck != "金额未复核")
                             issues.Add($"未复核金额被写成“{amountCheck}”，应为“金额未复核”。");
-                        if (!line.HasAmountDifference && line.VerificationAmount is not null && amountCheck != "金额一致")
+                        if (!line.HasAmountDifference && line.AmountVerification == "金额一致" && amountCheck != "金额一致")
                             issues.Add($"复核金额一致的分项金额确认写成“{amountCheck}”。");
                     }
                 }
@@ -197,6 +220,81 @@ internal static class ExcelListExporter
     }
 
     private static string? CellText(CellInfo? cell) => cell?.Text;
+
+    private static Dictionary<int, string> ReadNumberFormats(XDocument styles) =>
+        styles.Descendants(Main + "numFmt")
+            .Select(x => (Id: (int?)x.Attribute("numFmtId"), Code: (string?)x.Attribute("formatCode")))
+            .Where(x => x.Id is not null && x.Code is not null)
+            .ToDictionary(x => x.Id!.Value, x => x.Code!);
+
+    /// <summary>Maps a style's numFmtId to its format code, covering the custom ids and the
+    /// standard builtins 0-49 (0 = General in particular). Unknown ids yield null.</summary>
+    private static string? ResolveNumberFormat(int numFmtId, IReadOnlyDictionary<int, string> custom)
+    {
+        if (custom.TryGetValue(numFmtId, out var code)) return code;
+        return numFmtId switch
+        {
+            0 => "General",
+            1 => "0",
+            2 => "0.00",
+            3 => "#,##0",
+            4 => "#,##0.00",
+            5 => "$#,##0_);($#,##0)",
+            6 => "$#,##0_);[Red]($#,##0)",
+            7 => "$#,##0.00_);($#,##0.00)",
+            8 => "$#,##0.00_);[Red]($#,##0.00)",
+            9 => "0%",
+            10 => "0.00%",
+            11 => "0.00E+00",
+            12 => "# ?/?",
+            13 => "# ??/??",
+            14 => "mm-dd-yy",
+            15 => "d-mmm-yy",
+            16 => "d-mmm",
+            17 => "mmm-yy",
+            18 => "h:mm AM/PM",
+            19 => "h:mm:ss AM/PM",
+            20 => "h:mm",
+            21 => "h:mm:ss",
+            22 => "m/d/yy h:mm",
+            37 => "#,##0 ;(#,##0)",
+            38 => "#,##0 ;[Red](#,##0)",
+            39 => "#,##0.00;(#,##0.00)",
+            40 => "#,##0.00;[Red](#,##0.00)",
+            41 => "_(* #,##0_);_(* (#,##0);_(* \"-\"_);_(@_)",
+            42 => "_($* #,##0_);_($* (#,##0);_($* \"-\"_);_(@_)",
+            43 => "_(* #,##0.00_);_(* (#,##0.00);_(* \"-\"??_);_(@_)",
+            44 => "_($* #,##0.00_);_($* (#,##0.00);_($* \"-\"??_);_(@_)",
+            45 => "mm:ss",
+            46 => "[h]:mm:ss",
+            47 => "mmss.0",
+            48 => "##0.0E+0",
+            49 => "@",
+            _ => null
+        };
+    }
+
+    /// <summary>Maximum number of decimal places a format code can display, or null when the
+    /// code cannot be interpreted (in which case the value is not constrained).</summary>
+    private static int? DisplayedDecimalPlaces(string? formatCode)
+    {
+        if (string.IsNullOrWhiteSpace(formatCode)) return null;
+        if (formatCode.Equals("General", StringComparison.OrdinalIgnoreCase)) return 15;
+        // Only the first (positive) section governs this comparison; drop quoted literals and
+        // escaped characters so only number placeholders remain.
+        var section = formatCode.Split(';')[0];
+        section = Regex.Replace(section, "\"[^\"]*\"", "");
+        section = Regex.Replace(section, @"\\.", "");
+        var dot = section.IndexOf('.');
+        if (dot < 0) return 0;
+        var count = 0;
+        for (var i = dot + 1; i < section.Length; i++)
+        {
+            if (section[i] is '0' or '#') count++;
+            else if (section[i] is '%' or 'E' or 'e') break;
+        }
+        return count;
+    }
 
     private static List<Dictionary<int, CellInfo>> ReadRows(XDocument sheet)
     {
@@ -336,8 +434,8 @@ internal static class ExcelListExporter
                 new XElement(Main + "numFmts",
                     NumFmt(164, "#,##0"),
                     NumFmt(165, "#,##0.00"),
-                    NumFmt(166, "#,##0.############"),
-                    NumFmt(167, "#,##0.############")),
+                    NumFmt(166, "#,##0.############################"),
+                    NumFmt(167, "#,##0.############################")),
                 new XElement(Main + "fonts",
                     Font(11, false),
                     Font(11, true),

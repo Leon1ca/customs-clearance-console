@@ -390,20 +390,20 @@ internal sealed partial class DeclarationParser
     };
 
     /// <summary>
-    /// Unit evidence for the quantity column. Multi-character units may arrive attached
-    /// to punctuation; single-character units such as "M" require an exact match so an
-    /// unrelated word is never mistaken for a unit.
+    /// Unit evidence for the quantity column. A token counts only when it is a complete known
+    /// unit, optionally attached to a leading number such as "12.5KG" or "12.5千克"; substring
+    /// matches are never accepted, so a word like "HEADSET" cannot be read as the unit "SET".
     /// </summary>
     private static bool IsKnownUnitToken(string text)
     {
         var candidate = text.Trim().Trim('(', ')', '（', '）', '/', '：', ':');
         if (candidate.Length == 0) return false;
-        foreach (var unit in KnownUnits)
-        {
-            if (candidate.Equals(unit, StringComparison.OrdinalIgnoreCase)) return true;
-            if (unit.Length >= 2 && candidate.Contains(unit, StringComparison.OrdinalIgnoreCase)) return true;
-        }
-        return false;
+        if (KnownUnits.Contains(candidate)) return true;
+        // "12.5KG" / "12.5千克": the remainder after the numeric prefix must itself be a
+        // complete known unit. Substring matching is never used, so "HEADSET"/"RESET"
+        // (which merely contain "SET") are not accepted as unit evidence.
+        var numeric = Regex.Match(candidate, @"^[0-9][0-9,.]*");
+        return numeric.Success && numeric.Length < candidate.Length && KnownUnits.Contains(candidate[numeric.Length..]);
     }
 
     /// <summary>
@@ -485,16 +485,23 @@ internal sealed partial class DeclarationParser
                     lastLeft = token.Left;
                 }
                 if (!TryAmount(string.Concat(fragments), out var quantity) || quantity <= 0) break;
-                var suffix = ordered.Skip(k + 1)
-                    .Select(t => t.Text.Trim())
-                    .Where(t => t.Length > 0 && !Regex.IsMatch(t, @"^[0-9][0-9,.]*$"))
-                    .ToList();
                 var inQuantityColumn = quantityColumn is { } column &&
                     anchor.CenterX >= column.Left && anchor.Right <= column.Right;
-                if (!inQuantityColumn && !suffix.Any(IsKnownUnitToken)) break;
+                // Unit evidence is adjacency based: the very next token must be a complete
+                // unit and must sit right next to the number. Any later token on the line is
+                // ignored, so a product word can never promote a model number to a quantity.
+                var following = ordered.Count > k + 1 ? ordered[k + 1] : null;
+                var adjacentUnit = following is not null &&
+                    following.Left - anchor.Right <= maxFragmentGap &&
+                    IsKnownUnitToken(following.Text);
+                if (!inQuantityColumn && !adjacentUnit) break;
                 line.Quantity = quantity;
                 quantityLeft = anchor.Left;
-                line.Unit = string.Join(" ", suffix).Trim();
+                // Only a recognized unit token may be written; when the quantity came from
+                // the header column alone the row keeps an empty unit.
+                line.Unit = ordered.Skip(k + 1)
+                    .Select(t => t.Text.Trim())
+                    .FirstOrDefault(t => t.Length > 0 && IsKnownUnitToken(t)) ?? "";
                 break;
             }
             if (line.Quantity is not null) break;
@@ -512,8 +519,8 @@ internal sealed partial class DeclarationParser
             .Where(value => value.Length > 0 && !Regex.IsMatch(value, @"^[\p{P}\p{S}\s]+$")));
         line.ProductName = Regex.Replace(product, @"\s+", " ").Trim();
 
-        // A quantity without a recognizable unit keeps the raw unit text; if the row had no
-        // unit at all, leave it empty so the dialog and exports show “—”.
+        // A quantity without a recognized unit token leaves the unit empty so the dialog
+        // and exports show “—”; an arbitrary following word is never stored as the unit.
         if (line.Quantity is null) line.Unit = "";
         if (line.Unit.Length > 0 && KnownUnits.Contains(line.Unit)) line.Unit = line.Unit.ToUpperInvariant();
     }

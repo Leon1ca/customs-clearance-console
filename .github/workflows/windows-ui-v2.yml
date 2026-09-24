@@ -108,12 +108,21 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "静态字体准备失败：$LASTEXITCODE" }
 
       - name: Build main application
+        id: build
+        continue-on-error: true
+        timeout-minutes: 25
         run: dotnet build src/CustomsClearanceConsole/CustomsClearanceConsole.csproj -c Release
 
       - name: Native UI contract self-test
+        id: uicontract
+        continue-on-error: true
+        timeout-minutes: 15
         run: dotnet "$env:APP_DLL" --ui-contract-self-test
 
       - name: Environment, DPI and font report (fails if static weights are not real)
+        id: envreport
+        continue-on-error: true
+        timeout-minutes: 15
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -126,15 +135,27 @@ jobs:
           if (-not $report.fontVerification.ok) { throw "随包静态字体未真实加载：$($report.fontVerification.detail)" }
 
       - name: Excel and Markdown export validation
+        id: export
+        continue-on-error: true
+        timeout-minutes: 15
         run: dotnet "$env:APP_DLL" --export-samples artifacts/validation/export
 
       - name: Native UI state snapshots and layout assertions
+        id: snapshots
+        continue-on-error: true
+        timeout-minutes: 25
         run: dotnet "$env:APP_DLL" --ui-state-snapshot artifacts/validation/ui-states
 
       - name: Controlled browser long-screenshot E2E
+        id: browser
+        continue-on-error: true
+        timeout-minutes: 35
         run: dotnet "$env:APP_DLL" --browser-e2e artifacts/validation/browser
 
       - name: Portable package (root runtime + tools + launcher + app fonts/licences)
+        id: package
+        continue-on-error: true
+        timeout-minutes: 45
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -172,6 +193,9 @@ jobs:
           & "$env:GITHUB_WORKSPACE/scripts/package-release.ps1" -SourceRoot $root
 
       - name: Verify portable ZIP contents
+        id: zipverify
+        continue-on-error: true
+        timeout-minutes: 15
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -198,6 +222,9 @@ jobs:
           Get-Content (Get-ChildItem -LiteralPath 'artifacts/releases' -Recurse -Filter 'SHA256SUMS.txt' | Select-Object -First 1).FullName
 
       - name: Smoke test clean ZIP extraction through the root launcher
+        id: smoke
+        continue-on-error: true
+        timeout-minutes: 25
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -237,3 +264,32 @@ jobs:
           path: |
             artifacts/releases/**
           if-no-files-found: warn
+
+      # Evidence steps run independently (continue-on-error) so one failure still uploads
+      # every other usable artifact. This gate is the single place that fails the final job
+      # when any required step did not actually succeed.
+      - name: Enforce validation gate
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $results = [ordered]@{
+            'build'      = '${{ steps.build.outcome }}'
+            'uicontract' = '${{ steps.uicontract.outcome }}'
+            'envreport'  = '${{ steps.envreport.outcome }}'
+            'export'     = '${{ steps.export.outcome }}'
+            'snapshots'  = '${{ steps.snapshots.outcome }}'
+            'browser'    = '${{ steps.browser.outcome }}'
+            'package'    = '${{ steps.package.outcome }}'
+            'zipverify'  = '${{ steps.zipverify.outcome }}'
+            'smoke'      = '${{ steps.smoke.outcome }}'
+          }
+          $failed = @()
+          foreach ($entry in $results.GetEnumerator()) {
+            Write-Host ("{0,-12} {1}" -f $entry.Key, $entry.Value)
+            if ($entry.Value -ne 'success') { $failed += "$($entry.Key)=$($entry.Value)" }
+          }
+          if ($failed.Count -gt 0) {
+            throw "以下必需验证步骤未成功：$($failed -join '、')"
+          }
+          Write-Host "全部必需验证步骤成功。"

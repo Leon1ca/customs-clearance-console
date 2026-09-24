@@ -7,7 +7,7 @@
           if (!state.queryAt) return 'waiting|not-started';
           const bodyText = (document.body?.innerText || '').replace(/\s+/g, ' ').trim();
           const compact = bodyText.replace(/\s+/g, '');
-          const errors = ['验证码错误','验证码不正确','请输入验证码','查询失败','未查询到','没有查询到','暂无数据','请求失败'];
+          const errors = ['验证码错误','验证码不正确','验证码无效','验证码输入错误','请输入验证码','查询失败','未查询到','没有查询到','没有符合条件的数据','暂无数据','请求失败'];
           if (errors.some(value => compact.includes(value))) return 'error|' + errors.find(value => compact.includes(value));
           const loading = [...document.querySelectorAll('[aria-busy=true],.loading,.is-loading,.el-loading-mask,.ant-spin-spinning,.layui-layer-loading')].some(visible);
           if (loading) return 'loading|' + document.documentElement.scrollHeight;
@@ -17,7 +17,7 @@
             (Math.abs(current.length - state.baseline.length) >= 24 || Math.abs(current.height - state.baseline.height) >= 60);
           const resultMarkers = ['申报日期','放行日期','结关日期','海关状态','通关状态','查验状态','申报海关','放行','结关'];
           const markerCount = resultMarkers.filter(value => compact.includes(value)).length;
-          const resultElements = [...document.querySelectorAll('table tbody tr,.timeline li,.el-timeline-item,.ant-timeline-item,.query-result tr,.result-list li')]
+          const resultElements = [...document.querySelectorAll(__RESULT_SELECTORS__)]
             .filter(visible).filter(el => (el.innerText || '').trim().length >= 8);
           const resultRows = resultElements.length;
           const elapsed = Date.now() - state.queryAt;

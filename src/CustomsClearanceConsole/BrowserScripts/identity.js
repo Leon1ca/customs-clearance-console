@@ -17,13 +17,16 @@
 
   const bodyText = (document.body ? document.body.innerText : '').replace(/\s+/g, ' ').trim();
   const compact = bodyText.replace(/\s+/g, '');
-  const errors = ['验证码错误', '验证码不正确', '请输入验证码', '查询失败', '未查询到', '没有查询到', '暂无数据', '请求失败'];
+  const errors = ['验证码错误', '验证码不正确', '验证码无效', '验证码输入错误', '请输入验证码', '查询失败', '未查询到', '没有查询到', '没有符合条件的数据', '暂无数据', '请求失败'];
   const error = errors.find(value => compact.includes(value));
   if (error) return 'error|' + error;
   const loading = [...document.querySelectorAll('[aria-busy=true],.loading,.is-loading,.el-loading-mask,.ant-spin-spinning,.layui-layer-loading')].some(visible);
   if (loading) return 'loading|loading';
 
-  const resultSelectors = 'table tbody tr,.timeline li,.el-timeline-item,.ant-timeline-item,.query-result tr,.result-list li,[class*=result] tbody tr,[class*=inquiry] tbody tr,[class*=detail] tbody tr';
+  // The result-region definition is injected from one production constant so identity,
+  // verify and probe can never drift apart. It includes the official
+  // #queryDetail .display-content .content-field > .field-order renderer.
+  const resultSelectors = __RESULT_SELECTORS__;
   const resultElements = [...document.querySelectorAll(resultSelectors)]
     .filter(visible).filter(e => !inWidget(e)).filter(e => !inChrome(e)).filter(e => (e.innerText || '').trim().length >= 8);
   if (resultElements.length === 0) return 'waiting|no-result-element';

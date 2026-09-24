@@ -22,11 +22,21 @@ internal sealed partial class MainForm : Form
     private string _batchFolder = "";
     private int _batchFileCount;
     private string _batchFileSummary = "";
+    private DateTime? _scanStartedAt;
+    private DateTime? _scanCompletedAt;
     private Responsive.Layout _layout = Responsive.Compute(1200, 720);
+
+    /// <summary>
+    /// Snapshot mode only: allows the window to be sized beyond the physical desktop so the
+    /// four required logical sizes can be rendered and asserted even on a small cloud
+    /// runner. Never enabled for the normal application window.
+    /// </summary>
+    internal bool AllowOversizeForSnapshot { get; set; }
 
     private TableLayoutPanel _body = null!;
     private TableLayoutPanel _statsRow = null!;
     private TableLayoutPanel _toolbar = null!;
+    private TableLayoutPanel _footerPanel = null!;
     private TableLayoutPanel _recordsContent = null!;
     private TitleBlock _titleBlock = null!;
     private KpiPanel _kpi = null!;
@@ -53,6 +63,21 @@ internal sealed partial class MainForm : Form
     private CopyContextMenu _copyMenu = null!;
     private DesignMenu _exportMenu = null!;
     private DesignMenu _cleanupMenu = null!;
+
+    // ---- snapshot/self-test accessors (same assembly only) ----
+    internal TitleBlock TitleBlockForTest => _titleBlock;
+    internal KpiPanel KpiForTest => _kpi;
+    internal MoneySummaryPanel MoneySummaryForTest => _moneySummary;
+    internal TableLayoutPanel ToolbarForTest => _toolbar;
+    internal TableLayoutPanel FooterPanelForTest => _footerPanel;
+    internal SearchField SearchHostForTest => _searchHost;
+    internal Button CleanupButtonForTest => _cleanupButton;
+    internal Button PreviousForTest => _previous;
+    internal Button NextForTest => _next;
+    internal Button SettingsForTest => _settings;
+    internal Button ScanForTest => _scan;
+    internal Button ExportForTest => _exportButton;
+    internal TableLayoutPanel BodyForTest => _body;
 
     public MainForm()
     {
@@ -120,6 +145,8 @@ internal sealed partial class MainForm : Form
     internal void PreviewProcessing(int done, int total, string file, int completed, int attention, int failed)
     {
         _previewProcessing = true;
+        _scanStartedAt ??= DateTime.Now;
+        _scanCompletedAt = null;
         _progressStrip.Done = done;
         _progressStrip.Total = total;
         _progressStrip.FileName = file;
@@ -207,6 +234,8 @@ internal sealed partial class MainForm : Form
         InvalidateBrowserSessions();
         using var session = new ScanSession(plan);
         _session = session;
+        _scanStartedAt = DateTime.Now;
+        _scanCompletedAt = null;
         _state.Records = session.Completed;
         _page = 1;
         _batchFolder = plan.Files.Count > 0 ? Path.GetDirectoryName(plan.Files[0]) ?? _batchFolder : _batchFolder;
@@ -242,6 +271,7 @@ internal sealed partial class MainForm : Form
             BatchScanner.MarkDuplicates(session.Completed);
             _state.Records = BatchScanner.SortRecords(session.Completed).ToList();
             _session = null;
+            _scanCompletedAt = DateTime.Now;
             LoadBatchFileSummary(_batchFolder.Length > 0 ? _batchFolder : _state.LastFolder);
             SaveState();
             RefreshAll();
@@ -426,6 +456,69 @@ internal sealed partial class MainForm : Form
 
     private static string Dash(string value) => string.IsNullOrWhiteSpace(value) ? "—" : value;
 
+    /// <summary>Files in the current batch, independent of how many rows were recognized.</summary>
+    private int BatchTotalForDisplay()
+    {
+        var state = CurrentState;
+        return state switch
+        {
+            BatchState.Empty => 0,
+            BatchState.Ready => _batchFileCount,
+            BatchState.Processing => _progressStrip.Total > 0 ? _progressStrip.Total : _batchFileCount,
+            _ => Math.Max(_batchFileCount, _state.Records.Count)
+        };
+    }
+
+    /// <summary>Stats row height that fits both the KPI grid and the currency summary.</summary>
+    private int StatsRowHeight()
+    {
+        var dpi = DeviceDpi;
+        int S(int px) => (int)Math.Round(px * dpi / 96.0);
+        var kpi = KpiPanel.RequiredHeight(dpi, _layout.CompactHeight);
+        var money = S(96 + _moneySummary.RowCount * (_layout.AmountRow + 4) +
+            (_moneySummary.UnconfirmedRowCount > 0 ? 26 + _moneySummary.UnconfirmedRowCount * 26 : 0));
+        return Math.Max(kpi, money);
+    }
+
+    /// <summary>Pushes the real batch state, folder and timing into the title block (R4-4).</summary>
+    private void UpdateTitleBlock()
+    {
+        var state = CurrentState;
+        var records = _state.Records;
+        var (status, palette) = state switch
+        {
+            BatchState.Empty => ("未载入", new UiTokens.StatusPalette("未载入", Theme.Muted, Theme.SegmentBg, Color.White)),
+            BatchState.Ready => ("待识别", new UiTokens.StatusPalette("待识别", Theme.Primary, Theme.AccentSoft, Color.White)),
+            BatchState.Processing => ("识别中", new UiTokens.StatusPalette("识别中", Theme.Accent, UiTokens.Status.AttentionNotice, Color.White)),
+            _ => ("识别完成", UiTokens.Status.Ok)
+        };
+        var folder = _batchFolder.Length > 0 ? _batchFolder : _state.LastFolder;
+        var subline = state switch
+        {
+            BatchState.Empty => "请选择关单目录",
+            BatchState.Ready => _batchFileSummary,
+            BatchState.Processing => (_scanStartedAt is { } started ? $"开始于 {started:HH:mm:ss} · " : "") +
+                (_progressStrip.Total > 0 ? $"共 {_progressStrip.Total} 个文件，已识别 {records.Count}" : "正在识别"),
+            _ => CompleteSubline(folder, records)
+        };
+        _titleBlock.Set("本批关单", status, palette, subline, false);
+    }
+
+    private string CompleteSubline(string folder, IReadOnlyList<DeclarationRecord> records)
+    {
+        var parts = new List<string>();
+        if (_scanCompletedAt is { } done)
+            parts.Add(_scanStartedAt is { } started && done >= started
+                ? $"{done:HH:mm} 完成 · 用时 {FormatDuration(done - started)}"
+                : $"{done:HH:mm} 完成");
+        if (!string.IsNullOrWhiteSpace(folder)) parts.Add(folder);
+        if (records.Count > 0) parts.Add($"共 {records.Count} 条记录");
+        return string.Join(" · ", parts);
+    }
+
+    private static string FormatDuration(TimeSpan span) =>
+        span.TotalMinutes >= 1 ? $"{(int)span.TotalMinutes} 分 {span.Seconds} 秒" : $"{Math.Max(0, span.Seconds)} 秒";
+
     private void UpdateSummary(int visibleCount)
     {
         var state = CurrentState;
@@ -436,11 +529,22 @@ internal sealed partial class MainForm : Form
         var savedNumbers = records.Where(x => x.HasScreenshot).Select(x => x.DeclarationNo).Where(x => x.Length > 0).Distinct().Count();
         var validNumbers = records.Where(x => x.HasValidDeclarationNo).Select(x => x.DeclarationNo).Distinct().Count();
         var placeholder = state == BatchState.Empty;
+        var batchTotal = BatchTotalForDisplay();
+        var completedRecords = records.Count(x => x.Status is "识别完成" or "OCR 识别完成" or "双引擎校验通过");
 
         _kpi.Set(
         [
-            new KpiCell("本批文件", records.Count.ToString(), "份",
-                state switch { BatchState.Empty => "尚未载入", BatchState.Ready => "待识别", BatchState.Processing => "识别中", _ => $"识别完成 {records.Count(x => x.Status is "识别完成" or "OCR 识别完成" or "双引擎校验通过")} / {records.Count}" },
+            // The value is the number of files in the current batch, not the number of
+            // recognized rows: the ready batch showed 10 loaded files but 0 here because it
+            // always printed records.Count (R4-3).
+            new KpiCell("本批文件", state == BatchState.Empty ? "—" : batchTotal.ToString(), "份",
+                state switch
+                {
+                    BatchState.Empty => "尚未载入",
+                    BatchState.Ready => "待识别",
+                    BatchState.Processing => $"已识别 {records.Count} / {batchTotal}",
+                    _ => $"识别完成 {completedRecords} / {batchTotal}"
+                },
                 state == BatchState.Empty ? KpiTone.Placeholder : KpiTone.Normal),
             new KpiCell("重复单号", duplicateGroups.ToString(), "组",
                 placeholder ? "尚未载入" : records.Count == 0 ? "识别后统计" : $"{duplicateFiles} 份文件，合计只计 1 份",
@@ -474,8 +578,10 @@ internal sealed partial class MainForm : Form
             .Select(group => new UnconfirmedRow(group.Key, group.Sum(x => x.Amount), group.Sum(x => x.Count), group.First().Record.SourceName))
             .ToList();
         _moneySummary.Set(new MoneySummarySnapshot(rows, unconfirmedRows));
-        _body.RowStyles[1].Height = UiScale.Px(this, Math.Max(126, Math.Min(280,
-            96 + rows.Count * (_layout.AmountRow + 4) + (unconfirmedRows.Count > 0 ? 26 + unconfirmedRows.Count * 26 : 0))));
+        // The stats row must fit both the KPI 2x2 grid and the currency summary. Deriving it
+        // from the currency count alone shrank the empty/ready/processing KPI to 126px and
+        // overlapped label/value/note (R4-3).
+        _body.RowStyles[1].Height = StatsRowHeight();
 
         var counts = new[] { records.Count, records.Count(x => !x.IsDuplicate && !x.NeedsAttention), records.Count(x => x.IsDuplicate), attention };
         _filterSegmented.Set(
@@ -510,6 +616,7 @@ internal sealed partial class MainForm : Form
         _previous.Enabled = _page > 1;
         _next.Enabled = _page < PageCount();
         if (_pageSize.SelectedIndex < 0) _pageSize.SelectedItem = "50 条";
+        UpdateTitleBlock();
     }
 
     private void LayoutRecordState()
@@ -1140,9 +1247,29 @@ internal sealed partial class MainForm : Form
         LayoutRecordState();
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MinMaxInfo
+    {
+        public Point Reserved;
+        public Point MaxSize;
+        public Point MaxPosition;
+        public Point MinTrackSize;
+        public Point MaxTrackSize;
+    }
+
     protected override void WndProc(ref Message message)
     {
-        const int wmNchittest = 0x84, grip = 8;
+        const int wmNchittest = 0x84, grip = 8, wmGetMinMaxInfo = 0x24;
+        // A borderless window is normally clamped to the physical desktop tracking size.
+        // Snapshot rendering explicitly lifts that clamp; the normal window keeps it.
+        if (message.Msg == wmGetMinMaxInfo && AllowOversizeForSnapshot)
+        {
+            base.WndProc(ref message);
+            var info = Marshal.PtrToStructure<MinMaxInfo>(message.LParam);
+            info.MaxTrackSize = new Point(8192, 8192);
+            Marshal.StructureToPtr(info, message.LParam, false);
+            return;
+        }
         if (message.Msg == wmNchittest && WindowState == FormWindowState.Normal)
         {
             base.WndProc(ref message);

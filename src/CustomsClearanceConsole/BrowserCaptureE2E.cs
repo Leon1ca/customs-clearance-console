@@ -49,6 +49,12 @@ internal static class BrowserCaptureE2E
             checks.Add(await RunStaleAsync(outputFolder, browser, server));
             checks.Add(await RunFailureRetryAsync(outputFolder, browser, server));
             checks.Add(await RunCrossOriginFrameAsync(outputFolder, browser, server));
+            checks.Add(await RunCrossSiteOopifFrameAsync(outputFolder, browser, server));
+            checks.Add(await RunOfficialDomSuccessAsync(outputFolder, browser, server));
+            checks.Add(await RunOfficialDomWrongNumberAsync(outputFolder, browser, server));
+            checks.Add(await RunOfficialDomEmptyAsync(outputFolder, browser, server));
+            checks.Add(await RunOfficialDomErrorAsync(outputFolder, browser, server));
+            checks.Add(await RunOfficialDomResultChangeAsync(outputFolder, browser, server));
             checks.Add(await RunConcurrentSessionsAsync(outputFolder, browser, server));
             checks.Add(await RunNavigationReturnAsync(outputFolder, browser, server));
             checks.Add(await RunResultChangeAsync(outputFolder, browser, server));
@@ -403,8 +409,11 @@ internal static class BrowserCaptureE2E
         var folder = Path.Combine(outputFolder, "cross-origin-frame");
         Directory.CreateDirectory(folder);
         const string number = "310120260000000016";
+        // The query form and the matching result live ONLY in the cross-origin frame; the
+        // top-level shell has neither query nor result, like the official page. The frame is
+        // additionally capped by max-height so a height-only write would truncate it (R5-3).
         var frameUrl = other.Url($"/frame?content=800&result={number}&query=1");
-        var url = server.Url($"/page?content=300&result={number}&frame=cross&xhost={Uri.EscapeDataString(frameUrl)}");
+        var url = server.Url($"/page?content=300&result={number}&frame=cross&clamp=1&xhost={Uri.EscapeDataString(frameUrl)}");
         await using var session = new BrowserValidation(number, folder, url, browser, headless: true, allowTestTarget: true);
         var result = await DriveAsync(session, Path.Combine(outputFolder, "capture-cross-frame.png"), waitForSettled: true);
         var details = new List<string>();
@@ -419,7 +428,165 @@ internal static class BrowserCaptureE2E
             if (!ColumnContainsColor(image, Color.FromArgb(0x77, 0x00, 0xAA)))
                 details.Add("跨源 frame 底部标记未出现在截图中（内容被截断）。");
         }
-        return new Scenario("cross-origin-frame", details.Count == 0, details.Count == 0 ? ["跨源 frame 经 CDP 扩展后底部标记完整入图"] : details);
+        var style = await session.EvaluateRawAsync(
+            "JSON.stringify((function(){var f=document.getElementById('inner');return {height:f.style.getPropertyValue('height'),heightPriority:f.style.getPropertyPriority('height'),maxHeight:f.style.getPropertyValue('max-height'),maxHeightPriority:f.style.getPropertyPriority('max-height')};})())",
+            CancellationToken.None);
+        if (!style.Contains("\"height\":\"\"", StringComparison.Ordinal) ||
+            !style.Contains("\"maxHeight\":\"400px\"", StringComparison.Ordinal) ||
+            !style.Contains("\"maxHeightPriority\":\"important\"", StringComparison.Ordinal))
+            details.Add($"iframe 原高度/max-height 及 !important 优先级未复原：{style}");
+        return new Scenario("cross-origin-frame", details.Count == 0, details.Count == 0 ? ["顶层无查询，max-height 约束的跨源 frame 内查询首尾完整且原样式优先级复原"] : details);
+    }
+
+    /// <summary>
+    /// A frame served from a different registrable site is put out of process by Chromium.
+    /// This proves the flattened Target session path reaches, queries, prepares, expands and
+    /// captures an OOPIF query frame whose result the top-level shell never sees.
+    /// </summary>
+    private static async Task<Scenario> RunCrossSiteOopifFrameAsync(string outputFolder, string browser, TestServer server)
+    {
+        using var other = new TestServer();
+        other.Start();
+        const string host = "e2e-frame.test";
+        var folder = Path.Combine(outputFolder, "oopif-frame");
+        Directory.CreateDirectory(folder);
+        const string number = "310120260000000022";
+        var frameUrl = $"http://{host}:{other.Port}/frame?content=800&result={number}&query=1";
+        var url = server.Url($"/page?content=300&result={number}&frame=cross&clamp=1&xhost={Uri.EscapeDataString(frameUrl)}");
+        await using var session = new BrowserValidation(number, folder, url, browser, headless: true, allowTestTarget: true,
+            extraBrowserArgs: [$"--host-resolver-rules=MAP {host} 127.0.0.1"]);
+        var result = await DriveAsync(session, Path.Combine(outputFolder, "capture-oopif-frame.png"), waitForSettled: true);
+        var details = new List<string>();
+        if (result.State != "saved") details.Add($"跨站 OOPIF frame 截图失败：{result.Message}");
+        if (result.FilePath is null || !File.Exists(result.FilePath)) details.Add("未生成跨站 OOPIF frame 截图。");
+        else
+        {
+            using var image = new Bitmap(result.FilePath);
+            if (image.Height < 700) details.Add($"跨站 OOPIF frame 高度不足，可能被截断：{image.Height}。");
+            if (!RegionContainsColor(image, new Rectangle(0, 0, image.Width, Math.Min(500, image.Height)), Color.FromArgb(0x00, 0x88, 0xCC)))
+                details.Add("跨站 OOPIF frame 顶部标记未入图。");
+            if (!ColumnContainsColor(image, Color.FromArgb(0x77, 0x00, 0xAA)))
+                details.Add("跨站 OOPIF frame 底部标记未入图（独立进程内容被截断）。");
+        }
+        var style = await session.EvaluateRawAsync(
+            "JSON.stringify((function(){var f=document.getElementById('inner');return {height:f.style.getPropertyValue('height'),maxHeight:f.style.getPropertyValue('max-height'),maxHeightPriority:f.style.getPropertyPriority('max-height')};})())",
+            CancellationToken.None);
+        if (!style.Contains("\"height\":\"\"", StringComparison.Ordinal) ||
+            !style.Contains("\"maxHeight\":\"400px\"", StringComparison.Ordinal) ||
+            !style.Contains("\"maxHeightPriority\":\"important\"", StringComparison.Ordinal))
+            details.Add($"OOPIF frame 原高度/max-height 及优先级未复原：{style}");
+        return new Scenario("cross-site-oopif-frame", details.Count == 0, details.Count == 0 ? ["独立进程 OOPIF frame 内查询经 CDP session 完整捕获并复原样式"] : details);
+    }
+
+    /// <summary>
+    /// The official query frame DOM: the top-level shell has no query, the form and the
+    /// result live in the iframe, and the result is rendered as
+    /// #queryDetail .display-content .content-field &gt; .field-order. The query button is
+    /// triggered by a real CDP mouse click inside the frame.
+    /// </summary>
+    private static async Task<Scenario> RunOfficialDomSuccessAsync(string outputFolder, string browser, TestServer server)
+    {
+        var folder = Path.Combine(outputFolder, "official-dom");
+        Directory.CreateDirectory(folder);
+        const string number = "310120260000000023";
+        var url = server.Url($"/page?result={number}&frame=official&mode=ok");
+        await using var session = new BrowserValidation(number, folder, url, browser, headless: true, allowTestTarget: true);
+        var problem = await StartAndWaitAsync(session, false);
+        var details = new List<string>();
+        if (problem is not null) return new Scenario("official-dom-success", false, [problem]);
+        if (!await session.ClickElementInFrameAsync("#inner", "#queryBtn", CancellationToken.None))
+            details.Add("未能在 frame 内真实点击查询按钮。");
+        var identity = await session.WaitForIdentitySettledAsync(TimeSpan.FromSeconds(30), CancellationToken.None);
+        if (!identity.StartsWith("ready|", StringComparison.Ordinal)) details.Add($"官方 DOM 查询未就绪：{identity}");
+        var result = await ClickAndAwaitAsync(session, TimeSpan.FromSeconds(120));
+        if (result.State != "saved") details.Add($"官方 DOM 截图失败：{result.State}：{result.Message}");
+        else if (result.FilePath is null || !File.Exists(result.FilePath)) details.Add("官方 DOM 未生成截图。");
+        else
+        {
+            File.Copy(result.FilePath, Path.Combine(outputFolder, "capture-official-dom.png"), overwrite: true);
+            using var image = new Bitmap(result.FilePath);
+            if (image.Height < 900) details.Add($"官方 DOM 高度不足，内容可能被截断：{image.Height}。");
+            if (!RegionContainsColor(image, new Rectangle(0, 0, image.Width, Math.Min(500, image.Height)), Color.FromArgb(0x00, 0x88, 0xCC)))
+                details.Add("官方 DOM 顶部标记未入图。");
+            if (!ColumnContainsColor(image, Color.FromArgb(0x77, 0x00, 0xAA)))
+                details.Add("官方 DOM 底部标记未入图（display-content 内容被截断）。");
+        }
+        return new Scenario("official-dom-success", details.Count == 0, details.Count == 0 ? ["仿官网 DOM 真实点击查询与卡片后 display-content/content-field 完整捕获"] : details);
+    }
+
+    private static async Task<Scenario> RunOfficialDomWrongNumberAsync(string outputFolder, string browser, TestServer server)
+    {
+        var folder = Path.Combine(outputFolder, "official-dom-wrong");
+        Directory.CreateDirectory(folder);
+        const string number = "310120260000000024";
+        var url = server.Url($"/page?result={number}&frame=official&mode=wrong");
+        await using var session = new BrowserValidation(number, folder, url, browser, headless: true, allowTestTarget: true);
+        var problem = await StartAndWaitAsync(session, false);
+        if (problem is not null) return new Scenario("official-dom-wrong-number", false, [problem]);
+        await session.ClickElementInFrameAsync("#inner", "#queryBtn", CancellationToken.None);
+        var identity = await session.WaitForIdentitySettledAsync(TimeSpan.FromSeconds(30), CancellationToken.None);
+        var result = await ClickAndAwaitAsync(session, TimeSpan.FromSeconds(120));
+        var details = new List<string>();
+        if (!identity.StartsWith("mismatch|", StringComparison.Ordinal)) details.Add($"官方 DOM 错号未被识别为 mismatch：{identity}");
+        if (result.State != "mismatch") details.Add($"错号结果应拒绝保存，实际 {result.State}：{result.Message}");
+        if (Directory.EnumerateFiles(folder, "*.png").Any()) details.Add("错号仍然生成了文件。");
+        return new Scenario("official-dom-wrong-number", details.Count == 0, details.Count == 0 ? ["官方 DOM 结果单号不符时拒绝保存"] : details);
+    }
+
+    private static async Task<Scenario> RunOfficialDomEmptyAsync(string outputFolder, string browser, TestServer server)
+    {
+        var folder = Path.Combine(outputFolder, "official-dom-empty");
+        Directory.CreateDirectory(folder);
+        const string number = "310120260000000025";
+        var url = server.Url($"/page?result={number}&frame=official&mode=empty");
+        await using var session = new BrowserValidation(number, folder, url, browser, headless: true, allowTestTarget: true);
+        var problem = await StartAndWaitAsync(session, false);
+        if (problem is not null) return new Scenario("official-dom-empty-result", false, [problem]);
+        await session.ClickElementInFrameAsync("#inner", "#queryBtn", CancellationToken.None);
+        await Task.Delay(1500);
+        var result = await ClickAndAwaitAsync(session, TimeSpan.FromSeconds(120));
+        var details = new List<string>();
+        if (result.State != "error") details.Add($"空结果应拒绝保存，实际 {result.State}：{result.Message}");
+        if (Directory.EnumerateFiles(folder, "*.png").Any()) details.Add("空结果仍然生成了文件。");
+        return new Scenario("official-dom-empty-result", details.Count == 0, details.Count == 0 ? ["官方 DOM 空结果不保存假成功"] : details);
+    }
+
+    private static async Task<Scenario> RunOfficialDomErrorAsync(string outputFolder, string browser, TestServer server)
+    {
+        var folder = Path.Combine(outputFolder, "official-dom-error");
+        Directory.CreateDirectory(folder);
+        const string number = "310120260000000026";
+        var url = server.Url($"/page?result={number}&frame=official&mode=error");
+        await using var session = new BrowserValidation(number, folder, url, browser, headless: true, allowTestTarget: true);
+        var problem = await StartAndWaitAsync(session, false);
+        if (problem is not null) return new Scenario("official-dom-captcha-error", false, [problem]);
+        await session.ClickElementInFrameAsync("#inner", "#queryBtn", CancellationToken.None);
+        await Task.Delay(1500);
+        var result = await ClickAndAwaitAsync(session, TimeSpan.FromSeconds(120));
+        var details = new List<string>();
+        if (result.State != "error") details.Add($"验证码无效应拒绝保存，实际 {result.State}：{result.Message}");
+        if (Directory.EnumerateFiles(folder, "*.png").Any()) details.Add("验证码无效仍然生成了文件。");
+        return new Scenario("official-dom-captcha-error", details.Count == 0, details.Count == 0 ? ["官方“验证码无效/没有符合条件的数据”文案被识别为失败"] : details);
+    }
+
+    private static async Task<Scenario> RunOfficialDomResultChangeAsync(string outputFolder, string browser, TestServer server)
+    {
+        var folder = Path.Combine(outputFolder, "official-dom-change");
+        Directory.CreateDirectory(folder);
+        const string number = "310120260000000027";
+        var url = server.Url($"/page?result={number}&frame=official&mode=mutate");
+        await using var session = new BrowserValidation(number, folder, url, browser, headless: true, allowTestTarget: true);
+        var problem = await StartAndWaitAsync(session, false);
+        if (problem is not null) return new Scenario("official-dom-result-change", false, [problem]);
+        await session.ClickElementInFrameAsync("#inner", "#queryBtn", CancellationToken.None);
+        var identity = await session.WaitForIdentitySettledAsync(TimeSpan.FromSeconds(30), CancellationToken.None);
+        var result = await ClickAndAwaitAsync(session, TimeSpan.FromSeconds(120));
+        var details = new List<string>();
+        if (!identity.StartsWith("ready|", StringComparison.Ordinal)) details.Add($"官方 DOM 结果变化前未就绪：{identity}");
+        if (result.State == "saved") details.Add("官方 DOM 捕获中结果变化仍保存了截图。");
+        if (result.State == "harness") details.Add($"测试侧未取得生产结论：{result.Message}");
+        if (Directory.EnumerateFiles(folder, "*.png").Any()) details.Add("官方 DOM 结果变化仍生成了文件。");
+        return new Scenario("official-dom-result-change", details.Count == 0, details.Count == 0 ? ["官方 DOM 捕获中 field-order 变化被撤销保存"] : details);
     }
 
     private static async Task<Scenario> RunConcurrentSessionsAsync(string outputFolder, string browser, TestServer server)
@@ -597,6 +764,8 @@ internal static class BrowserCaptureE2E
 
         public string Url(string path) => $"http://127.0.0.1:{_port}{path}";
 
+        public int Port => _port;
+
         private async Task AcceptLoopAsync()
         {
             while (!_lifetime.IsCancellationRequested)
@@ -689,6 +858,9 @@ internal static class BrowserCaptureE2E
             var pre = parameters.TryGetValue("pre", out var pv) && pv == "1";
             var nonumber = parameters.TryGetValue("nonumber", out var nv) && nv == "1";
             var mutate = parameters.TryGetValue("mutate", out var mv) && mv == "1";
+            // A clamping iframe reproduces the R5-3 case: the element is capped by
+            // max-height, so writing only a height would leave content truncated.
+            var clamp = parameters.TryGetValue("clamp", out var cv) && cv == "1";
             var mutateScript = mutate
                 ? "setInterval(function () { if (window.__cccPrepareAt && !window.__cccMutated) { window.__cccMutated = true; setTimeout(function () { var t = document.getElementById('result'); if (t) t.innerHTML = '<tr><td>报关单号 310120260000009999 申报日期 2026-09-24 放行日期 2026-09-24 海关状态 已放行</td></tr>'; }, 100); } }, 50);"
                 : "";
@@ -699,8 +871,9 @@ internal static class BrowserCaptureE2E
                 <!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>frame</title>
                 <style>html,body{margin:0;padding:0;background:#fff}#ftop{height:80px;background:#0088CC}
                 .scroller{height:300px;overflow-y:auto;border:1px solid #ccc}
-                .inner{height:1200px;background:linear-gradient(#eef3f8,#dde6f0)}table{width:100%;border-collapse:collapse}
-                td{padding:6px;font:13px system-ui;color:#0f1b2d}#fband{height:120px;background:#7700AA}</style></head><body>
+                .inner{position:relative;height:1200px;background:linear-gradient(#eef3f8,#dde6f0)}table{width:100%;border-collapse:collapse}
+                td{padding:6px;font:13px system-ui;color:#0f1b2d}#fband{height:120px;background:#7700AA}
+                #scrollband{position:absolute;left:0;right:0;top:1080px;height:120px;background:#CC00CC}</style></head><body>
                 <div id="ftop"></div>
                 {{FormHtml(decl, result, autoQuery, error, pre, nonumber, "")}}
                 <div id="fband"></div>
@@ -708,18 +881,79 @@ internal static class BrowserCaptureE2E
                 """;
             }
 
+            // A fixture that mirrors the official query frame DOM: no-placeholder #entryId
+            // next to a 报关单号 label, #queryBtn, and a #queryDetail result rendered as
+            // .display-content > .content-field > .field-order/.field-time/.field-text
+            // (see planning/singlewindow-statistics.js). The top-level shell has no query.
+            if (path.StartsWith("/official", StringComparison.OrdinalIgnoreCase))
+            {
+                return """
+                <!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>官方查询</title>
+                <style>
+                html,body{margin:0;padding:0;background:#fff;font:13px system-ui}
+                #officialTop{height:80px;background:#0088CC}
+                #officialBottom{height:120px;background:#7700AA}
+                #queryForm{margin:8px;padding:8px;border:1px solid #eee}
+                .content-area{min-height:240px}
+                .content-field{border:1px solid #ddd;margin:6px;padding:6px;width:140px;word-break:break-all}
+                .field-title{font-weight:600}
+                .field-order{font-family:monospace}
+                </style></head><body>
+                <div id="officialTop"></div>
+                <form id="queryForm">
+                  <label for="entryId">报关单号</label>
+                  <input type="text" id="entryId" name="entryId" maxlength="18">
+                  <input type="text" id="randomcode" size="8">
+                  <button type="button" id="queryBtn">查询</button>
+                </form>
+                <div class="content-area" id="queryDetail"></div>
+                <div id="officialError"></div>
+                <div id="officialBottom"></div>
+                <script>
+                  var no = "__DECL__";
+                  var mode = "__MODE__";
+                  document.getElementById('entryId').value = no;
+                  function officialResult(number) {
+                    var titles = ['放行','查验','报关','转关','转关运抵','舱单','理货','装运','到港','离港','卸货','申报'];
+                    var html = '';
+                    for (var i = 0; i < titles.length; i++) {
+                      html += '<div id="node' + i + '" class="dec-cus"><div class="content-title"><div><span class="content-title-text">' + titles[i] + '</span></div></div>' +
+                        '<div class="display-content">' +
+                        '<div class="content-field"><div class="field-title">' + titles[i] + '</div><div class="field-order">' + number + '</div>' +
+                        '<div class="field-time">2026-09-24 10:00</div><div class="field-text">已' + titles[i] + '</div></div>' +
+                        '</div></div>';
+                    }
+                    return html;
+                  }
+                  document.getElementById('queryBtn').addEventListener('click', function () {
+                    var detail = document.getElementById('queryDetail');
+                    if (mode === 'empty') { detail.innerHTML = ''; return; }
+                    if (mode === 'error') { document.getElementById('officialError').textContent = '温馨提示：验证码无效，请点击刷新验证码！'; return; }
+                    var number = mode === 'wrong' ? '310120260000009999' : no;
+                    detail.innerHTML = officialResult(number);
+                  });
+                  if (mode === 'mutate') {
+                    setInterval(function () { if (window.__cccPrepareAt && !window.__cccMutated) { window.__cccMutated = true; setTimeout(function () { document.querySelectorAll('#queryDetail .field-order').forEach(function (e) { e.textContent = '310120260000009999'; }); }, 100); } }, 50);
+                  }
+                </script></body></html>
+                """.Replace("__DECL__", decl).Replace("__MODE__", mode);
+            }
+
             var midDiv = mid > 0 ? $"<div id=\"mid\" style=\"position:absolute;left:0;top:{mid}px;width:100%;height:200px;background:#00AA55\"></div>" : "";
-            var isFrame = frame is "1" or "cross";
+            var mode = parameters.TryGetValue("mode", out var mo) ? mo : "ok";
+            var isFrame = frame is "1" or "cross" or "official";
             var frameSrc = frame == "cross" && xhost.Length > 0
                 ? xhost
-                : $"/frame?content=800&result={result}&query={(autoQuery ? "1" : "0")}";
-            // A cross-origin frame scenario keeps the queried result in the main frame (as
-            // the real page does) and only uses the frame for tall auxiliary content.
+                : frame == "official"
+                    ? $"/official?result={result}&mode={mode}&decl={decl}"
+                    : $"/frame?content=800&result={result}&query={(autoQuery ? "1" : "0")}";
+            // A cross-origin frame scenario puts the query form and the matching result ONLY
+            // inside the iframe: the top-level shell has neither query nor result, exactly
+            // like the official page. Only the frame's own tall auxiliary content is used.
             var body = frame == "cross"
                 ? $"""
                   <div id="top"></div>
-                  <div id="content">{FormHtml(decl, result, autoQuery, error, pre, nonumber, mutateScript)}</div>
-                  <iframe id="inner" src="{frameSrc}" style="width:100%;height:400px;border:0"></iframe>
+                  <iframe id="inner" src="{frameSrc}" style="width:100%;height:400px;{(clamp ? "max-height:400px !important;" : "")}border:0"></iframe>
                   <div id="bottom"></div>
                   """
                 : isFrame
@@ -741,8 +975,8 @@ internal static class BrowserCaptureE2E
               #top{height:200px;background:#654321}
               #content{ {{contentRule}}box-sizing:border-box;padding:16px}
               .scroller{height:400px;overflow-y:auto;border:1px solid #cccccc;margin-top:12px}
-              .scroller .inner{height:1800px;background:linear-gradient(#eef3f8,#dde6f0)}
-              #scrollband{height:120px;background:#CC00CC;margin-top:1680px}
+              .scroller .inner{position:relative;height:1800px;background:linear-gradient(#eef3f8,#dde6f0)}
+              #scrollband{position:absolute;left:0;right:0;top:1680px;height:120px;background:#CC00CC}
               #bottom{height:200px;background:#123456}
               table{width:100%;border-collapse:collapse}td{padding:8px;font:14px system-ui;color:#0f1b2d}
               iframe{display:block}

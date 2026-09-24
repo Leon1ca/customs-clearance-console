@@ -167,6 +167,11 @@ internal sealed partial class MainForm
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
 
         var toolbar = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, RowCount = 1, Margin = Padding.Empty, Padding = new Padding(16, 0, 16, 0), BackColor = Theme.Surface };
+        // A single explicit Percent row keeps the nested toolbar inside its fixed 56/50 slot.
+        // Without it the implicit AutoSize row inflates to the tallest child's preferred size
+        // (a bare Panel defaults to 100px), pushing the cleanup anchor and the search/filter
+        // row far outside the visible slot (R4-2).
+        toolbar.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 372));
         toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 348));
         toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -211,6 +216,10 @@ internal sealed partial class MainForm
     private Control BuildFooter()
     {
         var footer = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 6, RowCount = 1, Margin = Padding.Empty, Padding = new Padding(16, 0, 16, 0), BackColor = Theme.Surface };
+        // Same explicit row as the toolbar: paging buttons and the page-size dropdown must
+        // stay inside the fixed 44px footer instead of expanding it (R4-2).
+        footer.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        _footerPanel = footer;
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 72));
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 64));
@@ -346,8 +355,7 @@ internal sealed partial class MainForm
         int S(int px) => (int)Math.Round(px * dpi / 96.0);
         _body.Padding = new Padding(S(24), S(_layout.ContentPaddingY), S(24), S(_layout.ContentPaddingY));
         _body.RowStyles[0].Height = S(_layout.CompactHeight ? 56 : 62);
-        _body.RowStyles[1].Height = S(Math.Max(126, Math.Min(280,
-            96 + _moneySummary.RowCount * (_layout.AmountRow + 4) + (_moneySummary.UnconfirmedRowCount > 0 ? 26 + _moneySummary.UnconfirmedRowCount * 26 : 0))));
+        _body.RowStyles[1].Height = StatsRowHeight();
         _body.RowStyles[2].Height = _session is null ? 0 : S(_layout.CompactHeight ? 92 : 104);
         _body.RowStyles[3].Height = _session is null ? 0 : S(_layout.CompactHeight ? 34 : 38);
         _statsRow.ColumnStyles[0].Width = S(_layout.KpiPanelWidth);

@@ -119,14 +119,14 @@ internal static class Theme
     public static Font MonoFont(float pixels) => AppFonts.Mono(pixels);
     public static Font MonoFont(float pixels, bool medium) => AppFonts.Mono(pixels, medium);
 
-    public static Button PrimaryButton(string text) => Style(UiTokens.Colors.Primary, Color.White, UiTokens.Colors.Primary, UiTokens.Colors.HeaderBg, UiTokens.Colors.DisabledPrimaryFill);
-    public static Button SecondaryButton(string text) => Style(Color.White, UiTokens.Colors.Primary, UiTokens.Colors.BorderControl, ColorTranslator.FromHtml("#F4F8FD"), UiTokens.Colors.DisabledFill);
-    public static Button QuietButton(string text) => Style(Color.White, UiTokens.Colors.Ink2, UiTokens.Colors.BorderControl, UiTokens.Colors.SegmentBg, UiTokens.Colors.DisabledFill);
-    public static Button DangerOutlineButton(string text) => Style(Color.White, UiTokens.Colors.Danger, ColorTranslator.FromHtml("#E4A6A0"), ColorTranslator.FromHtml("#FDECEA"), UiTokens.Colors.DisabledFill);
-    public static Button DangerSolidButton(string text) => Style(UiTokens.Colors.Danger, Color.White, UiTokens.Colors.Danger, ColorTranslator.FromHtml("#9A1D14"), ColorTranslator.FromHtml("#D9A5A1"));
-    public static Button DetailButton(string text) => Style(UiTokens.Colors.DetailButtonBg, UiTokens.Colors.Primary, UiTokens.Colors.DetailButtonBg, ColorTranslator.FromHtml("#E3E8EF"), UiTokens.Colors.DisabledFill);
+    public static Button PrimaryButton(string text) => Style(text, UiTokens.Colors.Primary, Color.White, UiTokens.Colors.Primary, UiTokens.Colors.HeaderBg, UiTokens.Colors.DisabledPrimaryFill);
+    public static Button SecondaryButton(string text) => Style(text, Color.White, UiTokens.Colors.Primary, UiTokens.Colors.BorderControl, ColorTranslator.FromHtml("#F4F8FD"), UiTokens.Colors.DisabledFill);
+    public static Button QuietButton(string text) => Style(text, Color.White, UiTokens.Colors.Ink2, UiTokens.Colors.BorderControl, UiTokens.Colors.SegmentBg, UiTokens.Colors.DisabledFill);
+    public static Button DangerOutlineButton(string text) => Style(text, Color.White, UiTokens.Colors.Danger, ColorTranslator.FromHtml("#E4A6A0"), ColorTranslator.FromHtml("#FDECEA"), UiTokens.Colors.DisabledFill);
+    public static Button DangerSolidButton(string text) => Style(text, UiTokens.Colors.Danger, Color.White, UiTokens.Colors.Danger, ColorTranslator.FromHtml("#9A1D14"), ColorTranslator.FromHtml("#D9A5A1"));
+    public static Button DetailButton(string text) => Style(text, UiTokens.Colors.DetailButtonBg, UiTokens.Colors.Primary, UiTokens.Colors.DetailButtonBg, ColorTranslator.FromHtml("#E3E8EF"), UiTokens.Colors.DisabledFill);
     public static Button DangerButton(string text) => DangerOutlineButton(text);
-    public static Button TonalButton(string text) => Style(UiTokens.Colors.AccentSoft, UiTokens.Colors.Accent, UiTokens.Colors.AccentSoft, ColorTranslator.FromHtml("#DCE8F8"), UiTokens.Colors.DisabledFill);
+    public static Button TonalButton(string text) => Style(text, UiTokens.Colors.AccentSoft, UiTokens.Colors.Accent, UiTokens.Colors.AccentSoft, ColorTranslator.FromHtml("#DCE8F8"), UiTokens.Colors.DisabledFill);
 
     public static Button IconButton(string text, Button baseButton, string? iconStem = null, int iconSize = 16, float dpi = 96F)
     {
@@ -142,11 +142,16 @@ internal static class Theme
         return baseButton;
     }
 
-    private static Button Style(Color back, Color fore, Color border, Color hover, Color disabledFill)
+    private static Button Style(string text, Color back, Color fore, Color border, Color hover, Color disabledFill)
     {
         var button = new RoundedButton
         {
-            Text = string.Empty,
+            // The factories own their caption: the previous implementation discarded the
+            // text argument and every plain factory button rendered as an empty rectangle
+            // (R4-1). The caption and accessible name are set here so callers that do not
+            // re-assign Text (unlike IconButton) still show and announce their label.
+            Text = text,
+            AccessibleName = string.IsNullOrWhiteSpace(text) ? null : text,
             BackColor = back,
             ForeColor = fore,
             BorderColor = border,

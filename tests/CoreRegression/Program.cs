@@ -49,6 +49,20 @@ var sameQuantity = Lines(100); sameQuantity[0].Quantity = 10; sameQuantity[0].Un
 var paired = Reconcile(mixedPrimary, sameQuantity);
 Check(paired[0].Quantity == 10 && paired[0].Unit == "KG", "数量一致时才用复核单位补全");
 
+// R5-6: a field copied from the second engine backfills the row but is not independent
+// verification, and an amount read only by the second engine is never "金额一致".
+var amountOnlyPrimary = Lines(100);
+var fullSecondary = Lines(100);
+fullSecondary[0].ProductName = "冷冻鳕鱼片"; fullSecondary[0].Quantity = 10m; fullSecondary[0].Unit = "KG"; fullSecondary[0].UnitPrice = 10m;
+var backfilledLine = Reconcile(amountOnlyPrimary, fullSecondary);
+Check(!backfilledLine[0].IsFullyVerified && backfilledLine[0].ItemConsistency == "未完整复核" && backfilledLine[0].AmountVerification == "金额一致",
+    "复核引擎补全的字段不计为独立复核");
+var secondaryOnlyPrimary = Lines(100); secondaryOnlyPrimary[0].ItemNo = "1";
+var secondaryOnlySecondary = Lines(200); secondaryOnlySecondary[0].ItemNo = "2";
+var secondaryOnlyLine = Reconcile(secondaryOnlyPrimary, secondaryOnlySecondary).First(x => x.Amount == 200m);
+Check(secondaryOnlyLine.AmountOnlyFromSecondary && secondaryOnlyLine.AmountVerification == "金额未复核" && !secondaryOnlyLine.IsFullyVerified,
+    "仅复核引擎识别的金额标注为未复核");
+
 // R4-1: a model number sitting just left of the price column with no quantity header,
 // quantity cell or unit evidence must stay out of Quantity; the source product text
 // keeps the model.
@@ -91,6 +105,29 @@ var unitPage = new TextPage
 var unitLine = new DeclarationParser().Parse("unit-token.png", new DocumentText { Pages = [unitPage] }).LineTotals.Single();
 Check(unitLine.Quantity == 12.5m && unitLine.Unit.Equals("KG", StringComparison.OrdinalIgnoreCase), "有单位证据时数量/单位仍正确解析");
 
+// R5-5: a word that merely contains a unit substring ("HEADSET"/"RESET" contain "SET")
+// is not unit evidence, so a model number next to it must not become the quantity.
+TextPage ModelWithWordPage(string word) => new()
+{
+    PageNumber = 1,
+    Width = 1000,
+    Height = 1400,
+    Tokens =
+    [
+        new TextToken("单价/总价/币制", 620, 700, 760, 730),
+        new TextToken("1", 50, 760, 70, 790),
+        new TextToken("WIRELESS", 140, 760, 280, 790),
+        new TextToken("2026", 430, 760, 470, 790),
+        new TextToken(word, 480, 760, 580, 790),
+        new TextToken("100.00", 620, 795, 740, 825),
+        new TextToken("美元", 660, 835, 720, 865)
+    ]
+};
+var headsetLine = new DeclarationParser().Parse("headset-model.png", new DocumentText { Pages = [ModelWithWordPage("HEADSET")] }).LineTotals.Single();
+Check(headsetLine.Quantity is null && headsetLine.Unit == "" && headsetLine.ProductName.Contains("2026"), "含 SET 子串的单词不得作为数量单位证据");
+var resetLine = new DeclarationParser().Parse("reset-model.png", new DocumentText { Pages = [ModelWithWordPage("RESET")] }).LineTotals.Single();
+Check(resetLine.Quantity is null && resetLine.Unit == "" && resetLine.ProductName.Contains("2026"), "RESET 等含单位子串的单词不得写入单位");
+
 // R4-3: display and tooltip text must not round small quantities or long unit prices.
 var precise = new DeclarationLineTotal { Quantity = 0.0004m, Unit = "KG", UnitPrice = 0.1234567m };
 Check(precise.DisplayQuantity == "0.0004" && precise.DisplayQuantityUnit == "0.0004 KG", "明细显示的小数量不得呈现为零");
@@ -126,6 +163,13 @@ Check(!TargetUrlPolicy.IsSingleWindowInquiry("https://example.com/?singlewindow"
 Check(!TargetUrlPolicy.IsSingleWindowInquiry("http://www.singlewindow.cn/#/publicInquiryDetail"), "非 https 目标被拒绝");
 Check(!TargetUrlPolicy.IsSingleWindowInquiry("https://www.singlewindow.cn/#/other"), "非查询路由被拒绝");
 Check(!TargetUrlPolicy.IsSingleWindowInquiry("https://www.singlewindow.cn.evil.example/#/publicInquiryDetail"), "伪装主机后缀被拒绝");
+// R5-4: the verified official query iframe keeps working, unrelated/unknown frames do not.
+Check(TargetUrlPolicy.IsAuthorizedFrame("https://swapp.singlewindow.cn/qspserver/sw/qsp/query/view/queryDecStatus?ngBasePath=x"), "已核实的官方查询 frame 被授权");
+Check(TargetUrlPolicy.IsAuthorizedFrame("https://www.singlewindow.cn/inner"), "可信主机的同源 frame 被授权");
+Check(!TargetUrlPolicy.IsAuthorizedFrame("https://evil.example/qspserver/sw/qsp/query/view/queryDecStatus"), "非官方主机 frame 被拒绝");
+Check(!TargetUrlPolicy.IsAuthorizedFrame("https://swapp.singlewindow.cn/other/route"), "官方主机非查询路由 frame 被拒绝");
+Check(!TargetUrlPolicy.IsAuthorizedFrame("http://swapp.singlewindow.cn/qspserver/sw/qsp/query/view/queryDecStatus"), "官方查询 frame 不接受 http 降级");
+Check(!TargetUrlPolicy.IsAuthorizedFrame("about:blank") && !TargetUrlPolicy.IsAuthorizedFrame(null), "未知/空 frame 来源被拒绝");
 var conflictRecord = new DeclarationRecord
 {
     DeclarationNo = "310120260000000001", SourcePath = "conflict.pdf", Status = "识别完成",
@@ -218,6 +262,31 @@ using (var archive = System.IO.Compression.ZipFile.OpenRead(xlsx))
     var xml = reader.ReadToEnd();
     Check(xml.Contains("010120260000000001") && xml.Contains("=SUM(A1:A2)"), "18 位前导零与公式型外来文本按文本保存");
     Check(!xml.Contains("<v>010120260000000001</v>"), "18 位编号未保存为数值");
+}
+// R4-6: the quantity/unit-price cell formats must be able to display 0.0004 / 0.1234567;
+// a 12-decimal format would silently round them to a visible zero.
+using (var archive = System.IO.Compression.ZipFile.OpenRead(xlsx))
+{
+    System.Xml.Linq.XNamespace ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+    var stylesDoc = System.Xml.Linq.XDocument.Load(archive.GetEntry("xl/styles.xml")!.Open());
+    var customFormats = stylesDoc.Descendants(ns + "numFmt")
+        .ToDictionary(x => (string?)x.Attribute("numFmtId") ?? "", x => (string?)x.Attribute("formatCode") ?? "");
+    var xfs = stylesDoc.Descendants(ns + "cellXfs").Elements(ns + "xf")
+        .Select(x => (string?)x.Attribute("numFmtId") ?? "0").ToList();
+    int DisplayCapacity(int style)
+    {
+        if (style < 0 || style >= xfs.Count || !customFormats.TryGetValue(xfs[style], out var code) || !code.Contains('.')) return -1;
+        return code[(code.IndexOf('.') + 1)..].Count(c => c == '#');
+    }
+    var detailDoc = System.Xml.Linq.XDocument.Load(archive.GetEntry("xl/worksheets/sheet2.xml")!.Open());
+    var numericCells = detailDoc.Descendants(ns + "c")
+        .Select(c => (Value: c.Element(ns + "v")?.Value, Style: int.TryParse((string?)c.Attribute("s"), out var s) ? s : 0))
+        .Where(c => c.Value is not null)
+        .ToList();
+    var quantityCell = numericCells.FirstOrDefault(c => c.Value == "0.0004");
+    var unitPriceCell = numericCells.FirstOrDefault(c => c.Value == "0.1234567");
+    Check(quantityCell.Value is not null && DisplayCapacity(quantityCell.Style) >= 4, "导出数量 0.0004 的显示格式保留足够小数位");
+    Check(unitPriceCell.Value is not null && DisplayCapacity(unitPriceCell.Style) >= 7, "导出单价 0.1234567 的显示格式保留足够小数位");
 }
 Console.WriteLine($"CORE_REGRESSION_OK: {passed} checks");
 

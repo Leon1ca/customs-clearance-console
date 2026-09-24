@@ -630,6 +630,14 @@ internal static class SelfTest
         Directory.CreateDirectory(outputFolder);
         Console.OutputEncoding = Encoding.UTF8;
         var states = new List<(string Name, string Size, string File, string Notes)>();
+        // The four required logical sizes have to be rendered at their real pixel size and
+        // shown in a visible window. A cloud runner's default desktop can be smaller, so a
+        // real display mode is selected first; if that is impossible the run fails below
+        // instead of silently reporting 1044px screenshots as 1200/1920.
+        var probe = ProbeDpi();
+        var dpiScale = probe.FormDpi / 96.0;
+        var desktopConfigured = EnsureDesktopSize(
+            (int)Math.Round(1920 * dpiScale), (int)Math.Round(1080 * dpiScale), out var desktopDetail);
 
         void Capture(string state, string size, int width, int height, Action<string> seed, Action<MainForm>? configure = null)
         {
@@ -643,9 +651,10 @@ internal static class SelfTest
                 var file = Path.Combine(outputFolder, $"{state}-{size}.png");
                 using var form = NewSnapshotForm(width, height);
                 configure?.Invoke(form);
-                SaveForm(form, file);
-                var layout = Responsive.Compute(width, height);
-                states.Add((state, size, Path.GetFileName(file), $"kpi={layout.KpiPanelWidth};search={layout.SearchWidth};compact={layout.CompactHeight};merged={layout.Table.PortDestMerged};dpi={form.DeviceDpi}"));
+                form.PerformLayout();
+                Application.DoEvents();
+                var evidence = SaveSnapshot(form, file, width, height);
+                states.Add((state, size, Path.GetFileName(file), JsonSerializer.Serialize(evidence)));
             }
             finally { Environment.SetEnvironmentVariable("CUSTOMS_CONSOLE_DATA", previousData); }
         }
@@ -715,13 +724,30 @@ internal static class SelfTest
         states.Add(("dialog", "-", "dialog-cleanup-docs-step2.png", "关单清理 2/2"));
         states.Add(("dialog", "-", "dialog-cleanup-list.png", "列表清理"));
 
-        var probe = ProbeDpi();
+        // The four required sizes must each have a real visible-window screen capture; a
+        // DrawToBitmap-only image is not accepted as proof of the declared size.
+        var requiredSizes = new[] { "1200x720", "1280x800", "1440x900", "1920x1080" };
+        var missingScreen = states
+            .Where(x => requiredSizes.Contains(x.Size) && !x.Notes.Contains("\"RealScreen\":true", StringComparison.Ordinal))
+            .Select(x => $"{x.Name}-{x.Size}").Distinct().ToList();
+        if (missingScreen.Count > 0)
+            throw new InvalidOperationException(
+                $"以下关键状态缺少真实可见窗口抓图，不能宣称四档通过：{string.Join("、", missingScreen)}；桌面配置={desktopConfigured}（{desktopDetail}）。");
+
         var report = new
         {
             generatedAt = DateTime.Now.ToString("s"),
             actualDeviceDpi = probe.FormDpi,
             dpiProbe = new { formDeviceDpi = probe.FormDpi, windowDpi = probe.WindowDpi, systemDpi = probe.SystemDpi, threadContext = "PER_MONITOR_AWARE_V2" },
-            windowDpiNote = $"本机实际 DeviceDpi={probe.FormDpi}（window={probe.WindowDpi}，system={probe.SystemDpi}）；四档逻辑尺寸快照按该实际 DPI 渲染。其余 DPI 档位由 UiScale/Responsive 断言覆盖；真实 125/150/200% 显示器缩放仍是人工验收项，未伪造。",
+            desktop = new
+            {
+                configured = desktopConfigured,
+                detail = desktopDetail,
+                requested = "1920x1080 (logical)",
+                virtualScreen = SystemInformation.VirtualScreen.ToString(),
+                primaryWorkingArea = Screen.PrimaryScreen?.WorkingArea.ToString()
+            },
+            windowDpiNote = $"本机实际 DeviceDpi={probe.FormDpi}（window={probe.WindowDpi}，system={probe.SystemDpi}）；四档逻辑尺寸快照按该实际 DPI 渲染并断言实际 ClientSize/PNG 像素。其余 DPI 档位由 UiScale/Responsive 断言覆盖；真实 125/150/200% 显示器缩放仍是人工验收项，未伪造。",
             states = states.Select(x => new { state = x.Name, size = x.Size, file = x.File, notes = x.Notes })
         };
         File.WriteAllText(Path.Combine(outputFolder, "ui-states.json"),
@@ -733,20 +759,24 @@ internal static class SelfTest
     {
         var form = new MainForm
         {
-            Size = new Size(Math.Max(1200, width), Math.Max(720, height)),
+            AllowOversizeForSnapshot = true,
             StartPosition = FormStartPosition.Manual,
-            Location = new Point(-32000, -32000),
+            // Visible forms start at the desktop origin so a real screen capture is possible;
+            // DrawToBitmap does not depend on the location.
+            Location = new Point(0, 0),
             ShowInTaskbar = false,
             Opacity = 0
         };
         form.Show();
-        // Snapshots are defined in 96-DPI logical units; scale the physical client size by
-        // the runner's real DPI so the layout matches the PRD dimensions on any runner.
+        // Snapshots are defined in 96-DPI logical units; the physical client size is scaled
+        // by the runner's real DPI and then asserted, never assumed.
         var scale = form.DeviceDpi / 96.0;
-        if (Math.Abs(scale - 1.0) > 0.001)
-            form.ClientSize = new Size((int)Math.Round(width * scale), (int)Math.Round(height * scale));
+        var desired = new Size((int)Math.Round(width * scale), (int)Math.Round(height * scale));
+        form.ClientSize = desired;
         form.PerformLayout();
         Application.DoEvents();
+        if (form.ClientSize.Width != desired.Width || form.ClientSize.Height != desired.Height)
+            throw new InvalidOperationException($"快照窗口尺寸被约束：请求 {desired}，实际 {form.ClientSize}（{width}x{height}）。");
         return form;
     }
 
@@ -754,8 +784,8 @@ internal static class SelfTest
     {
         form.PerformLayout();
         Application.DoEvents();
-        var bitmap = new Bitmap(form.Width, form.Height);
-        form.DrawToBitmap(bitmap, new Rectangle(Point.Empty, form.Size));
+        var bitmap = new Bitmap(form.ClientSize.Width, form.ClientSize.Height);
+        form.DrawToBitmap(bitmap, new Rectangle(Point.Empty, form.ClientSize));
         return bitmap;
     }
 
@@ -763,7 +793,6 @@ internal static class SelfTest
     {
         using var bitmap = RenderForm(form);
         bitmap.Save(path, ImageFormat.Png);
-        form.Close();
     }
 
     /// <summary>
@@ -873,6 +902,189 @@ internal static class SelfTest
             return (formDpi, windowDpi, system);
         }
         finally { SetThreadDpiAwarenessContext(previous); }
+    }
+
+    // ---- desktop size control for the four required snapshot sizes ----
+
+    private const int DmPelsWidth = 0x00080000;
+    private const int DmPelsHeight = 0x00100000;
+    private const int DispChangeSuccessful = 0;
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern bool EnumDisplaySettings(string? deviceName, int modeNum, ref DevMode devMode);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int ChangeDisplaySettings(ref DevMode devMode, int flags);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct DevMode
+    {
+        private const int CchDeviceName = 32;
+        private const int CchFormName = 32;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = CchDeviceName)] public string DeviceName;
+        public short SpecVersion;
+        public short DriverVersion;
+        public short Size;
+        public short DriverExtra;
+        public int Fields;
+        public int PositionX;
+        public int PositionY;
+        public int DisplayOrientation;
+        public int DisplayFixedOutput;
+        public short Color;
+        public short Duplex;
+        public short YResolution;
+        public short TTOption;
+        public short Collate;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = CchFormName)] public string FormName;
+        public short LogPixels;
+        public int BitsPerPel;
+        public int PelsWidth;
+        public int PelsHeight;
+        public int DisplayFlags;
+        public int DisplayFrequency;
+        public int IcmMethod;
+        public int IcmIntent;
+        public int MediaType;
+        public int DitherType;
+        public int Reserved1;
+        public int Reserved2;
+        public int PanningWidth;
+        public int PanningHeight;
+    }
+
+    private static DevMode NewDevMode() => new()
+    {
+        DeviceName = new string('\0', 32),
+        FormName = new string('\0', 32),
+        Size = (short)Marshal.SizeOf<DevMode>()
+    };
+
+    /// <summary>
+    /// Raises the desktop to at least the requested size by selecting and applying a real
+    /// display mode. Returns false (with a reason) when the environment cannot provide it;
+    /// the caller then records the honest limitation instead of claiming the size passed.
+    /// </summary>
+    private static bool EnsureDesktopSize(int requiredWidth, int requiredHeight, out string detail)
+    {
+        var current = SystemInformation.VirtualScreen;
+        if (current.Width >= requiredWidth && current.Height >= requiredHeight)
+        {
+            detail = $"已是 {current.Width}x{current.Height}";
+            return true;
+        }
+        var found = false;
+        var best = NewDevMode();
+        for (var mode = 0; ; mode++)
+        {
+            var candidate = NewDevMode();
+            if (!EnumDisplaySettings(null, mode, ref candidate)) break;
+            if (candidate.PelsWidth < requiredWidth || candidate.PelsHeight < requiredHeight) continue;
+            if (!found || (long)candidate.PelsWidth * candidate.PelsHeight < (long)best.PelsWidth * best.PelsHeight)
+            {
+                best = candidate;
+                found = true;
+            }
+        }
+        if (!found)
+        {
+            detail = $"没有 >= {requiredWidth}x{requiredHeight} 的显示模式（当前 {current.Width}x{current.Height}）";
+            return false;
+        }
+        best.Fields = DmPelsWidth | DmPelsHeight;
+        var result = ChangeDisplaySettings(ref best, 0);
+        var after = SystemInformation.VirtualScreen;
+        detail = $"请求 {best.PelsWidth}x{best.PelsHeight}，ChangeDisplaySettings={result}，实际 {after.Width}x{after.Height}";
+        return result == DispChangeSuccessful && after.Width >= requiredWidth && after.Height >= requiredHeight;
+    }
+
+    private static void AssertSnapshotGeometry(MainForm form, int logicalWidth, int logicalHeight)
+    {
+        var dpi = form.DeviceDpi;
+        int S(int px) => (int)Math.Round(px * dpi / 96.0);
+        // R4-2: every child of the single-row toolbar/footer must stay inside its slot.
+        foreach (var (panel, label) in new[] { (form.ToolbarForTest, "工具栏"), (form.FooterPanelForTest, "页脚") })
+        {
+            if (panel is null) throw new InvalidOperationException($"{label}面板缺失。");
+            foreach (Control child in panel.Controls)
+            {
+                if (!child.Visible) continue;
+                if (child.Top < -1 || child.Bottom > panel.ClientSize.Height + 1)
+                    throw new InvalidOperationException($"{label}子控件越界：{child.GetType().Name} bounds={child.Bounds} panel={panel.ClientSize}。");
+            }
+        }
+        if (form.CleanupButtonForTest.Height > S(34) + 2)
+            throw new InvalidOperationException($"清理按钮高度 {form.CleanupButtonForTest.Height} 超出工具栏设计槽位。");
+        // R4-1: no visible button may be an empty rectangle.
+        foreach (var button in Descendants(form).OfType<Button>().Where(x => x.Visible))
+            if (string.IsNullOrWhiteSpace(button.Text) && string.IsNullOrWhiteSpace(button.AccessibleName))
+                throw new InvalidOperationException($"可见按钮缺少文字与可访问名称：{button.GetType().Name}。");
+        if (form.PreviousForTest.Text != "上一页" || form.NextForTest.Text != "下一页")
+            throw new InvalidOperationException("分页按钮文字丢失。");
+        // R4-3: the KPI grid must fit and its label/value/note must not overlap.
+        var kpi = form.KpiForTest;
+        var required = KpiPanel.RequiredHeight(dpi, form.AppliedLayout.CompactHeight);
+        if (kpi.Height < required - 1)
+            throw new InvalidOperationException($"KPI 高度 {kpi.Height} 小于所需 {required}（{logicalWidth}x{logicalHeight}）。");
+        var cells = kpi.CellTextRectsForTest();
+        foreach (var (cellLabel, value, note) in cells)
+        {
+            if (cellLabel.IntersectsWith(value) || value.IntersectsWith(note) || cellLabel.IntersectsWith(note))
+                throw new InvalidOperationException($"KPI 标签/数值/注释发生重叠：{cellLabel} {value} {note}。");
+            if (cellLabel.Top < 0 || note.Bottom > kpi.Height || value.Right > kpi.Width || note.Right > kpi.Width)
+                throw new InvalidOperationException($"KPI 单元格文字超出面板：label={cellLabel} value={value} note={note} panel={kpi.Size}。");
+        }
+        // R4-4: the title block carries a real status and a real sub-line.
+        if (string.IsNullOrWhiteSpace(form.TitleBlockForTest.StatusForTest) || string.IsNullOrWhiteSpace(form.TitleBlockForTest.SublineForTest))
+            throw new InvalidOperationException("标题区状态徽标或副标题未接线。");
+    }
+
+    private sealed record SnapshotEvidence(int RequestedWidth, int RequestedHeight, int ActualWidth, int ActualHeight,
+        int PngWidth, int PngHeight, string WorkingArea, string ScreenBounds, int Dpi, string Responsive, bool RealScreen);
+
+    private static SnapshotEvidence SaveSnapshot(MainForm form, string path, int logicalWidth, int logicalHeight)
+    {
+        var scale = form.DeviceDpi / 96.0;
+        var desired = new Size((int)Math.Round(logicalWidth * scale), (int)Math.Round(logicalHeight * scale));
+        if (form.ClientSize.Width != desired.Width || form.ClientSize.Height != desired.Height)
+            throw new InvalidOperationException($"快照窗口尺寸被约束：请求 {desired}，实际 {form.ClientSize}（{logicalWidth}x{logicalHeight}）。");
+        AssertSnapshotGeometry(form, logicalWidth, logicalHeight);
+        using (var bitmap = RenderForm(form))
+        {
+            if (bitmap.Width != form.ClientSize.Width || bitmap.Height != form.ClientSize.Height)
+                throw new InvalidOperationException($"PNG 尺寸 {bitmap.Size} 与实际 ClientSize {form.ClientSize} 不一致。");
+            bitmap.Save(path, ImageFormat.Png);
+        }
+        var working = Screen.FromControl(form).WorkingArea;
+        var screen = Screen.FromControl(form).Bounds;
+        var bounds = form.Bounds;
+        var realScreen = false;
+        if (screen.Contains(bounds))
+        {
+            var previousOpacity = form.Opacity;
+            var previousTopMost = form.TopMost;
+            form.Opacity = 1;
+            form.TopMost = true;
+            form.Activate();
+            Application.DoEvents();
+            using (var screenBitmap = new Bitmap(form.ClientSize.Width, form.ClientSize.Height))
+            {
+                using (var graphics = Graphics.FromImage(screenBitmap))
+                    graphics.CopyFromScreen(bounds.Left, bounds.Top, 0, 0, form.ClientSize);
+                screenBitmap.Save(Path.Combine(Path.GetDirectoryName(path)!, Path.GetFileNameWithoutExtension(path) + "-screen.png"), ImageFormat.Png);
+            }
+            form.TopMost = previousTopMost;
+            form.Opacity = previousOpacity;
+            realScreen = true;
+        }
+        var logicalActual = new Size(
+            (int)Math.Round(form.ClientSize.Width * 96.0 / form.DeviceDpi),
+            (int)Math.Round(form.ClientSize.Height * 96.0 / form.DeviceDpi));
+        var responsive = Responsive.Compute(logicalActual.Width, logicalActual.Height);
+        return new SnapshotEvidence(logicalWidth, logicalHeight, form.ClientSize.Width, form.ClientSize.Height,
+            form.ClientSize.Width, form.ClientSize.Height, working.ToString(), screen.ToString(), form.DeviceDpi,
+            $"kpi={responsive.KpiPanelWidth};search={responsive.SearchWidth};compact={responsive.CompactHeight};merged={responsive.Table.PortDestMerged}",
+            realScreen);
     }
 
     public static void CaptureDialog(string outputPath, string kind)

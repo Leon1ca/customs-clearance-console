@@ -66,6 +66,17 @@ public sealed class DeclarationLineTotal
     public bool IsReliable { get; set; } = true;
     public string Note { get; set; } = "";
 
+    /// <summary>
+    /// Descriptor fields that were copied from the verification engine because the primary
+    /// engine left them empty. Such a field was never independently read by two engines and
+    /// therefore must not count as fully verified. Serialized so provenance survives reload;
+    /// absent in old JSON, where it defaults to empty.
+    /// </summary>
+    public HashSet<string> BackfilledFields { get; set; } = new();
+
+    /// <summary>True when the row amount itself came only from the verification engine.</summary>
+    public bool AmountOnlyFromSecondary { get; set; }
+
     [JsonIgnore]
     public string DisplayAmount => $"{Currency} {Amount:N2}";
 
@@ -121,8 +132,10 @@ public sealed class DeclarationLineTotal
     public bool HasValueDifference => HasAmountDifference || HasSecondaryDifference;
 
     /// <summary>
-    /// A line is only "fully verified" when the second engine supplied every comparable
-    /// field. A single-engine legacy row is never reported as consistent.
+    /// A line is only "fully verified" when the second engine independently supplied every
+    /// comparable field. A field that the primary engine only received by backfilling from
+    /// the secondary engine is not independent evidence, and a single-engine legacy row is
+    /// never reported as consistent.
     /// </summary>
     [JsonIgnore]
     public bool IsFullyVerified =>
@@ -130,7 +143,11 @@ public sealed class DeclarationLineTotal
         VerificationQuantity is not null &&
         VerificationUnitPrice is not null &&
         !string.IsNullOrWhiteSpace(VerificationProductName) &&
-        !string.IsNullOrWhiteSpace(VerificationUnit);
+        !string.IsNullOrWhiteSpace(VerificationUnit) &&
+        !BackfilledFields.Contains("ProductName") &&
+        !BackfilledFields.Contains("UnitPrice") &&
+        !BackfilledFields.Contains("Quantity") &&
+        !BackfilledFields.Contains("Unit");
 
     /// <summary>
     /// Three-state verdict shared by the detail dialog, Excel and Markdown so an amount
@@ -141,7 +158,9 @@ public sealed class DeclarationLineTotal
 
     /// <summary>Per-amount verdict; distinguishes a real amount conflict from "not verified".</summary>
     [JsonIgnore]
-    public string AmountVerification => HasAmountDifference ? "金额不一致" : VerificationAmount is null ? "金额未复核" : "金额一致";
+    public string AmountVerification => HasAmountDifference
+        ? "金额不一致"
+        : VerificationAmount is null || AmountOnlyFromSecondary ? "金额未复核" : "金额一致";
 }
 
 public sealed class AppState

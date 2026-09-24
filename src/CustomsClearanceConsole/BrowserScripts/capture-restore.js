@@ -1,20 +1,26 @@
 // Restores every temporary change made by capture-prepare.js, including container
-// scroll offsets and grown iframe heights, and records whether styles, scroll offsets
-// and the window scroll really returned to their originals. Runs in a finally block
-// with its own short timeout so a failed or rejected capture never leaves the page
-// modified.
+// scroll offsets and grown iframe heights/max-heights with their original priority,
+// and records whether styles, scroll offsets and the window scroll really returned to
+// their originals. Runs in a finally block with its own short timeout so a failed or
+// rejected capture never leaves the page modified.
 (() => {
   const state = window.__cccCaptureState;
   if (!state) return 'nothing-to-restore';
   const sameStyle = (el, property, value) => (el.style.getPropertyValue(property) || '') === (value || '');
+  const restoreProperty = (el, item, property) => {
+    const value = item[property];
+    const priority = item[property + 'Priority'] || '';
+    if (value) el.style.setProperty(property, value, priority);
+    else el.style.removeProperty(property);
+  };
   let stylesRestored = true;
   let scrollRestored = true;
   for (const item of state.prev || []) {
     const el = item.el;
     if (!el || !el.style) continue;
-    if (item.height) el.style.setProperty('height', item.height, item.heightPriority || ''); else el.style.removeProperty('height');
-    if (item.maxHeight) el.style.setProperty('max-height', item.maxHeight, item.maxHeightPriority || ''); else el.style.removeProperty('max-height');
-    if (item.overflowY) el.style.setProperty('overflow-y', item.overflowY, item.overflowYPriority || ''); else el.style.removeProperty('overflow-y');
+    restoreProperty(el, item, 'height');
+    restoreProperty(el, item, 'max-height');
+    restoreProperty(el, item, 'overflow-y');
     if (!sameStyle(el, 'height', item.height) || !sameStyle(el, 'max-height', item.maxHeight) || !sameStyle(el, 'overflow-y', item.overflowY))
       stylesRestored = false;
     try {
@@ -26,14 +32,15 @@
   for (const item of state.frames || []) {
     const el = item.el;
     if (!el || !el.style) continue;
-    if (item.height) el.style.setProperty('height', item.height, item.heightPriority || ''); else el.style.removeProperty('height');
-    if (!sameStyle(el, 'height', item.height)) stylesRestored = false;
+    restoreProperty(el, item, 'height');
+    restoreProperty(el, item, 'max-height');
+    if (!sameStyle(el, 'height', item.height) || !sameStyle(el, 'max-height', item.maxHeight)) stylesRestored = false;
   }
   const widget = state.widget || document.getElementById('ccc-widget-host');
-  if (widget && widget.style) {
-    if (state.widgetDisplay) widget.style.setProperty('display', state.widgetDisplay, state.widgetDisplayPriority || '');
-    else widget.style.removeProperty('display');
-  }
+  if (widget && widget.style) restoreProperty(widget, {
+    display: state.widgetDisplay,
+    displayPriority: state.widgetDisplayPriority
+  }, 'display');
   try { window.scrollTo(state.scrollX || 0, state.scrollY || 0); } catch (error) { /* ignore */ }
   const windowRestored = Math.abs(window.scrollX - (state.scrollX || 0)) <= 1 && Math.abs(window.scrollY - (state.scrollY || 0)) <= 1;
   window.__cccLastCapture = {

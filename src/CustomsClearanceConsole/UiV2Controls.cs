@@ -31,16 +31,65 @@ internal sealed class KpiPanel : RoundedPanel
         Invalidate();
     }
 
+    /// <summary>
+    /// Minimum 96-DPI logical height for the 2x2 grid such that each cell's label, value and
+    /// note all fit without overlapping. The old code decided the height from the currency
+    /// row count alone, which collapsed the empty/ready/processing states to 126px and made
+    /// the note paint over the value (R4-3).
+    /// </summary>
+    internal static int RequiredHeight(int dpi, bool compact)
+    {
+        int S(int px) => (int)Math.Round(px * dpi / 96F);
+        var padY = compact ? S(10) : S(14);
+        var content = compact ? S(60) : S(72);
+        return 2 * (content + padY * 2) + S(2);
+    }
+
+    private bool CompactMetrics() => Height < RequiredHeight(DeviceDpi, false);
+
+    private (int PadY, int LabelH, int ValueH, int NoteH) Metrics()
+    {
+        int S(int px) => (int)Math.Round(px * DeviceDpi / 96F);
+        // Non-compact metrics need the full RequiredHeight(false); anything shorter uses the
+        // compact metrics so label/value/note can never overlap (R4-3).
+        var compact = CompactMetrics();
+        return compact ? (S(10), S(16), S(28), S(16)) : (S(14), S(20), S(34), S(18));
+    }
+
+    /// <summary>Per-cell label/value/note rectangles exactly as painted; used by the geometry regression.</summary>
+    internal (Rectangle Label, Rectangle Value, Rectangle Note)[] CellTextRectsForTest()
+    {
+        var (padY, labelH, valueH, noteH) = Metrics();
+        var padX = CompactMetrics() ? S16() : S18();
+        var columnWidth = (Width - S2()) / 2;
+        var rowHeight = (Height - S2()) / 2;
+        var result = new (Rectangle, Rectangle, Rectangle)[4];
+        for (var i = 0; i < 4; i++)
+        {
+            var column = i % 2;
+            var row = i / 2;
+            var cell = new Rectangle(column * columnWidth + padX, row * rowHeight + padY, columnWidth - padX * 2, rowHeight - padY * 2);
+            result[i] = (
+                new Rectangle(cell.X, cell.Y, cell.Width, labelH),
+                new Rectangle(cell.X, cell.Y + labelH, cell.Width, valueH),
+                new Rectangle(cell.X, cell.Y + labelH + valueH, cell.Width, noteH));
+        }
+        return result;
+    }
+
+    private int S2() => (int)Math.Round(2 * DeviceDpi / 96F);
+    private int S16() => (int)Math.Round(16 * DeviceDpi / 96F);
+    private int S18() => (int)Math.Round(18 * DeviceDpi / 96F);
+
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e);
         var graphics = e.Graphics;
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        var dpi = DeviceDpi / 96F;
-        int S(int px) => (int)Math.Round(px * dpi);
-        var compact = Height < S(120);
+        var (padY, labelH, valueH, noteH) = Metrics();
+        int S(int px) => (int)Math.Round(px * DeviceDpi / 96F);
+        var compact = CompactMetrics();
         var padX = compact ? S(16) : S(18);
-        var padY = compact ? S(10) : S(14);
         var columnWidth = (Width - S(2)) / 2;
         var rowHeight = (Height - S(2)) / 2;
         using var divider = new Pen(Theme.Divider);
@@ -52,8 +101,8 @@ internal sealed class KpiPanel : RoundedPanel
             var row = i / 2;
             var cell = new Rectangle(column * columnWidth + padX, row * rowHeight + padY, columnWidth - padX * 2, rowHeight - padY * 2);
             var item = _cells[i];
-            using var labelFont = Theme.UiFont(13F);
-            TextRenderer.DrawText(graphics, item.Label, labelFont, new Rectangle(cell.X, cell.Y, cell.Width, S(20)), Theme.Muted,
+            using var labelFont = Theme.UiFont(compact ? 12.5F : 13F);
+            TextRenderer.DrawText(graphics, item.Label, labelFont, new Rectangle(cell.X, cell.Y, cell.Width, labelH), Theme.Muted,
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
             var valueColor = item.Tone switch
             {
@@ -64,19 +113,19 @@ internal sealed class KpiPanel : RoundedPanel
                 _ => Theme.Text
             };
             using var valueFont = Theme.UiFont(compact ? 22F : 26F, FontStyle.Bold);
-            var valueWidth = TextRenderer.MeasureText(graphics, item.Value, valueFont, new Size(int.MaxValue, S(40)), TextFormatFlags.NoPadding).Width;
-            TextRenderer.DrawText(graphics, item.Value, valueFont, new Rectangle(cell.X, cell.Y + S(22), Math.Max(S(20), valueWidth + S(2)), S(38)), valueColor,
+            var valueWidth = TextRenderer.MeasureText(graphics, item.Value, valueFont, new Size(int.MaxValue, valueH), TextFormatFlags.NoPadding).Width;
+            TextRenderer.DrawText(graphics, item.Value, valueFont, new Rectangle(cell.X, cell.Y + labelH, Math.Max(S(20), valueWidth + S(2)), valueH), valueColor,
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
             if (!string.IsNullOrEmpty(item.Unit))
             {
                 using var unitFont = Theme.UiFont(14F);
-                TextRenderer.DrawText(graphics, item.Unit, unitFont, new Rectangle(cell.X + valueWidth + S(6), cell.Y + S(22), cell.Width - valueWidth - S(6), S(38)), Theme.Muted,
+                TextRenderer.DrawText(graphics, item.Unit, unitFont, new Rectangle(cell.X + valueWidth + S(6), cell.Y + labelH, Math.Max(0, cell.Width - valueWidth - S(6)), valueH), Theme.Muted,
                     TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
             }
             if (!string.IsNullOrEmpty(item.Note))
             {
                 using var noteFont = Theme.UiFont(12F);
-                TextRenderer.DrawText(graphics, item.Note, noteFont, new Rectangle(cell.X, cell.Bottom - S(20), cell.Width, S(18)), Theme.Muted,
+                TextRenderer.DrawText(graphics, item.Note, noteFont, new Rectangle(cell.X, cell.Y + labelH + valueH, cell.Width, noteH), Theme.Muted,
                     TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
             }
         }
@@ -595,6 +644,10 @@ internal sealed class TitleBlock : Control
         _sublineMono = sublineMono;
         Invalidate();
     }
+
+    /// <summary>Real painted values, used by the geometry/state evidence regression.</summary>
+    internal string StatusForTest => _status;
+    internal string SublineForTest => _subline;
 
     protected override void OnPaint(PaintEventArgs e)
     {

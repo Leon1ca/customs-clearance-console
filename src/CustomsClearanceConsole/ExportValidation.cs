@@ -21,6 +21,14 @@ internal static class ExportValidation
                 ? "010120260000000001"
                 : (310120260000000000L + i).ToString();
             var currency = i % 3 == 0 ? "USD" : i % 3 == 1 ? "CNY" : "EUR";
+            // The conflict row's note and verification numbers are derived from the same
+            // quantities/unit prices that produce the amount, so they can never drift.
+            var quantity = 1200 + i;
+            var unitPrice = 2.15m + i;
+            var amount = quantity * unitPrice;
+            var verifyQuantity = quantity + 1m;
+            var verifyUnitPrice = unitPrice + 0.25m;
+            var verifyAmount = verifyQuantity * verifyUnitPrice;
             var record = new DeclarationRecord
             {
                 DeclarationNo = number,
@@ -39,17 +47,17 @@ internal static class ExportValidation
                     {
                         Sequence = 1, PageNumber = 1, ItemNo = "1",
                         ProductName = i % 6 == 1 ? "" : i == 9 ? "商品|含<标签>\\反斜杠" : $"合成商品 {i + 1}",
-                        Quantity = i % 6 == 1 ? null : i == 10 ? 0.0004m : 1200 + i,
+                        Quantity = i % 6 == 1 ? null : i == 10 ? 0.0004m : quantity,
                         Unit = i % 6 == 1 ? "" : i % 2 == 0 ? "KG" : "台",
-                        UnitPrice = i % 6 == 1 ? null : i == 10 ? 0.1234567m : 2.15m + i,
+                        UnitPrice = i % 6 == 1 ? null : i == 10 ? 0.1234567m : unitPrice,
                         Currency = currency,
-                        Amount = (1200 + i) * (2.15m + i),
+                        Amount = amount,
                         IsReliable = i % 7 != 3,
-                        Note = i % 7 == 3 ? "双引擎不一致：主 4800.00；复核 4750.00，未计入合计" : "双引擎一致",
-                        VerificationAmount = i % 7 == 3 ? 4750m : null,
-                        VerificationQuantity = i % 7 == 3 ? 1200m : null,
+                        Note = i % 7 == 3 ? $"双引擎不一致：主 {amount:N2}；复核 {verifyAmount:N2}，未计入合计" : "双引擎一致",
+                        VerificationAmount = i % 7 == 3 ? verifyAmount : null,
+                        VerificationQuantity = i % 7 == 3 ? verifyQuantity : null,
                         VerificationUnit = i % 7 == 3 ? "KG" : "",
-                        VerificationUnitPrice = i % 7 == 3 ? 4.00m : null,
+                        VerificationUnitPrice = i % 7 == 3 ? verifyUnitPrice : null,
                         VerificationProductName = i % 7 == 3 ? $"合成商品 {i + 1}（复核）" : ""
                     }
                 ]

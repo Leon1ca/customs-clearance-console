@@ -190,7 +190,9 @@ internal sealed class SearchField : RoundedPanel
         Radius = 7;
         BorderColor = Theme.Border;
         BackColor = Color.White;
-        Padding = new Padding(50, 12, 12, 8);
+        // 34px slot: leave the icon column (0-44) and just 5px vertical breathing room so the
+        // 14px input text is not clipped (R4-2).
+        Padding = new Padding(44, 5, 12, 5);
         textBox.Dock = DockStyle.Fill;
         textBox.Margin = new Padding(0);
         textBox.Font = Theme.UiFont(14);
