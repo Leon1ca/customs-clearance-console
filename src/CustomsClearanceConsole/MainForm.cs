@@ -798,8 +798,14 @@ internal sealed partial class MainForm : Form
 
     // ---- grid painting ----
 
+    internal static int PaintProbeCalls;
+    internal static string PaintProbeLast = "";
+
     private void PaintRecordCell(object? sender, DataGridViewCellPaintingEventArgs e)
     {
+        PaintProbeCalls++;
+        if (e.RowIndex == 0 && e.ColumnIndex == 3)
+            PaintProbeLast = $"adv={e.AdvancedBorderStyle.Left}/{e.AdvancedBorderStyle.Right}/{e.AdvancedBorderStyle.Top}/{e.AdvancedBorderStyle.Bottom} parts={e.PaintParts} bounds={e.CellBounds} clip={e.ClipBounds}";
         if (e.RowIndex == -1 && e.ColumnIndex >= 0)
         {
             PaintColumnHeader(e);

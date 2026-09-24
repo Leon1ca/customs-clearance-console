@@ -1159,6 +1159,9 @@ internal static class SelfTest
 
     private static readonly List<string> GeometryFailures = [];
 
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool PrintWindow(IntPtr hwnd, IntPtr hdc, uint flags);
+
     /// <summary>
     /// Text must fit its control at the real DPI: a label's text (height, and width unless it
     /// ellipsizes) and a button's text height. Clipped text is what a broken high-DPI layout
@@ -1253,10 +1256,25 @@ internal static class SelfTest
             // forced synchronous repaint, to tell stale screen pixels from real painting.
             var grid = form.GridForTest;
             Phase($"  grid border={grid.CellBorderStyle} color={grid.GridColor} advanced={grid.AdvancedCellBorderStyle.All}/{grid.AdvancedCellBorderStyle.Right} handle={grid.IsHandleCreated} layered={form.Opacity}");
+            var before = MainForm.PaintProbeCalls;
             form.Refresh();
             Application.DoEvents();
             Thread.Sleep(400);
             Application.DoEvents();
+            Phase($"  paint probe · calls {before}->{MainForm.PaintProbeCalls} last={MainForm.PaintProbeLast}");
+            var drawBefore = MainForm.PaintProbeCalls;
+            using (var probe = new Bitmap(grid.Width, grid.Height)) grid.DrawToBitmap(probe, new Rectangle(Point.Empty, grid.Size));
+            Phase($"  paint probe (DrawToBitmap) · calls {drawBefore}->{MainForm.PaintProbeCalls} last={MainForm.PaintProbeLast}");
+            using (var printed = new Bitmap(form.ClientSize.Width, form.ClientSize.Height))
+            {
+                using (var graphics = Graphics.FromImage(printed))
+                {
+                    var hdc = graphics.GetHdc();
+                    try { PrintWindow(form.Handle, hdc, 2); }
+                    finally { graphics.ReleaseHdc(hdc); }
+                }
+                printed.Save(Path.Combine(Path.GetDirectoryName(path)!, Path.GetFileNameWithoutExtension(path) + "-printwindow.png"), ImageFormat.Png);
+            }
             using (var screenBitmap = new Bitmap(form.ClientSize.Width, form.ClientSize.Height))
             {
                 using (var graphics = Graphics.FromImage(screenBitmap))
