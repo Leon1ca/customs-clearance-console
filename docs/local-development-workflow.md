@@ -1,5 +1,7 @@
 # 本地迭代与空间管理
 
+> 接手请先读 [HANDOVER.md](HANDOVER.md)。
+
 ## 唯一工作目录
 
 - Git 仓库：`customs-clearance-console`
@@ -10,7 +12,7 @@
 
 从 v1.6.0 起，源码、界面设计、当前运行版和正式压缩包都集中在同一个 Git 仓库目录内。`artifacts` 是本机生成物，不提交到 Git；历史源码由 Git 提交和标签保存，历史二进制由 GitHub Release 保存。
 
-开发机只需要安装 Git、VS Code 和 .NET 8 SDK，不需要安装完整 Visual Studio。当前工作区另保留一份不提交到 Git 的 `.devtools\dotnet-sdk` 作为本地构建备用；程序依赖的 OCR 模型、Tesseract、PDFium 和原生 DLL 已保存在仓库的本机忽略目录及 `artifacts\local-current` 中。
+开发机只需要安装 Git、VS Code 和 .NET 8 SDK，不需要安装完整 Visual Studio。当前工作区另保留一份不提交到 Git 的 `.devtools\dotnet-sdk` 作为本地构建备用；程序依赖的 PP-OCRv5 模型、PDFium 和原生 DLL（v1.5.3 起不再使用 Tesseract）已保存在仓库的本机忽略目录及 `artifacts\local-current` 中。
 
 ## 日常修改
 
@@ -20,7 +22,7 @@
 4. 自动运行核心业务回归与 UI 契约回归测试。
 5. 直接从 `artifacts\local-current\关单核验台.exe` 启动测试。
 
-日常迭代不创建 ZIP，不复制 OCR 模型、Tesseract、.NET Runtime 或许可证目录。
+日常迭代不创建 ZIP，不复制 OCR 模型、.NET Runtime 或许可证目录。
 
 ## 正式发布
 
